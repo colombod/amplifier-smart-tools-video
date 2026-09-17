@@ -18,6 +18,16 @@ requires:
       without it. Everything that only builds an edit plan -- trim, cut, retime, zoom,
       stitch, caption, plan, transitions -- runs fine without it, because a plan is JSON
       and nothing touches a frame until render. `vid check` reports which state you are in.
+
+      ONE BUILD FEATURE MATTERS: `caption` burns subtitles in using ffmpeg's `subtitles`
+      filter, which only exists when ffmpeg was compiled against libass. Some Homebrew
+      taps and most minimal container images ship a build without it. Every other verb
+      works on such a build; `caption` alone does not, and `vid check` says so.
+
+      On macOS there is a second step behind the same verb: libass finds fonts through
+      fontconfig, so a brew install that leaves its dependencies unconfigured can render
+      captions with no text. `brew postinstall ca-certificates fontconfig gnutls glib
+      openssl@3` is what fixed it on a real machine.
     optional: false
     install: https://ffmpeg.org/download.html
   - name: faster-whisper

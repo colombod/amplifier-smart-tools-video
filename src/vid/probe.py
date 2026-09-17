@@ -71,3 +71,30 @@ def has_audio(path: str) -> bool:
     if result.returncode != 0:
         return True
     return "audio" in result.stdout
+
+
+def has_subtitles_filter() -> bool:
+    """Whether this ffmpeg was built with subtitle rendering (libass).
+
+    REPORTED BY A REAL USER, on macOS, via an agent that installed the tool from
+    the catalog and then hit it. `caption` burns subtitles into the picture with
+    ffmpeg's `subtitles` filter, and that filter only exists when ffmpeg was
+    COMPILED against libass. Plenty of builds are not -- several Homebrew taps
+    ship a slimmed one, and most minimal container images do.
+
+    So `ffmpeg` on PATH is necessary and not sufficient, and the manifest saying
+    "ffmpeg" was telling a half-truth. Every other verb works on a slim build;
+    exactly one does not.
+    """
+    if not shutil.which("ffmpeg"):
+        return False
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return False
+    return any(
+        line.split()[1] == "subtitles"
+        for line in result.stdout.splitlines()
+        if len(line.split()) > 1
+    )

@@ -113,6 +113,30 @@ def check() -> str:
             "            uv tool install --force 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'",
         ]
 
+    # Subtitle support is a BUILD feature, not a package. A user on macOS hit
+    # this with ffmpeg installed and working: every verb ran, and `caption`
+    # alone failed, because their build had no libass. Reporting "ffmpeg ok"
+    # and nothing else was how they found out the hard way.
+    if shutil.which("ffmpeg"):
+        from vid.probe import has_subtitles_filter
+
+        if has_subtitles_filter():
+            lines.append("            subtitles filter present, so `caption` works.")
+        else:
+            lines += [
+                "",
+                "  [missing] ffmpeg subtitles",
+                "            Your ffmpeg has no `subtitles` filter, so `caption` cannot burn",
+                "            captions in. EVERY OTHER VERB IS FINE -- this is the only one.",
+                "            It needs ffmpeg built with libass:",
+                "            macOS:   brew install ffmpeg        (the full formula, not a slim tap)",
+                "                     If brew leaves dependencies unconfigured, captions can",
+                "                     still fail to find fonts. Reported from a real install:",
+                "                       brew postinstall ca-certificates fontconfig gnutls glib openssl@3",
+                "            Linux:   apt install ffmpeg         (Debian/Ubuntu builds include it)",
+                "            Check:   ffmpeg -filters | grep subtitles",
+            ]
+
     lines.append("")
     from vid.voice import available as voice_available
 

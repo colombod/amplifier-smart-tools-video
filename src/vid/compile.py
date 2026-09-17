@@ -303,6 +303,20 @@ class Compiler:
     def caption(self, op: Caption) -> None:
         # Escaping matters here: a Windows path carries a drive-letter colon that
         # the filter parser reads as an argument separator.
+        from vid.probe import has_subtitles_filter
+
+        if not has_subtitles_filter():
+            raise VidError(
+                "This ffmpeg was built without libass, so it has no `subtitles` filter and "
+                "cannot burn captions into the picture.\n"
+                "  Every other verb works on this build -- `caption` is the only one affected.\n"
+                "  macOS:  brew install ffmpeg   (the full formula; some taps ship a slim one)\n"
+                "          then, if captions render without text, brew may have left its\n"
+                "          font stack unconfigured -- libass finds fonts through fontconfig:\n"
+                "            brew postinstall ca-certificates fontconfig gnutls glib openssl@3\n"
+                "  Linux:  apt install ffmpeg\n"
+                "  Then:   ffmpeg -filters | grep subtitles"
+            )
         path = op.subtitles.replace("\\", "/").replace(":", r"\:")
         style = f":force_style='{op.style}'" if op.style else ""
         self.video = self._step(f"subtitles='{path}'{style}", self.video, "v")
