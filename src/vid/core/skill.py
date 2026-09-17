@@ -10,7 +10,18 @@ DISTRIBUTION = "vid"
 
 # One table drives the skill's capability list, so it cannot drift from what the CLI exposes.
 # Every capability added to the library gets a row here.
-CAPABILITIES = (Capability("manifest", "Print the tool's manifest as JSON.", model_backed=False),)
+CAPABILITIES = (
+    Capability("trim", "Keep a time range, discard the rest.", model_backed=False),
+    Capability("cut", "Remove a time range, keeping what surrounds it.", model_backed=False),
+    Capability("retime", "Change speed, constantly or along a curve.", model_backed=False),
+    Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
+    Capability("stitch", "Join clips, with or without a transition.", model_backed=False),
+    Capability("caption", "Burn subtitles into the picture.", model_backed=False),
+    Capability("plan", "Show the edit as JSON, without performing it.", model_backed=False),
+    Capability("render", "Compile the plan and encode, once. The ONLY verb that touches pixels.", model_backed=False),
+    Capability("check", "What this installation can actually do, and what would unlock the rest.", model_backed=False),
+    Capability("manifest", "Print the tool's manifest as JSON.", model_backed=False),
+)
 
 # Paths relative to the skill directory. Both ship inside the package, so both resolve after installation.
 SKILL_RESOURCES = ("SMART_TOOL.md", "lib.py")

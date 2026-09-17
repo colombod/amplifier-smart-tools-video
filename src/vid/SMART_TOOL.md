@@ -31,6 +31,44 @@ Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by 
 **The library is the tool.** `vid.lib` holds every capability. The CLI is a thin
 wrapper over it, so anything you can do from the shell you can also do from Python.
 
+## Read this first: chain the verbs, do not orchestrate them
+
+**Every verb except `render` reads an edit plan on stdin, appends one operation,
+and writes the plan to stdout.** Nothing decodes a frame until `render`, which
+compiles the whole plan into ONE ffmpeg pass.
+
+```bash
+vid trim talk.mp4 --from 0:10 --to 2:30 \
+  | vid retime --ramp "1x@0 0.25x@1:05 1x@1:12" \
+  | vid zoom --to 1.4 --at 0:45 \
+  | vid stitch - outro.mp4 --transition dissolve --duration 0.8 \
+  | vid render out.mp4
+```
+
+That is five operations, **one decode and one encode**.
+
+**Do not call these verbs one at a time, rendering between them.** It is the
+obvious approach and it is the expensive one: five renders means five decodes and
+five encodes, it takes several times longer, and the picture loses quality at
+every generation. The pipe exists precisely so you never have to do that.
+
+**You do not need a model in this loop.** Composing an edit is the shell's job,
+not an agent's. Every verb in that chain is deterministic, instant, costs
+**$0.00**, and needs neither ffmpeg nor any AI provider — a plan is JSON. Decide
+the edit once, write the pipeline, run it.
+
+Three rules that make chains predictable:
+
+- **Start a chain by naming a file; continue one by piping.** `vid trim talk.mp4`
+  begins. `vid zoom --to 1.4` continues whatever arrived on stdin. A verb given
+  neither fails and says so.
+- **`-` means "the plan on stdin"**, and it holds a position. `vid stitch intro.mp4
+  - outro.mp4` puts the running edit in the middle.
+- **Inspect before you commit.** `vid plan` prints the edit as JSON; `vid render
+  out.mp4 --print-command` prints the exact ffmpeg and runs nothing. A plan can be
+  saved, diffed, hand-edited and replayed, so an edit a model proposed is as
+  reviewable as one a person typed.
+
 ## When to reach for it
 
 - Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass.
