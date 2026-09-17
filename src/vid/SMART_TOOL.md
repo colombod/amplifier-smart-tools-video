@@ -12,6 +12,21 @@ platforms:
   - macos
   - windows
 requires:
+  - name: ffmpeg
+    purpose: >-
+      Decodes, filters and encodes video. `render`, `verify` and `index` cannot work
+      without it. Everything that only builds an edit plan -- trim, cut, retime, zoom,
+      stitch, caption, plan, transitions -- runs fine without it, because a plan is JSON
+      and nothing touches a frame until render. `vid check` reports which state you are in.
+    optional: false
+    install: https://ffmpeg.org/download.html
+  - name: faster-whisper
+    purpose: >-
+      Transcribes speech locally so `index` can build timed passages and `find` can search
+      them. Nothing is uploaded. Installed as an extra, not a separate step:
+      uv tool install 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+    optional: true
+    install: https://github.com/colombod/amplifier-smart-tools-video#speech
   - name: gh
     purpose: >-
       Generates the token that signs in to GitHub Copilot. Without it, the model-backed
