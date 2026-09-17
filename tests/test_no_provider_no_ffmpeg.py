@@ -20,8 +20,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 import sys
+import tempfile
 
 import pytest
 
