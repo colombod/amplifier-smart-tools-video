@@ -19,6 +19,7 @@ CAPABILITIES = (
     Capability("caption", "Burn subtitles into the picture.", model_backed=False),
     Capability("plan", "Show the edit as JSON, without performing it.", model_backed=False),
     Capability("render", "Compile the plan and encode, once. The ONLY verb that touches pixels.", model_backed=False),
+    Capability("verify", "Check a rendered video against named properties. No model involved.", model_backed=False),
     Capability("check", "What this installation can actually do, and what would unlock the rest.", model_backed=False),
     Capability("manifest", "Print the tool's manifest as JSON.", model_backed=False),
 )

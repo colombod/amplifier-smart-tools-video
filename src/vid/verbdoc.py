@@ -147,6 +147,53 @@ and it is irreversible, which is the tradeoff.
 re-encode of the picture -- there is no way to burn text in without redrawing
 frames.
 """,
+    "verify": """# vid verify -- check a rendered video against what you expected
+
+```bash
+vid verify out.mp4 --expect-duration 5.2
+vid verify out.mp4 --expect-duration 5.2 --expect-resolution 640x360 --expect-audio
+vid verify out.mp4 --expect-transition-at 2.6
+vid verify out.mp4 --expect-no-black-frames
+```
+
+**Why this exists.** `render` produces a file and you have no way to know it is
+right. A person opens it and looks. An agent editing unattended cannot -- so an
+edit that renders successfully and is silently wrong is indistinguishable from a
+correct one. This closes that gap.
+
+Every check reports the **measured** value beside the **expected** one, and the
+exit code is non-zero if any property is violated -- so it drops straight into a
+shell chain:
+
+```bash
+vid trim in.mp4 --to 0:05 | vid render out.mp4 && vid verify out.mp4 --expect-duration 5.0
+```
+
+## The properties
+
+- `--expect-duration N` with optional `--tolerance` (default 0.15s)
+- `--expect-resolution WxH`
+- `--expect-audio` -- present **and not silent**; a track of digital silence fails
+- `--expect-transition-at T` -- a real blend, not a hard cut
+- `--expect-no-black-frames` with optional `--longest-black`
+
+## How the transition check works, since it is the interesting one
+
+It samples three frames -- before, at, and after -- and asks whether the middle
+one resembles **neither** side. A blended frame sits between the two; a cut puts
+it on top of one of them.
+
+The threshold is relative to how different the two sides are, so it also refuses
+to claim a blend between clips that look nearly identical, where no measurement
+could tell. A check that cannot decide says so rather than guessing.
+
+**No model is involved in any of this.** These are measurements, not opinions.
+Which is the point: it is the only kind of verification you can trust to grade
+something a model produced.
+
+**What it costs.** $0.00, and it needs no provider and no network. It does need
+ffmpeg, because it is reading actual frames.
+""",
     "render": """# vid render -- compile the plan and encode, once
 
 ```bash

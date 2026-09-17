@@ -130,3 +130,46 @@ def resolve_transition(text: str) -> tuple[str, str | None, str | None]:
             # it knows whether a model was needed, and this does not.
             intelligence = None
     return resolve(text, intelligence)
+
+
+def verify(
+    video: str,
+    *,
+    expect_duration: float | None = None,
+    tolerance: float = 0.15,
+    expect_resolution: str | None = None,
+    expect_audio: bool = False,
+    expect_transition_at: float | None = None,
+    expect_no_black_frames: bool = False,
+    longest_black: float = 0.5,
+) -> tuple[bool, str]:
+    """Check a rendered video against named properties. Returns `(passed, report)`.
+
+    Deterministic throughout: every answer comes from ffprobe or frame arithmetic,
+    so this is the one kind of verification that can honestly grade something a
+    model produced.
+    """
+    from vid import verify as checks
+    from vid.probe import have_ffmpeg
+    from vid.schemas import VidError
+
+    if not have_ffmpeg():
+        raise VidError(
+            "verify reads actual frames, so it needs ffmpeg on PATH. "
+            "Run `vid check` for the install command for your system."
+        )
+
+    results = []
+    if expect_duration is not None:
+        results.append(checks.check_duration(video, expect_duration, tolerance))
+    if expect_resolution is not None:
+        results.append(checks.check_resolution(video, expect_resolution))
+    if expect_audio:
+        results.append(checks.check_audio(video))
+    if expect_transition_at is not None:
+        results.append(checks.check_transition_at(video, expect_transition_at))
+    if expect_no_black_frames:
+        results.append(checks.check_no_black_frames(video, longest_black))
+
+    text, passed = checks.report(results)
+    return passed, text

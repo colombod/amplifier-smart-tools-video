@@ -188,6 +188,34 @@ def render(
 
 
 @app.command()
+def verify(
+    video: Annotated[str, typer.Argument(help="The rendered file to check.")],
+    expect_duration: Annotated[float | None, typer.Option("--expect-duration", help="Seconds the result should be.")] = None,
+    tolerance: Annotated[float, typer.Option("--tolerance", help="How far off the duration may be.")] = 0.15,
+    expect_resolution: Annotated[str | None, typer.Option("--expect-resolution", help="e.g. 1920x1080.")] = None,
+    expect_audio: Annotated[bool, typer.Option("--expect-audio", help="Audio present, and not silent.")] = False,
+    expect_transition_at: Annotated[float | None, typer.Option("--expect-transition-at", help="A real blend at this second.")] = None,
+    expect_no_black_frames: Annotated[bool, typer.Option("--expect-no-black-frames", help="No long black stretches.")] = False,
+    longest_black: Annotated[float, typer.Option("--longest-black", help="Seconds of black that is still acceptable.")] = 0.5,
+    help: _doc("verify") = False,
+) -> None:
+    """Check a rendered video against what you expected. No model involved."""
+    passed, text = lib.verify(
+        video,
+        expect_duration=expect_duration,
+        tolerance=tolerance,
+        expect_resolution=expect_resolution,
+        expect_audio=expect_audio,
+        expect_transition_at=expect_transition_at,
+        expect_no_black_frames=expect_no_black_frames,
+        longest_black=longest_black,
+    )
+    typer.echo(text)
+    if not passed:
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def transitions(
     describe: Annotated[bool, typer.Option("--describe", help="Show what each one looks like.")] = False,
 ) -> None:
