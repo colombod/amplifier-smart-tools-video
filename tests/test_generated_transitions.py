@@ -79,8 +79,7 @@ def test_a_plan_will_not_render_an_unverified_expression():
     """
     durations = {"a.mp4": 3.0, "b.mp4": 3.0}
     unverified = Plan(source="a.mp4").with_operation(
-        Stitch(sources=["b.mp4"], transition="custom", transition_duration=0.8,
-               transition_expr="A*(1-P)+B*P")
+        Stitch(sources=["b.mp4"], transition="custom", transition_duration=0.8, transition_expr="A*(1-P)+B*P")
     )
     with pytest.raises(VidError, match="UNVERIFIED"):
         compile_plan(unverified, "out.mp4", durations=durations)
@@ -88,9 +87,7 @@ def test_a_plan_will_not_render_an_unverified_expression():
 
 def test_a_custom_transition_with_no_expression_is_refused():
     durations = {"a.mp4": 3.0, "b.mp4": 3.0}
-    empty = Plan(source="a.mp4").with_operation(
-        Stitch(sources=["b.mp4"], transition="custom", transition_duration=0.8)
-    )
+    empty = Plan(source="a.mp4").with_operation(Stitch(sources=["b.mp4"], transition="custom", transition_duration=0.8))
     with pytest.raises(VidError, match="needs an expression"):
         compile_plan(empty, "out.mp4", durations=durations)
 
@@ -98,8 +95,13 @@ def test_a_custom_transition_with_no_expression_is_refused():
 def test_a_verified_expression_reaches_ffmpeg_intact():
     durations = {"a.mp4": 3.0, "b.mp4": 3.0}
     good = Plan(source="a.mp4").with_operation(
-        Stitch(sources=["b.mp4"], transition="custom", transition_duration=0.8,
-               transition_expr="A*(1-P)+B*P", transition_verified=True)
+        Stitch(
+            sources=["b.mp4"],
+            transition="custom",
+            transition_duration=0.8,
+            transition_expr="A*(1-P)+B*P",
+            transition_verified=True,
+        )
     )
     command = compile_plan(good, "out.mp4", durations=durations)
     graph = next(part for part in command if "xfade" in part)
@@ -110,9 +112,7 @@ def test_a_verified_expression_reaches_ffmpeg_intact():
 def test_tier_1_never_reaches_a_model(clips):
     """A preset name resolves with no provider and no probe."""
     first, second = clips
-    preset, requested, rationale, expression = resolve_with_clips(
-        "dissolve", first, second, 0.8, intelligence=None
-    )
+    preset, requested, rationale, expression = resolve_with_clips("dissolve", first, second, 0.8, intelligence=None)
     assert (preset, requested, rationale, expression) == ("dissolve", None, None, None)
 
 
@@ -128,6 +128,7 @@ def test_generation_needs_the_clips_to_prove_against(clips):
     Tier 3 cannot be verified without the pair it will join, and an unverifiable
     generated expression is exactly what this feature exists to not ship.
     """
+
     class SaysNone:
         def run(self, request):
             return type("R", (), {"text": "NONE\nnothing here matches", "error": None})()

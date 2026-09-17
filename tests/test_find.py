@@ -22,9 +22,7 @@ from vid.find import find, find_described, find_literal
 from vid.index import Chunk, build, chunks_of, load
 from vid.schemas import VidError
 
-pytestmark = pytest.mark.skipif(
-    not (have_tts() and have_ffmpeg()), reason="speech fixtures need espeak-ng and ffmpeg"
-)
+pytestmark = pytest.mark.skipif(not (have_tts() and have_ffmpeg()), reason="speech fixtures need espeak-ng and ffmpeg")
 
 
 @pytest.fixture(scope="module")

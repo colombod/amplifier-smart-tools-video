@@ -15,11 +15,11 @@ rather than merely discouraged.
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 import hashlib
 import json
-import subprocess
-from dataclasses import asdict, dataclass
 from pathlib import Path
+import subprocess
 
 from vid.schemas import VidError
 
@@ -95,9 +95,9 @@ def detect_shots(video: str, threshold: float = 0.4) -> list[Shot]:
     describing six hundred does not.
     """
     result = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", video, "-vf",
-         f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
-        capture_output=True, text=True,
+        ["ffmpeg", "-v", "info", "-i", video, "-vf", f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
     )
     times = [0.0]
     for line in result.stderr.splitlines():
@@ -108,17 +108,23 @@ def detect_shots(video: str, threshold: float = 0.4) -> list[Shot]:
     total = _duration(video)
     times.append(total)
     times = sorted(set(round(t, 3) for t in times if 0 <= t <= total))
-    return [
-        Shot(id=f"s{i}", start=a, end=b)
-        for i, (a, b) in enumerate(zip(times, times[1:], strict=False))
-    ]
+    return [Shot(id=f"s{i}", start=a, end=b) for i, (a, b) in enumerate(zip(times, times[1:], strict=False))]
 
 
 def _duration(video: str) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", video],
-        capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            video,
+        ],
+        capture_output=True,
+        text=True,
     )
     try:
         return float(out.stdout.strip())
@@ -146,8 +152,7 @@ def transcribe(video: str, model_size: str = "base") -> list[Chunk]:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     segments, _ = model.transcribe(video, beam_size=1)
     return [
-        Chunk(id=f"c{i}", start=round(segment.start, 3), end=round(segment.end, 3),
-              text=segment.text.strip())
+        Chunk(id=f"c{i}", start=round(segment.start, 3), end=round(segment.end, 3), text=segment.text.strip())
         for i, segment in enumerate(segments)
     ]
 

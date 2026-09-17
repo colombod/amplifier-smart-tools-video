@@ -17,10 +17,10 @@ tell clip A from clip B proves nothing:
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
+import subprocess
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -76,16 +76,33 @@ def _build(name: str, colour: str, hz: int, seconds: float, path: Path) -> None:
         )
 
     command = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c={colour}:s=640x360:r=30:d={seconds}",
-        "-f", "lavfi", "-i", f"sine=frequency={hz}:sample_rate=48000:duration={seconds}",
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={colour}:s=640x360:r=30:d={seconds}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency={hz}:sample_rate=48000:duration={seconds}",
     ]
     if filters:
         command += ["-vf", ",".join(filters)]
     command += [
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-g", "15",  # a small GOP, so keyframe-aligned trimming is testable
-        "-c:a", "aac", "-shortest",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "15",  # a small GOP, so keyframe-aligned trimming is testable
+        "-c:a",
+        "aac",
+        "-shortest",
         str(path),
     ]
     subprocess.run(command, check=True, capture_output=True)
@@ -108,9 +125,19 @@ def ensure_clips() -> dict[str, Clip]:
 def probe_duration(path: Path | str) -> float:
     """Seconds, from ffprobe. The primary assertion for stitch and transition."""
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        check=True, capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return float(out.stdout.strip())
 
@@ -123,9 +150,26 @@ def frame_colour(path: Path | str, at: float) -> tuple[int, int, int]:
     visible in the duration.
     """
     out = subprocess.run(
-        ["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(path),
-         "-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1:1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
     )
     pixel = out.stdout[:3]
     if len(pixel) < 3:

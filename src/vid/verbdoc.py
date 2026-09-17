@@ -175,6 +175,49 @@ and it is irreversible, which is the tradeoff.
 re-encode of the picture -- there is no way to burn text in without redrawing
 frames.
 """,
+    "audio": """# vid audio -- the one place that touches sound on its own
+
+```bash
+vid audio remove  talk.mp4                              a silent video
+vid audio replace talk.mp4 --with narration.wav         swap the track
+vid audio mix     talk.mp4 --with music.mp3             lay a bed underneath
+vid audio mix     talk.mp4 --with music.mp3 --level -12 louder bed
+vid audio extract talk.mp4 out.wav                      pull the track out
+```
+
+**Everything else already carries audio for you.** `trim`, `cut`, `retime` and
+`stitch` move the sound with the picture automatically -- a crossfade really does
+run `acrossfade` under the blend, and a cut keeps both streams locked. These
+verbs are for the cases where you want to change the sound *itself*.
+
+## The length question, answered rather than inherited
+
+For `replace` and `mix`, **the result is always the length of the video.** A
+shorter track is padded with silence; a longer one is truncated. A long music
+file cannot quietly extend your video.
+
+## mix keeps your original audio where it is
+
+`--level` applies to the **incoming** track only, in dB, and is negative in
+normal use. Your existing audio is untouched, so you adjust one thing rather than
+balancing two. The default `-18` puts music clearly under speech.
+
+There is **no automatic ducking.** A flat level is predictable and easy to
+explain; ducking is a real feature with its own decisions and should be asked for
+on purpose rather than happening to you.
+
+## The rest
+
+`remove` on a video that has no audio is a no-op, not an error.
+
+`mix` after `remove` in the same chain is refused -- there is nothing left to mix
+into, and `replace` is what you want.
+
+`extract` writes an audio file and does **not** produce a plan, so it ends a
+chain rather than continuing one.
+
+**What it costs.** $0.00, no provider, no network. All of this is ffmpeg.
+""",
     "verify": """# vid verify -- check a rendered video against what you expected
 
 ```bash
@@ -318,6 +361,64 @@ which is what makes an edit proposed by a model as inspectable as one typed by a
 person. The model writes a plan; you read it before a frame is touched.
 
 **What it costs.** Nothing, and it needs nothing.
+""",
+    "transitions": """# vid transitions -- the 58 ways two clips can meet
+
+```bash
+vid transitions              names only, one line -- cheap to scan
+vid transitions --describe   each one with what it actually looks like
+```
+
+**Read this before describing a transition in words.** If one of these is what
+you want, naming it costs nothing: no model, no provider, no network. Describing
+it instead spends a model call to arrive at the same answer.
+
+The list is ffmpeg's own `xfade` set, so every name here is guaranteed to work.
+A name that is not on this list is refused rather than approximated.
+
+## How these relate to the three tiers
+
+- name one of these           -> tier 1, deterministic, $0.00
+- describe it in a phrase     -> tier 2, a model picks from this list
+- describe something not here -> tier 3, one is written, then proven
+
+`vid stitch --help` explains the tiers in full, including what happens when a
+generated transition fails its check.
+
+**What it costs.** $0.00. This reads a list in the tool; it does not even touch
+ffmpeg.
+""",
+    "manifest": """# vid manifest -- what this tool tells a program about itself
+
+```bash
+vid manifest              the machine-readable descriptor, as JSON
+vid manifest | jq .       if you want to read it yourself
+```
+
+Prints the Smart Tool manifest: the tool's name, version, what it can do, and
+what it needs installed to do it. Written for a catalog, a host, or an agent
+deciding whether this tool is worth calling -- not primarily for a person.
+
+## What you will find in it
+
+**`capabilities`** -- every verb, with whether it is model-backed. Note that
+`find` is *not* marked model-backed: its literal search answers most queries with
+no provider at all, and marking it otherwise would tell you that you need
+credentials you do not need.
+
+**`requires`** -- the dependencies, with `optional` stating whether the tool
+works without each one:
+
+| | |
+|---|---|
+| `ffmpeg` | **required.** `render`, `verify` and `index` cannot work without it. Everything that only builds a plan works fine. |
+| `faster-whisper` | optional. Transcription for `index` and `find`. Runs locally; nothing is uploaded. |
+| `gh` + Copilot | optional. Only for *describing* a transition or a moment in words instead of naming it. |
+
+**For what is actually installed on THIS machine right now, run `vid check`.**
+The manifest says what the tool can need; `check` says what you have.
+
+**What it costs.** $0.00, no provider, no network, and it does not touch ffmpeg.
 """,
     "check": """# vid check -- what this installation can actually do
 

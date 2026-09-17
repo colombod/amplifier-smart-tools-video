@@ -17,9 +17,9 @@ experiment does not need a model to grade its own output.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import subprocess
-from dataclasses import dataclass
 
 from vid.schemas import VidError
 
@@ -43,7 +43,8 @@ class Check:
 def _ffprobe(path: str, *args: str) -> dict:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-of", "json", *args, path],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise VidError(f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}")
@@ -58,8 +59,24 @@ def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
     on one or the other.
     """
     result = subprocess.run(
-        ["ffmpeg", "-v", "error", "-ss", str(at), "-i", path,
-         "-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1:1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
         capture_output=True,
     )
     pixel = result.stdout[:3]
@@ -112,7 +129,8 @@ def check_audio(path: str) -> Check:
     # including correct ones. Caught by running it, invisible to a code read.
     result = subprocess.run(
         ["ffmpeg", "-v", "info", "-i", path, "-af", "volumedetect", "-f", "null", "-"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     mean = None
     for line in result.stderr.splitlines():
@@ -142,7 +160,9 @@ def check_transition_at(path: str, at: float, window: float = 0.5) -> Check:
     separation = _distance(before, after)
     if separation < 30:
         return Check(
-            "transition", False, f"a blend at {at}s",
+            "transition",
+            False,
+            f"a blend at {at}s",
             f"sides differ by only {separation:.0f}",
             "the two clips look too alike here for a blend to be detectable",
         )
@@ -153,7 +173,9 @@ def check_transition_at(path: str, at: float, window: float = 0.5) -> Check:
     # A cut puts it on top of one of them.
     blended = to_before > separation * 0.2 and to_after > separation * 0.2
     return Check(
-        "transition", blended, f"a blend at {at}s",
+        "transition",
+        blended,
+        f"a blend at {at}s",
         f"mid-frame {to_before:.0f} from before, {to_after:.0f} from after",
         "" if blended else "the middle frame matches one side -- this is a hard cut",
     )
@@ -162,9 +184,9 @@ def check_transition_at(path: str, at: float, window: float = 0.5) -> Check:
 def check_no_black_frames(path: str, longest: float = 0.5) -> Check:
     """Black is how a mis-timed edit usually shows itself."""
     result = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", path, "-vf", "blackdetect=d=0.1:pic_th=0.98",
-         "-f", "null", "-"],
-        capture_output=True, text=True,
+        ["ffmpeg", "-v", "info", "-i", path, "-vf", "blackdetect=d=0.1:pic_th=0.98", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
     )
     worst = 0.0
     for line in result.stderr.splitlines():
@@ -184,8 +206,7 @@ def report(checks: list[Check]) -> tuple[str, bool]:
     """The lines a caller reads, and whether everything held."""
     if not checks:
         raise VidError(
-            "verify was given nothing to check. Name at least one expectation -- "
-            "`vid verify --help` lists them."
+            "verify was given nothing to check. Name at least one expectation -- `vid verify --help` lists them."
         )
     passed = all(check.held for check in checks)
     lines = [f"{'all properties hold' if passed else 'VIOLATIONS FOUND'}", ""]

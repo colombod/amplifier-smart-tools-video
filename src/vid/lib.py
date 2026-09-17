@@ -83,7 +83,10 @@ def check() -> str:
     ffprobe = shutil.which("ffprobe")
 
     if ffmpeg:
-        lines += [f"  [ok]      ffmpeg          {ffmpeg}", "            every mechanical verb works, and render can run."]
+        lines += [
+            f"  [ok]      ffmpeg          {ffmpeg}",
+            "            every mechanical verb works, and render can run.",
+        ]
     else:
         lines += [
             "  [missing] ffmpeg",
@@ -118,16 +121,14 @@ def check() -> str:
     lines.append("")
     gh = shutil.which("gh")
     if gh:
-        signed_in = (
-            subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
-        )
+        signed_in = subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
         if signed_in:
             lines.append("  [ok]      provider        GitHub Copilot, via the gh CLI")
             lines.append("            Describing a transition or a moment in words works.")
         else:
             lines += [
                 "  [missing] provider        gh is installed but not signed in",
-                "            Unlocks: --transition \"soft and dreamy\", and find-by-meaning.",
+                '            Unlocks: --transition "soft and dreamy", and find-by-meaning.',
                 "            gh auth login",
             ]
     else:
@@ -228,8 +229,7 @@ def index(video: str, *, speech: bool = True, model_size: str = "base") -> str:
         f"indexed {video}",
         f"  {record['duration']:.1f}s, fingerprint {record['fingerprint']}",
         f"  shots  {len(record.get('shots', []))}",
-        f"  speech {len(record.get('speech', []))} passages"
-        if "speech" in record else "  speech not indexed",
+        f"  speech {len(record.get('speech', []))} passages" if "speech" in record else "  speech not indexed",
         f"  stored {index_path(video)}",
     ]
     return "\n".join(lines)
@@ -268,10 +268,40 @@ def find(query: str, video: str, *, show: bool = False) -> None:
         for hit in hits:
             sys.stdout.write(
                 f"{hit.start:.2f}-{hit.end:.2f}s  [{hit.how}] {', '.join(hit.chunk_ids)}\n"
-                f"    {hit.text}\n"
-                + (f"    -- {hit.rationale}\n" if hit.rationale else "")
+                f"    {hit.text}\n" + (f"    -- {hit.rationale}\n" if hit.rationale else "")
             )
         return
 
     best = hits[0]
     write_plan(Plan(source=video).with_operation(Trim(start=best.start, end=best.end)))
+
+
+def audio_extract(video: str, output: str) -> str:
+    """Pull a video's audio out to a file.
+
+    Ends a chain rather than continuing one: it writes an audio file, not a plan,
+    so there is nothing meaningful to pipe onward. Said plainly in `--help`
+    because every other verb here does continue a chain, and a caller who expects
+    that is owed the exception in writing.
+    """
+    import subprocess
+
+    from vid.probe import have_ffmpeg
+    from vid.schemas import VidError
+
+    if not have_ffmpeg():
+        raise VidError(
+            "Extracting audio decodes the file, so it needs ffmpeg on PATH. "
+            "Run `vid check` for the install command for your system."
+        )
+
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", video, "-vn", output],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        reason = detail[-1] if detail else "ffmpeg gave no reason"
+        raise VidError(f"Could not extract audio from {video!r}: {reason}")
+    return f"wrote {output}"

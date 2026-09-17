@@ -32,17 +32,64 @@ from vid.schemas import VidError
 #: without one of these fails at render with ffmpeg's own message, which is
 #: clearer than anything we would invent.
 PRESETS: tuple[str, ...] = (
-    "fade", "wipeleft", "wiperight", "wipeup", "wipedown",
-    "slideleft", "slideright", "slideup", "slidedown",
-    "circlecrop", "rectcrop", "distance", "fadeblack", "fadewhite", "radial",
-    "smoothleft", "smoothright", "smoothup", "smoothdown",
-    "circleopen", "circleclose", "vertopen", "vertclose", "horzopen", "horzclose",
-    "dissolve", "pixelize", "diagtl", "diagtr", "diagbl", "diagbr",
-    "hlslice", "hrslice", "vuslice", "vdslice", "hblur", "fadegrays",
-    "wipetl", "wipetr", "wipebl", "wipebr", "squeezeh", "squeezev", "zoomin",
-    "fadefast", "fadeslow", "hlwind", "hrwind", "vuwind", "vdwind",
-    "coverleft", "coverright", "coverup", "coverdown",
-    "revealleft", "revealright", "revealup", "revealdown",
+    "fade",
+    "wipeleft",
+    "wiperight",
+    "wipeup",
+    "wipedown",
+    "slideleft",
+    "slideright",
+    "slideup",
+    "slidedown",
+    "circlecrop",
+    "rectcrop",
+    "distance",
+    "fadeblack",
+    "fadewhite",
+    "radial",
+    "smoothleft",
+    "smoothright",
+    "smoothup",
+    "smoothdown",
+    "circleopen",
+    "circleclose",
+    "vertopen",
+    "vertclose",
+    "horzopen",
+    "horzclose",
+    "dissolve",
+    "pixelize",
+    "diagtl",
+    "diagtr",
+    "diagbl",
+    "diagbr",
+    "hlslice",
+    "hrslice",
+    "vuslice",
+    "vdslice",
+    "hblur",
+    "fadegrays",
+    "wipetl",
+    "wipetr",
+    "wipebl",
+    "wipebr",
+    "squeezeh",
+    "squeezev",
+    "zoomin",
+    "fadefast",
+    "fadeslow",
+    "hlwind",
+    "hrwind",
+    "vuwind",
+    "vdwind",
+    "coverleft",
+    "coverright",
+    "coverup",
+    "coverdown",
+    "revealleft",
+    "revealright",
+    "revealup",
+    "revealdown",
 )
 
 #: What each one LOOKS like, for a model choosing among them and for a person
@@ -149,14 +196,11 @@ def resolve(text: str, intelligence=None) -> tuple[str, str | None, str | None]:
     if not looks_like_a_description(text):
         near = suggest(cleaned)
         if near:
-            raise VidError(
-                f"There is no transition called {text!r}. Did you mean {near!r}? "
-                f"({FEEL.get(near, '')})"
-            )
+            raise VidError(f"There is no transition called {text!r}. Did you mean {near!r}? ({FEEL.get(near, '')})")
         raise VidError(
             f"There is no transition called {text!r}, and it is one word, so it reads as a name "
             f"rather than a description. Run `vid transitions` for the full list, or describe "
-            f"what you want in a phrase -- `--transition \"soft and dreamy\"` -- and a model will pick."
+            f'what you want in a phrase -- `--transition "soft and dreamy"` -- and a model will pick.'
         )
 
     if intelligence is None:
@@ -178,21 +222,25 @@ def _select(description: str, intelligence, *, allow_none: bool = False):
     """
     from vid.intelligence import ask
 
-    reply = ask(intelligence, (
-        "Choose the ONE transition whose motion best matches the description.\n\n"
-        f"DESCRIPTION: {description}\n\n"
-        f"THE ONLY VALID ANSWERS:\n{catalogue()}\n\n"
-        "Reply with the preset name on the first line and one short sentence of "
-        "reasoning on the second. Nothing else. The name must be copied exactly "
-        "from the list above."
-        + (
-            "\n\nIf NONE of these genuinely matches the described motion, reply "
-            "with the single word NONE on the first line instead. Do not stretch "
-            "a preset to fit -- answering NONE is how a new transition gets "
-            "written, and a forced match is worse than an honest miss."
-            if allow_none else ""
-        )
-    ))
+    reply = ask(
+        intelligence,
+        (
+            "Choose the ONE transition whose motion best matches the description.\n\n"
+            f"DESCRIPTION: {description}\n\n"
+            f"THE ONLY VALID ANSWERS:\n{catalogue()}\n\n"
+            "Reply with the preset name on the first line and one short sentence of "
+            "reasoning on the second. Nothing else. The name must be copied exactly "
+            "from the list above."
+            + (
+                "\n\nIf NONE of these genuinely matches the described motion, reply "
+                "with the single word NONE on the first line instead. Do not stretch "
+                "a preset to fit -- answering NONE is how a new transition gets "
+                "written, and a forced match is worse than an honest miss."
+                if allow_none
+                else ""
+            )
+        ),
+    )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
     choice = lines[0].strip().strip("`\"'").lower()
@@ -263,14 +311,18 @@ def generate(description: str, intelligence) -> tuple[str, str]:
     """
     from vid.intelligence import ask
 
-    reply = ask(intelligence, (
-        "Write an ffmpeg xfade `custom` transition expression for this description.\n\n"
-        f"DESCRIPTION: {description}\n\n"
-        f"{EXPRESSION_GUIDE}\n"
-        "Reply with the expression alone on the first line -- no quotes, no "
-        "`expr=`, no explanation on that line -- and one short sentence of "
-        "reasoning on the second line. Nothing else."
-    ), timeout_seconds=90)
+    reply = ask(
+        intelligence,
+        (
+            "Write an ffmpeg xfade `custom` transition expression for this description.\n\n"
+            f"DESCRIPTION: {description}\n\n"
+            f"{EXPRESSION_GUIDE}\n"
+            "Reply with the expression alone on the first line -- no quotes, no "
+            "`expr=`, no explanation on that line -- and one short sentence of "
+            "reasoning on the second line. Nothing else."
+        ),
+        timeout_seconds=90,
+    )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
     expression = lines[0].strip().strip("`\"'")
@@ -279,9 +331,7 @@ def generate(description: str, intelligence) -> tuple[str, str]:
     rationale = lines[1] if len(lines) > 1 else ""
 
     if not expression or len(expression) > 2000:
-        raise VidError(
-            f"The model did not return a usable expression for {description!r}."
-        )
+        raise VidError(f"The model did not return a usable expression for {description!r}.")
     # A refusal that reaches ffmpeg becomes an unreadable parse error; catching
     # the obvious shapes here keeps the message about what actually happened.
     if not any(token in expression for token in ("A", "B", "P")):
@@ -312,25 +362,41 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
 
     Returns `(passed, detail)`. `detail` is what to tell the caller when it fails.
     """
+    from pathlib import Path
     import subprocess
     import tempfile
-    from pathlib import Path
 
     from vid import verify as checks
 
     with tempfile.TemporaryDirectory(prefix="vid-probe-") as work:
         out = str(Path(work) / "probe.mp4")
         command = [
-            "ffmpeg", "-y", "-v", "error",
-            "-t", str(PROBE_SECONDS), "-i", first,
-            "-t", str(PROBE_SECONDS), "-i", second,
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-t",
+            str(PROBE_SECONDS),
+            "-i",
+            first,
+            "-t",
+            str(PROBE_SECONDS),
+            "-i",
+            second,
             "-filter_complex",
             f"[0:v]scale={PROBE_WIDTH}:-2,setsar=1[a];"
             f"[1:v]scale={PROBE_WIDTH}:-2,setsar=1[b];"
             f"[a][b]xfade=transition=custom:duration={duration}"
             f":offset={max(0.0, PROBE_SECONDS - duration)}:expr='{expression}'[v]",
-            "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p", out,
+            "-map",
+            "[v]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            out,
         ]
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
@@ -366,10 +432,7 @@ def resolve_with_clips(
     if not looks_like_a_description(text):
         near = suggest(cleaned)
         if near:
-            raise VidError(
-                f"There is no transition called {text!r}. Did you mean {near!r}? "
-                f"({FEEL.get(near, '')})"
-            )
+            raise VidError(f"There is no transition called {text!r}. Did you mean {near!r}? ({FEEL.get(near, '')})")
         raise VidError(
             f"There is no transition called {text!r}, and it is one word, so it reads as a name "
             f"rather than a description. Run `vid transitions` for the full list, or describe "

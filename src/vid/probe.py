@@ -35,9 +35,9 @@ def duration(path: str) -> float:
             "Install ffmpeg (it ships ffprobe) -- see `vid check` for the command for your system."
         )
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "json", path],
-        capture_output=True, text=True,
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise VidError(f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}")

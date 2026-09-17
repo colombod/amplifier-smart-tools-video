@@ -52,14 +52,18 @@ def _doc(name: str):
 def cli(
     help: Annotated[
         bool,
-        typer.Option("--help", is_eager=True, callback=_print_skill, help="This tool's skill, for an agent driving it."),
+        typer.Option(
+            "--help", is_eager=True, callback=_print_skill, help="This tool's skill, for an agent driving it."
+        ),
     ] = False,
 ) -> None:
     """Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown."""
 
 
 @app.command()
-def manifest() -> None:
+def manifest(
+    help: _doc("manifest") = False,
+) -> None:
     """Print the tool's manifest as JSON. Deterministic."""
     typer.echo(lib.load_manifest().model_dump_json(indent=2))
 
@@ -127,7 +131,9 @@ def zoom(
 @app.command()
 def stitch(
     sources: Annotated[list[str], typer.Argument(help="Clips in order. `-` is the plan on stdin.")],
-    transition: Annotated[str | None, typer.Option("--transition", help="An xfade preset: fade, dissolve, wipeleft...")] = None,
+    transition: Annotated[
+        str | None, typer.Option("--transition", help="An xfade preset: fade, dissolve, wipeleft...")
+    ] = None,
     duration: Annotated[float, typer.Option("--duration", help="Seconds the transition takes.")] = 0.5,
     help: _doc("stitch") = False,
 ) -> None:
@@ -147,9 +153,7 @@ def stitch(
         # against the pair it will actually join. Tier 1 and tier 2 ignore them.
         first = plan.source if plan.source else (rest[0] if rest else None)
         second = rest[0] if rest else None
-        preset, requested, rationale, expression = lib.resolve_transition(
-            transition, first, second, duration
-        )
+        preset, requested, rationale, expression = lib.resolve_transition(transition, first, second, duration)
 
     write_plan(
         plan.with_operation(
@@ -189,7 +193,9 @@ def show_plan(help: _doc("plan") = False) -> None:
 @app.command()
 def render(
     output: Annotated[str, typer.Argument(help="Where to write the finished video.")],
-    print_command: Annotated[bool, typer.Option("--print-command", help="Print the ffmpeg it would run, and stop.")] = False,
+    print_command: Annotated[
+        bool, typer.Option("--print-command", help="Print the ffmpeg it would run, and stop.")
+    ] = False,
     help: _doc("render") = False,
 ) -> None:
     """Compile the plan and encode, once."""
@@ -219,16 +225,91 @@ def find(
     lib.find(query, video, show=show)
 
 
+audio_app = typer.Typer(
+    help="Remove, replace, mix or extract the audio track.",
+    no_args_is_help=True,
+)
+app.add_typer(audio_app, name="audio")
+
+
+@audio_app.callback()
+def _audio_group(help: _doc("audio") = False) -> None:
+    """Remove, replace, mix or extract the audio track.
+
+    A group callback, because `audio` is a sub-app rather than a verb. Without
+    this, `vid audio --help` fell through to Typer's usage box while every other
+    verb answered with its document -- the one inconsistency in the surface, and
+    exactly the kind an agent trips on: it asks every verb the same question and
+    gets a different KIND of answer from one of them.
+    """
+
+
+@audio_app.command("remove")
+def audio_remove(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    help: _doc("audio") = False,
+) -> None:
+    """Drop the audio. The result is a silent video."""
+    from vid.plan import AudioRemove
+
+    write_plan(read_plan(video).with_operation(AudioRemove()))
+
+
+@audio_app.command("replace")
+def audio_replace(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    with_: Annotated[str, typer.Option("--with", help="The audio file to use instead.")] = ...,
+    help: _doc("audio") = False,
+) -> None:
+    """Swap the audio track for another file's. Result is always the video's length."""
+    from vid.plan import AudioReplace
+
+    write_plan(read_plan(video).with_operation(AudioReplace(track=with_)))
+
+
+@audio_app.command("mix")
+def audio_mix(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    with_: Annotated[str, typer.Option("--with", help="The track to lay underneath.")] = ...,
+    level: Annotated[
+        float, typer.Option("--level", help="dB applied to the incoming track. Negative puts it under.")
+    ] = -18.0,
+    help: _doc("audio") = False,
+) -> None:
+    """Lay another track under the existing audio, keeping both."""
+    from vid.plan import AudioMix
+
+    write_plan(read_plan(video).with_operation(AudioMix(track=with_, level=level)))
+
+
+@audio_app.command("extract")
+def audio_extract(
+    video: Annotated[str, typer.Argument(help="The video to take audio from.")],
+    output: Annotated[str, typer.Argument(help="Where to write it, e.g. out.wav.")],
+    help: _doc("audio") = False,
+) -> None:
+    """Pull the audio out to a file. Ends a chain rather than continuing one."""
+    typer.echo(lib.audio_extract(video, output))
+
+
 @app.command()
 def verify(
     video: Annotated[str, typer.Argument(help="The rendered file to check.")],
-    expect_duration: Annotated[float | None, typer.Option("--expect-duration", help="Seconds the result should be.")] = None,
+    expect_duration: Annotated[
+        float | None, typer.Option("--expect-duration", help="Seconds the result should be.")
+    ] = None,
     tolerance: Annotated[float, typer.Option("--tolerance", help="How far off the duration may be.")] = 0.15,
     expect_resolution: Annotated[str | None, typer.Option("--expect-resolution", help="e.g. 1920x1080.")] = None,
     expect_audio: Annotated[bool, typer.Option("--expect-audio", help="Audio present, and not silent.")] = False,
-    expect_transition_at: Annotated[float | None, typer.Option("--expect-transition-at", help="A real blend at this second.")] = None,
-    expect_no_black_frames: Annotated[bool, typer.Option("--expect-no-black-frames", help="No long black stretches.")] = False,
-    longest_black: Annotated[float, typer.Option("--longest-black", help="Seconds of black that is still acceptable.")] = 0.5,
+    expect_transition_at: Annotated[
+        float | None, typer.Option("--expect-transition-at", help="A real blend at this second.")
+    ] = None,
+    expect_no_black_frames: Annotated[
+        bool, typer.Option("--expect-no-black-frames", help="No long black stretches.")
+    ] = False,
+    longest_black: Annotated[
+        float, typer.Option("--longest-black", help="Seconds of black that is still acceptable.")
+    ] = 0.5,
     help: _doc("verify") = False,
 ) -> None:
     """Check a rendered video against what you expected. No model involved."""
@@ -250,6 +331,7 @@ def verify(
 @app.command()
 def transitions(
     describe: Annotated[bool, typer.Option("--describe", help="Show what each one looks like.")] = False,
+    help: _doc("transitions") = False,
 ) -> None:
     """Every transition this tool can use, and what each looks like."""
     from vid.transitions import FEEL, PRESETS

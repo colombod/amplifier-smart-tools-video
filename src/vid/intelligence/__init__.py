@@ -1,5 +1,3 @@
-
-
 def ask(intelligence, prompt: str, *, timeout_seconds: int = 60) -> str:
     """Run one prompt and return the agent's text, or raise with the reason.
 

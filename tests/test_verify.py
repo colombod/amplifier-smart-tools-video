@@ -8,15 +8,14 @@ check, or the assertion is theatre.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from tests.fixtures import ensure_clips, have_ffmpeg
 from vid import verify as checks
 from vid.plan import Plan, Stitch
-from vid.probe import duration as probe_duration
 
 pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these read real frames")
 
@@ -39,9 +38,7 @@ def clips():
 def hard_cut(clips, tmp_path_factory):
     """alpha then bravo, joined with nothing in between."""
     out = tmp_path_factory.mktemp("v") / "hard.mp4"
-    plan = Plan(source=str(clips["alpha"].path)).with_operation(
-        Stitch(sources=[str(clips["bravo"].path)])
-    )
+    plan = Plan(source=str(clips["alpha"].path)).with_operation(Stitch(sources=[str(clips["bravo"].path)]))
     return _render(plan, out, {})
 
 
@@ -50,9 +47,7 @@ def dissolve(clips, tmp_path_factory):
     """The same two clips, genuinely blended over 0.8s."""
     out = tmp_path_factory.mktemp("v") / "xfade.mp4"
     a, b = str(clips["alpha"].path), str(clips["bravo"].path)
-    plan = Plan(source=a).with_operation(
-        Stitch(sources=[b], transition="dissolve", transition_duration=0.8)
-    )
+    plan = Plan(source=a).with_operation(Stitch(sources=[b], transition="dissolve", transition_duration=0.8))
     return _render(plan, out, {a: 3.0, b: 3.0})
 
 
@@ -69,8 +64,7 @@ def test_the_blend_check_tells_a_dissolve_from_a_hard_cut(hard_cut, dissolve):
 
     cut = checks.check_transition_at(str(hard_cut), 3.0)
     assert not cut.held, (
-        f"a HARD CUT passed the blend check: {cut.line()}\n"
-        "The check is not measuring what it claims to measure."
+        f"a HARD CUT passed the blend check: {cut.line()}\nThe check is not measuring what it claims to measure."
     )
     assert "hard cut" in cut.note
 
@@ -100,8 +94,7 @@ def test_duration_reports_the_measurement_beside_the_expectation(dissolve):
     bad = checks.check_duration(str(dissolve), 9.0)
     assert not bad.held
     assert "9.00" in bad.expected and "5.2" in bad.measured, (
-        "a violation must show what was measured next to what was wanted, "
-        "or the caller cannot tell how wrong it is"
+        "a violation must show what was measured next to what was wanted, or the caller cannot tell how wrong it is"
     )
 
 
@@ -115,10 +108,30 @@ def test_a_silent_track_fails_even_though_a_track_exists(clips, tmp_path):
     """Present is not the same as audible, and only one of those is useful."""
     out = tmp_path / "silent.mp4"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(clips["alpha"].path),
-         "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-         "-map", "0:v", "-map", "1:a", "-shortest", "-c:v", "copy", "-c:a", "aac", str(out)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(clips["alpha"].path),
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-shortest",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
     )
     result = checks.check_audio(str(out))
     assert not result.held, "a track of digital silence passed as audio"

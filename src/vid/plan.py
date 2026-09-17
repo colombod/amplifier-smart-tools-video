@@ -111,8 +111,42 @@ class Caption(BaseModel):
     style: str | None = None
 
 
+class AudioRemove(BaseModel):
+    """Drop the audio track. The result is a silent video."""
+
+    op: Literal["audio_remove"] = "audio_remove"
+
+
+class AudioReplace(BaseModel):
+    """Swap the audio track for another file's.
+
+    LENGTH IS ALWAYS THE VIDEO'S. A shorter track is padded with silence, a
+    longer one is truncated. Stated here because it is the question every caller
+    asks, and inheriting ffmpeg's default would leave the answer to accident.
+    """
+
+    op: Literal["audio_replace"] = "audio_replace"
+    track: str
+
+
+class AudioMix(BaseModel):
+    """Lay another track UNDER the existing audio, keeping both.
+
+    `level` is applied to the incoming track only, in dB, and is negative in
+    normal use -- a music bed sits below speech. The existing audio is untouched,
+    so a caller adjusts one thing rather than balancing two.
+
+    No ducking. A flat level is predictable and explicable; automatic ducking is
+    a real feature with its own decisions and should be asked for on purpose.
+    """
+
+    op: Literal["audio_mix"] = "audio_mix"
+    track: str
+    level: float = -18.0
+
+
 Operation = Annotated[
-    Trim | Cut | Retime | Zoom | Stitch | Caption,
+    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix,
     Field(discriminator="op"),
 ]
 

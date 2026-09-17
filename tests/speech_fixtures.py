@@ -18,11 +18,11 @@ does not claim to measure real-world transcription quality.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
+from pathlib import Path
 import shutil
 import subprocess
-from dataclasses import dataclass
-from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 SPEECH_VIDEO = FIXTURE_DIR / "talk.mp4"
@@ -76,15 +76,26 @@ def _speak(text: str, wav: Path) -> None:
         # -s 150 is close to an unhurried speaking pace; the default gabbles and
         # transcribes worse, which would test the TTS rather than the tool.
         [binary, "-s", "150", "-w", str(wav), text],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
 
 def _duration(path: Path) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        check=True, capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return float(out.stdout.strip())
 
@@ -117,27 +128,47 @@ def ensure_talk() -> tuple[Path, list[Segment]]:
     listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
     joined = work / "all.wav"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-         "-i", str(listing), "-c", "copy", str(joined)],
-        check=True, capture_output=True, cwd=work,
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(joined)],
+        check=True,
+        capture_output=True,
+        cwd=work,
     )
 
     # A plain colour track: the picture is irrelevant here, and a cheap one keeps
     # the fixture fast to build.
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error",
-         "-f", "lavfi", "-i", f"color=c=gray:s=640x360:r=15:d={cursor}",
-         "-i", str(joined),
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-shortest", str(SPEECH_VIDEO)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=gray:s=640x360:r=15:d={cursor}",
+            "-i",
+            str(joined),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(SPEECH_VIDEO),
+        ],
+        check=True,
+        capture_output=True,
     )
 
-    GROUND_TRUTH.write_text(json.dumps(
-        {"total_seconds": cursor,
-         "segments": [segment.__dict__ for segment in segments]},
-        indent=2,
-    ))
+    GROUND_TRUTH.write_text(
+        json.dumps(
+            {"total_seconds": cursor, "segments": [segment.__dict__ for segment in segments]},
+            indent=2,
+        )
+    )
     shutil.rmtree(work, ignore_errors=True)
     return SPEECH_VIDEO, segments
 
@@ -188,7 +219,6 @@ MEETING: list[tuple[str, str | None, str]] = [
     ("b", "rollout", "And the rollback? If the deploy goes wrong on Thursday, what happens?"),
     ("a", "rollout", "We keep the previous release running, so a rollback is just a switch."),
     ("b", None, "Mhm. OK."),
-
     # The paraphrase trap. This is the money topic and it never says money,
     # cost, budget, spend or price. A literal search for any of those fails.
     ("a", "money", "The other thing is, well, the other thing is what we are paying every month."),
@@ -198,7 +228,6 @@ MEETING: list[tuple[str, str | None, str]] = [
     ("a", "money", "It is. If it keeps climbing we cannot keep the current plan for the team."),
     ("b", "money", "So we either move provider or we make the workers less hungry."),
     ("b", None, "Yeah. Yeah."),
-
     # Drift trap: "deploy" appears here, far from the rollout discussion, so a
     # naive literal search finds two runs and has to rank them.
     ("a", "hiring", "Last thing. We should hire another engineer before the next deploy cycle."),
@@ -223,7 +252,8 @@ def _speak_as(voice: str, text: str, wav: Path) -> None:
     binary = shutil.which("espeak-ng") or shutil.which("espeak")
     subprocess.run(
         [binary, "-v", voice, "-s", "150", "-w", str(wav), text],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
 
@@ -247,8 +277,7 @@ def ensure_meeting() -> tuple[Path, list[Turn]]:
         wav = work / f"{index}.wav"
         _speak_as(_VOICES[speaker], line, wav)
         length = _duration(wav)
-        turns.append(Turn(speaker=speaker, topic=topic, text=line,
-                          start=cursor, end=cursor + length))
+        turns.append(Turn(speaker=speaker, topic=topic, text=line, start=cursor, end=cursor + length))
         cursor += length
         parts.append(wav)
 
@@ -256,21 +285,41 @@ def ensure_meeting() -> tuple[Path, list[Turn]]:
     listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
     joined = work / "all.wav"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-         "-i", str(listing), "-c", "copy", str(joined)],
-        check=True, capture_output=True, cwd=work,
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(joined)],
+        check=True,
+        capture_output=True,
+        cwd=work,
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error",
-         "-f", "lavfi", "-i", f"color=c=slategray:s=640x360:r=15:d={cursor}",
-         "-i", str(joined),
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-shortest", str(MEETING_VIDEO)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=slategray:s=640x360:r=15:d={cursor}",
+            "-i",
+            str(joined),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(MEETING_VIDEO),
+        ],
+        check=True,
+        capture_output=True,
     )
 
-    MEETING_TRUTH.write_text(json.dumps(
-        {"total_seconds": cursor, "turns": [turn.__dict__ for turn in turns]}, indent=2))
+    MEETING_TRUTH.write_text(
+        json.dumps({"total_seconds": cursor, "turns": [turn.__dict__ for turn in turns]}, indent=2)
+    )
     shutil.rmtree(work, ignore_errors=True)
     return MEETING_VIDEO, turns
 

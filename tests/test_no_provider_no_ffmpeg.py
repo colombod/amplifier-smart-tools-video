@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -29,8 +29,14 @@ VID = REPO / ".venv" / "bin" / "vid"
 
 #: Anything that could hand a model to the tool behind our back.
 PROVIDER_VARS = (
-    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
-    "AZURE_OPENAI_API_KEY", "PERPLEXITY_API_KEY", "GH_TOKEN", "GITHUB_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
     "COPILOT_API_KEY",
 )
 
@@ -49,8 +55,12 @@ def _bare_env() -> dict[str, str]:
 
 def _run(args: list[str], stdin: str = EMPTY_PLAN) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(VID), *args], input=stdin, capture_output=True, text=True,
-        env=_bare_env(), cwd=REPO,
+        [str(VID), *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=_bare_env(),
+        cwd=REPO,
     )
 
 
@@ -87,8 +97,7 @@ def test_the_scrubbed_environment_really_has_no_ffmpeg():
 def test_every_verb_but_render_runs_with_nothing_installed(args):
     result = _run(args)
     assert result.returncode == 0, (
-        f"`vid {' '.join(args)}` failed with no ffmpeg and no credentials.\n"
-        f"stderr: {result.stderr}"
+        f"`vid {' '.join(args)}` failed with no ffmpeg and no credentials.\nstderr: {result.stderr}"
     )
 
 
@@ -98,10 +107,13 @@ def test_print_command_needs_no_ffmpeg_either():
     This is what makes the compile step testable at all -- on a machine with no
     ffmpeg, in CI, with no media on disk.
     """
-    plan = json.dumps({
-        "plan_format": 1, "source": "talk.mp4",
-        "operations": [{"op": "trim", "start": 10.0, "end": 20.0}],
-    })
+    plan = json.dumps(
+        {
+            "plan_format": 1,
+            "source": "talk.mp4",
+            "operations": [{"op": "trim", "start": 10.0, "end": 20.0}],
+        }
+    )
     result = _run(["render", "out.mp4", "--print-command"], stdin=plan)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().startswith("ffmpeg ")

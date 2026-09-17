@@ -15,7 +15,9 @@ OS unparsed, so there is no quoting problem to get wrong.
 
 from __future__ import annotations
 
-from vid.plan import Caption, Cut, Plan, Retime, Stitch, Trim, Zoom
+import re
+
+from vid.plan import AudioMix, AudioRemove, AudioReplace, Caption, Cut, Plan, Retime, Stitch, Trim, Zoom
 from vid.schemas import VidError
 
 #: `atempo` is documented as reliable in this range. Outside it, chain stages.
@@ -77,9 +79,7 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
     segments: list[tuple[float, float, float]] = []
     for first, second in zip(points, points[1:], strict=False):
         if second.at <= first.at:
-            raise VidError(
-                f"Ramp control points must advance in time; {first.at} and {second.at} do not."
-            )
+            raise VidError(f"Ramp control points must advance in time; {first.at} and {second.at} do not.")
         # SUBDIVIDED, and the first attempt at this was wrong in a way worth
         # recording. Taking one segment per control-point pair at the MEAN of its
         # endpoints made a ramp 1x -> 0.25x -> 1x compile to two segments of
@@ -129,30 +129,53 @@ class Compiler:
         self.filters.append(f"[{src}]{chain}[{out}]")
         return out
 
+    def _astep(self, chain: str) -> None:
+        """Apply an audio filter, unless the audio has been removed.
+
+        Every verb that touches time -- trim, cut, retime -- moves audio
+        alongside video. Once `audio remove` has run there is no audio to move,
+        and passing the absent stream through anyway produced a filter graph
+        containing the literal string "None", which ffmpeg rejects with an error
+        naming neither the verb nor the cause.
+
+        Unreachable until audio-only operations existed, and invisible to a type
+        checker at runtime because `from __future__ import annotations` makes the
+        annotation lazy. Caught by asking what `audio remove` followed by `trim`
+        actually compiles to.
+        """
+        if self.audio is not None:
+            self.audio = self._step(chain, self.audio, "a")
+
     # -- operations ---------------------------------------------------------
 
     def trim(self, op: Trim) -> None:
         end = f":end={op.end}" if op.end is not None else ""
         self.video = self._step(f"trim=start={op.start}{end},setpts=PTS-STARTPTS", self.video, "v")
         aend = f":end={op.end}" if op.end is not None else ""
-        self.audio = self._step(f"atrim=start={op.start}{aend},asetpts=PTS-STARTPTS", self.audio, "a")
+        self._astep(f"atrim=start={op.start}{aend},asetpts=PTS-STARTPTS")
 
     def cut(self, op: Cut) -> None:
         """Remove a range by keeping what is either side of it and rejoining."""
         head_v = self._step(f"trim=start=0:end={op.start},setpts=PTS-STARTPTS", self.video, "v")
         tail_v = self._step(f"trim=start={op.end},setpts=PTS-STARTPTS", self.video, "v")
+        if self.audio is None:
+            # A silent video still cuts. concat's a=0 form takes video only --
+            # feeding it an absent stream put the literal string "None" in the
+            # graph and ffmpeg rejected the whole command.
+            out_v = self._next("v")
+            self.filters.append(f"[{head_v}][{tail_v}]concat=n=2:v=1:a=0[{out_v}]")
+            self.video = out_v
+            return
         head_a = self._step(f"atrim=start=0:end={op.start},asetpts=PTS-STARTPTS", self.audio, "a")
         tail_a = self._step(f"atrim=start={op.end},asetpts=PTS-STARTPTS", self.audio, "a")
         out_v, out_a = self._next("v"), self._next("a")
-        self.filters.append(
-            f"[{head_v}][{head_a}][{tail_v}][{tail_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
-        )
+        self.filters.append(f"[{head_v}][{head_a}][{tail_v}][{tail_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]")
         self.video, self.audio = out_v, out_a
 
     def retime(self, op: Retime) -> None:
         if op.speed is not None:
             self.video = self._step(f"setpts={1 / op.speed:.6f}*PTS", self.video, "v")
-            self.audio = self._step(",".join(atempo_chain(op.speed)), self.audio, "a")
+            self._astep(",".join(atempo_chain(op.speed)))
             return
 
         segments = ramp_segments(op.ramp)
@@ -160,14 +183,23 @@ class Compiler:
         for start, end, speed in segments:
             seg_v = self._step(
                 f"trim=start={start}:end={end},setpts=PTS-STARTPTS,setpts={1 / speed:.6f}*PTS",
-                self.video, "v",
+                self.video,
+                "v",
             )
+            if self.audio is None:
+                parts.append(f"[{seg_v}]")
+                continue
             seg_a = self._step(
-                f"atrim=start={start}:end={end},asetpts=PTS-STARTPTS,"
-                + ",".join(atempo_chain(speed)),
-                self.audio, "a",
+                f"atrim=start={start}:end={end},asetpts=PTS-STARTPTS," + ",".join(atempo_chain(speed)),
+                self.audio,
+                "a",
             )
             parts += [f"[{seg_v}]", f"[{seg_a}]"]
+        if self.audio is None:
+            out_v = self._next("v")
+            self.filters.append(f"{''.join(parts)}concat=n={len(segments)}:v=1:a=0[{out_v}]")
+            self.video = out_v
+            return
         out_v, out_a = self._next("v"), self._next("a")
         self.filters.append(f"{''.join(parts)}concat=n={len(segments)}:v=1:a=1[{out_v}][{out_a}]")
         self.video, self.audio = out_v, out_a
@@ -180,7 +212,8 @@ class Compiler:
             f"zoompan=z='min(zoom+{step:.6f},{op.to})':d={frames}"
             f":x='{op.x}':y='{op.y}':fps=30,"
             f"scale=iw/{ZOOM_UPSCALE}:-2",
-            self.video, "v",
+            self.video,
+            "v",
         )
 
     def stitch(self, op: Stitch) -> None:
@@ -197,8 +230,7 @@ class Compiler:
                 self.elapsed += self.durations.get(source, 0.0)
                 out_v, out_a = self._next("v"), self._next("a")
                 self.filters.append(
-                    f"[{self.video}][{self.audio}][{other_v}][{other_a}]"
-                    f"concat=n=2:v=1:a=1[{out_v}][{out_a}]"
+                    f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
                 )
                 self.video, self.audio = out_v, out_a
 
@@ -241,9 +273,7 @@ class Compiler:
             f"xfade=transition={op.transition}:duration={op.transition_duration}:offset={offset}"
             f"{expr}[{out_v}]"
         )
-        self.filters.append(
-            f"[{self.audio}][{other_a}]acrossfade=d={op.transition_duration}[{out_a}]"
-        )
+        self.filters.append(f"[{self.audio}][{other_a}]acrossfade=d={op.transition_duration}[{out_a}]")
         self.video, self.audio = out_v, out_a
 
     def caption(self, op: Caption) -> None:
@@ -252,6 +282,73 @@ class Compiler:
         path = op.subtitles.replace("\\", "/").replace(":", r"\:")
         style = f":force_style='{op.style}'" if op.style else ""
         self.video = self._step(f"subtitles='{path}'{style}", self.video, "v")
+
+    # ---- audio ----------------------------------------------------------
+    #
+    # These are the only operations that touch audio ALONE. Everything else --
+    # trim, cut, retime, stitch -- carries audio alongside video automatically,
+    # which was measured rather than assumed: a stitched crossfade really does
+    # run acrossfade under the picture, and a cut really does keep the two
+    # streams locked.
+
+    def audio_remove(self, op: AudioRemove) -> None:
+        """Mark the audio gone. A silent video is a normal thing to want.
+
+        `None` rather than an empty stream, so the renderer omits the mapping
+        entirely -- an empty audio stream and no audio stream are different
+        files, and the second is what "remove" means.
+        """
+        self.audio = None
+
+    def _extra_audio(self, track: str) -> str:
+        """Add an audio file as an input and return its stream label."""
+        self.inputs.append(track)
+        return f"{len(self.inputs) - 1}:a"
+
+    def audio_replace(self, op: AudioReplace) -> None:
+        incoming = self._extra_audio(op.track)
+        # apad then atrim: pad with silence if the track is short, cut it if
+        # long. The result always matches the video, which is the answer every
+        # caller wants and the one ffmpeg would otherwise decide by accident.
+        total = self.elapsed or None
+        chain = "apad" + (f",atrim=end={total},asetpts=PTS-STARTPTS" if total else "")
+        self.audio = self._step(chain, incoming, "a")
+
+    def audio_mix(self, op: AudioMix) -> None:
+        if self.audio is None:
+            raise VidError(
+                "There is no audio left to mix into -- `audio remove` earlier in this "
+                "chain took it away. Use `audio replace` to put a track on a silent video."
+            )
+        incoming = self._extra_audio(op.track)
+        total = self.elapsed or None
+        bed = self._step(
+            f"volume={op.level}dB,apad" + (f",atrim=end={total},asetpts=PTS-STARTPTS" if total else ""),
+            incoming,
+            "a",
+        )
+        out = self._next("a")
+        # duration=first keeps the result the length of the ORIGINAL audio, so a
+        # long music file cannot quietly extend the video.
+        # normalize=0 keeps the existing audio at its own level rather than
+        # halving it to make room, which is what a caller means by "under".
+        self.filters.append(f"[{self.audio}][{bed}]amix=inputs=2:duration=first:normalize=0[{out}]")
+        self.audio = out
+
+
+def _as_map_target(label: str) -> str:
+    """Format a stream for `-map`, bracketing ONLY filter-graph pads.
+
+    A filter output is `[v1]`. A raw input stream is `0:v` -- and bracketing that
+    makes ffmpeg reject the whole command with "Invalid argument", which reads
+    like a bad file rather than a bad flag.
+
+    This could not happen until audio-only operations existed. Every verb before
+    them put at least one filter on the video, so the video label was always a
+    pad. `vid audio remove` leaves the picture untouched, so its label is still
+    the raw input -- and the bug appeared the first time that was rendered.
+    """
+    return label if re.fullmatch(r"\d+:[vad]", label) else f"[{label}]"
 
 
 def compile_plan(
@@ -270,6 +367,9 @@ def compile_plan(
         "zoom": compiler.zoom,
         "stitch": compiler.stitch,
         "caption": compiler.caption,
+        "audio_remove": compiler.audio_remove,
+        "audio_replace": compiler.audio_replace,
+        "audio_mix": compiler.audio_mix,
     }
     for operation in plan.operations:
         handler = dispatch.get(operation.op)
@@ -284,7 +384,15 @@ def compile_plan(
         command += ["-i", source]
     if compiler.filters:
         command += ["-filter_complex", ";".join(compiler.filters)]
-        command += ["-map", f"[{compiler.video}]", "-map", f"[{compiler.audio}]"]
-    command += ["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+        command += ["-map", _as_map_target(compiler.video)]
+        if compiler.audio is not None:
+            command += ["-map", _as_map_target(compiler.audio)]
+    command += ["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    if compiler.audio is not None:
+        command += ["-c:a", "aac"]
+    else:
+        # Explicit, not implied. `-an` states the intent in the command a
+        # caller can read with --print-command.
+        command.append("-an")
     command.append(output)
     return command

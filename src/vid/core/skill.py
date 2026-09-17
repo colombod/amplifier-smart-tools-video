@@ -16,17 +16,25 @@ CAPABILITIES = (
     Capability("retime", "Change speed, constantly or along a curve.", model_backed=False),
     Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
     Capability("stitch", "Join clips, with or without a transition.", model_backed=False),
-    Capability("index", "Build a time-coded account of a video: shots, and speech as timed passages.", model_backed=False),
+    Capability(
+        "index", "Build a time-coded account of a video: shots, and speech as timed passages.", model_backed=False
+    ),
     # NOT model_backed: the literal tier answers any query using words the
     # speaker actually said, with no provider at all, and a DTU run showed that
     # is the common case -- it served a real query on a credential-free box.
     # Marking it model-backed under-sold what works uncredentialed, which is
     # the one thing the spec most wants a consumer to be able to trust.
-    Capability("find", "Locate a moment by what was said. Literal search needs no provider; describing it by meaning escalates to one.", model_backed=False),
+    Capability(
+        "find",
+        "Locate a moment by what was said. Literal search needs no provider; describing it by meaning escalates to one.",
+        model_backed=False,
+    ),
+    Capability("audio", "Remove, replace, mix or extract the audio track. Never needs a provider.", model_backed=False),
     Capability("caption", "Burn subtitles into the picture.", model_backed=False),
     Capability("plan", "Show the edit as JSON, without performing it.", model_backed=False),
     Capability("render", "Compile the plan and encode, once. The ONLY verb that touches pixels.", model_backed=False),
     Capability("verify", "Check a rendered video against named properties. No model involved.", model_backed=False),
+    Capability("transitions", "List the 58 transition presets, with what each looks like.", model_backed=False),
     Capability("check", "What this installation can actually do, and what would unlock the rest.", model_backed=False),
     Capability("manifest", "Print the tool's manifest as JSON.", model_backed=False),
 )

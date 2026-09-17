@@ -18,8 +18,8 @@ Two tiers, matching the rest of the tool:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+import re
 
 from vid.index import Chunk
 from vid.schemas import VidError
@@ -27,10 +27,45 @@ from vid.schemas import VidError
 #: Words too common to carry meaning in a search. Kept small on purpose -- an
 #: aggressive stop list silently drops the one word that mattered.
 _NOISE = {
-    "the", "a", "an", "is", "are", "was", "were", "and", "or", "of", "to", "in",
-    "on", "at", "it", "that", "this", "where", "when", "does", "do", "did", "she",
-    "he", "they", "about", "talk", "talks", "discussed", "discuss", "explains",
-    "explain", "mention", "mentions", "for", "with", "part", "section", "bit",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "it",
+    "that",
+    "this",
+    "where",
+    "when",
+    "does",
+    "do",
+    "did",
+    "she",
+    "he",
+    "they",
+    "about",
+    "talk",
+    "talks",
+    "discussed",
+    "discuss",
+    "explains",
+    "explain",
+    "mention",
+    "mentions",
+    "for",
+    "with",
+    "part",
+    "section",
+    "bit",
 }
 
 
@@ -94,8 +129,9 @@ def find_literal(chunks: list[Chunk], query: str) -> list[Hit]:
     return hits
 
 
-def _runs(scored: list[tuple[int, Chunk]], all_chunks: list[Chunk], *, how: str,
-          rationale: str | None = None) -> list[Hit]:
+def _runs(
+    scored: list[tuple[int, Chunk]], all_chunks: list[Chunk], *, how: str, rationale: str | None = None
+) -> list[Hit]:
     """Group matches into CONTIGUOUS runs, best first.
 
     Merging every match into one span was wrong, and testing against authored
@@ -120,10 +156,7 @@ def _runs(scored: list[tuple[int, Chunk]], all_chunks: list[Chunk], *, how: str,
         else:
             groups.append([chunk])
 
-    hits = [
-        (sum(by_score[c.id] for c in group), _merge(group, how=how, rationale=rationale))
-        for group in groups
-    ]
+    hits = [(sum(by_score[c.id] for c in group), _merge(group, how=how, rationale=rationale)) for group in groups]
     # Total score first, then length: a run of three weak matches beats one strong
     # isolated word, which is what "this passage is ABOUT the thing" looks like.
     hits.sort(key=lambda pair: (pair[0], len(pair[1].chunk_ids)), reverse=True)
@@ -153,15 +186,18 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
     from vid.intelligence import ask
 
     listing = "\n".join(f"{c.id}: {c.text}" for c in chunks)
-    reply = ask(intelligence, (
-        "Below are numbered passages from a video's transcript. Identify which "
-        "passages match the request.\n\n"
-        f"REQUEST: {description}\n\n"
-        f"PASSAGES:\n{listing}\n\n"
-        "Reply with the matching ids separated by spaces on the first line, and "
-        "one short sentence of reasoning on the second. Nothing else. Use only "
-        "ids from the list above. If nothing matches, reply NONE."
-    ))
+    reply = ask(
+        intelligence,
+        (
+            "Below are numbered passages from a video's transcript. Identify which "
+            "passages match the request.\n\n"
+            f"REQUEST: {description}\n\n"
+            f"PASSAGES:\n{listing}\n\n"
+            "Reply with the matching ids separated by spaces on the first line, and "
+            "one short sentence of reasoning on the second. Nothing else. Use only "
+            "ids from the list above. If nothing matches, reply NONE."
+        ),
+    )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
     first = lines[0]
@@ -172,10 +208,7 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
     known = {chunk.id: chunk for chunk in chunks}
     wanted = re.findall(r"\bc\d+\b", first)
     if not wanted:
-        raise VidError(
-            f"The model answered {first!r}, which contains no passage ids. "
-            "Expected ids like `c3 c4`."
-        )
+        raise VidError(f"The model answered {first!r}, which contains no passage ids. Expected ids like `c3 c4`.")
 
     unknown = [i for i in wanted if i not in known]
     if unknown:
