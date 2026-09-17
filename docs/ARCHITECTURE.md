@@ -78,9 +78,18 @@ Three things make this shape right:
 - **Shot detection is free and deterministic.** It needs no model at all, and it reduces
   the visual problem from 18,000 frames to ~40 — one per shot. Describing 40 frames costs
   cents; describing 600 does not.
-- **Word-level timestamps are table stakes.** Segment-level timing is too coarse for a
-  frame-accurate cut. Note that OpenAI's newer `gpt-4o-transcribe` **dropped** word-level
-  granularity that `whisper-1` has — a regression worth knowing before choosing a backend.
+- **Segment-level timing is enough, and claiming otherwise was wrong.** An earlier draft
+  of this document called word-level timestamps "table stakes". Checking the backends
+  refuted it twice over. First, almost nothing produces true word-level timing: whisper.cpp
+  and faster-whisper both emit segment boundaries, and only whisperX does real per-word
+  alignment, at roughly 600 MB of extra dependencies and a slower pass. Second, and more
+  decisively, **the precision chain has a weaker link than the transcript.** A lossless cut
+  lands on a keyframe, and a GOP is commonly two seconds — so sub-second word precision is
+  discarded by the very next constraint. Segments are typically 2–10 seconds, which is the
+  right granularity for *finding a region*, which is the actual use case.
+
+  Word-level remains a real upgrade for karaoke-style captions and for
+  cut-exactly-at-the-sentence on a re-encode. It is an opt-in backend, not a floor.
 - **The index is durable and shared.** Like a research run directory, it accumulates.
   Ten questions about one video cost one transcription.
 
@@ -125,11 +134,59 @@ None of that makes it a bad library; it makes it the wrong *core* dependency for
 whose main job is not touching pixels. If it returns, it returns as an optional adapter
 over short segments, behind the same plan.
 
+## Backends, and the install cost of each
+
+**Local inference is the default.** Transcription is the one capability here that has a
+genuinely good offline story, and a caller should not have to send a video's audio to a
+third party to find out when someone said "pricing".
+
+But local inference is not free — it is paid in install complexity instead of dollars, and
+that cost lands on whoever has to set the tool up. Increasingly that is an agent, running
+unattended, which cannot answer a prompt or debug a compiler error.
+
+| tier | needs | unlocks | real cost |
+|---|---|---|---|
+| **0** | ffmpeg | every mechanical verb | one system package |
+| **1** | + `faster-whisper` | `index speech`, `find` | one `pip install`, no compiler; model auto-fetched and cached (~140 MB for `base.en`) |
+| **1′** | + whisper.cpp | same, faster on Apple Silicon | `brew install whisper-cpp` on macOS; on Linux there is **no apt package** and it is a cmake build |
+| **2** | + an API key | cloud transcription | no install at all, but money and a network round trip |
+| **3** | + whisperX | true per-word timing | ~600 MB and a slower pass |
+
+**Default: faster-whisper.** Not because it is the best transcriber — whisper.cpp with
+Metal is faster on a Mac — but because it is the only one an agent can install unattended
+and expect to succeed: a single `pip install`, no compiler, no platform branch, idempotent
+model download, works CPU-only in a container.
+
+Two traps worth recording, since both would be discovered the hard way:
+
+- whisper.cpp's binary was **renamed from `main` to `whisper-cli`**. Anything shelling out
+  to it must not assume the old name.
+- A prebuilt whisper.cpp binary can die with SIGILL on a machine lacking the build host's
+  CPU features. Building portable requires `-DGGML_NATIVE=OFF`.
+
+**Gemini is for embeddings, not for timecodes.** Its embedding models are cheap and good,
+and semantic search over transcript chunks is exactly the job. Asking it — or any model —
+to *return a timestamp* runs straight into the failure this design exists to prevent.
+
+## Setup is a first-class feature, not a README section
+
+This is the first tool here where getting to a working state is genuinely hard, and it has
+to be treated as part of the product:
+
+- **`check` reports the tier you are actually in** — which backends are present, which are
+  missing, and what each would unlock. Deterministic, free, no credentials.
+- **Every refusal names the remedy.** A verb that needs a backend you do not have fails
+  with the exact command that would fix it, not a stack trace.
+- **The skill carries the ladder.** A harness installing this tool reads one document and
+  can get from nothing to working without a human.
+
 ## Open questions
 
-- **Backend choice for speech** is a real decision with a cost/latency/offline tradeoff,
-  and it is a per-caller decision rather than one we should make for everyone.
-- **Which provider capabilities to declare.** This tool needs up to three distinct ones —
-  speech-to-text, vision, and text reasoning — where our research tools needed one. The
-  spec's manifest has no vocabulary for that yet, and this is the clearest evidence we
-  have that it should.
+- **The manifest has no vocabulary for tiers or alternatives.** `requires[]` is a flat
+  list, and this tool has four alternative paths to one capability, each with a different
+  install cost, plus capabilities that are genuinely optional. Our research tools needed
+  one backend and did not expose this. This is the clearest evidence we have that the
+  spec's `requires[]` needs to express *alternatives* and *what each unlocks*.
+- **Three distinct provider capabilities** — speech-to-text, vision, text reasoning —
+  where our research tools needed one. "Which AI providers does this tool use?" has a
+  compound answer here, and the manifest cannot currently give it.
