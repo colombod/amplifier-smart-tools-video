@@ -42,6 +42,44 @@ uv add "vid @ git+https://github.com/colombod/amplifier-smart-tools-video"
 Already installed? `uv tool upgrade vid`. `vid --version` against the repository's
 latest tag says whether that is worth doing.
 
+## What needs setting up, and what it unlocks
+
+Most verbs need **nothing but ffmpeg**. A few need more, and each one says so
+rather than failing obscurely — but knowing up front saves a wasted attempt.
+
+| capability | needs | install |
+|---|---|---|
+| trim, cut, retime, zoom, stitch, audio, grade, vignette, lut, recolor, render, verify | **ffmpeg only** | see below |
+| `caption` | ffmpeg built **with libass** | most builds have it; see the note |
+| `index` / `find` by what was **said** | `vid[speech]` — local, ~390 MB | `uv tool install --force 'vid[speech] @ git+…'` |
+| `index --vision`, `find` by meaning, transition descriptions | **a provider** | `gh auth login` on an account with Copilot |
+| `narrate` | **BOTH** `vid[voice]` (~46 MB + a 60 MB voice, local) **and a provider** | `uv tool install --force 'vid[all] @ git+…'` + `gh auth login` |
+
+**`narrate` is the one that catches people.** It needs two independent things —
+a local speech engine to *say* the words, and a model to *write* them — and
+missing either stops it. Install `vid[all]` and sign `gh` in before reaching for
+it.
+
+**Run `vid check` first.** It reports which of these THIS machine actually has
+and prints the exact command for each gap. Do not tell a user a capability is
+unavailable without running it — and do not substitute another tool for a
+missing tier without saying so.
+
+Nothing above is sent anywhere except the provider-backed rows. Transcription
+and speech synthesis both run **locally**.
+
+### If `caption` renders nothing
+
+On macOS, ffmpeg finds fonts through fontconfig, and a brew install that leaves
+its dependencies unconfigured burns captions with **no text in them**. Reported
+from a real machine:
+
+```bash
+brew install ffmpeg      # the full formula; some taps ship a slim one
+brew postinstall ca-certificates fontconfig gnutls glib openssl@3
+ffmpeg -filters | grep subtitles    # must print a line
+```
+
 ## Read this before running anything
 
 **`vid --help` prints the real instructions** — every verb, worked invocations,

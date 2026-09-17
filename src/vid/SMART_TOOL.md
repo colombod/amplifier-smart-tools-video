@@ -1,7 +1,7 @@
 ---
 smart_tool_format: 1
 name: vid
-version: 0.3.0
+version: 0.3.1
 description: >-
   Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
 use_cases:

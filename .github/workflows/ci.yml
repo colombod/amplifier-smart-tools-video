@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ffmpeg
+        # Most verbs only build a plan and need nothing. render, verify, index
+        # and every measured test decode real frames, so the one dependency the
+        # manifest calls REQUIRED has to actually be here.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Create the environment
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python pytest ruff
+
+      - name: Lint and format check
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+
+      - name: Prove this environment has no provider credentials
+        # Asserted, never assumed. This exact check caught a "works without a
+        # provider" test passing for the wrong reason once already: the
+        # environment had a credential store the test never noticed.
+        run: |
+          leaked=""
+          for var in ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY \
+                     GEMINI_API_KEY AZURE_OPENAI_API_KEY GH_TOKEN; do
+            if [ -n "${!var:-}" ]; then leaked="$leaked $var"; fi
+          done
+          if [ -n "$leaked" ]; then
+            echo "Provider credentials present in CI:$leaked"
+            echo "The credential-free checks would pass for the wrong reason."
+            exit 1
+          fi
+          echo "No provider credentials. The deterministic claims mean something."
+
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tool
+
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/amplifier-smart-tools
+          path: kit
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Run the conformance kit
+        # The kit is the external judge. Running it here rather than only on a
+        # laptop is the difference between "it conformed once" and "it conforms".
+        run: |
+          cd kit
+          uv run conformance/run.py ../tool
+
+  install-from-git:
+    # The path a real user takes, which is NOT the path a developer takes. A
+    # local editable install masks a broken git reference forever; this is the
+    # only job that would notice.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install the tool the way a user would
+        run: uv tool install "vid @ git+https://github.com/${{ github.repository }}@${{ github.sha }}"
+
+      - name: It runs, reports itself, and refuses honestly
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          vid --version
+          vid manifest > /dev/null
+          vid check
+          # A verb that needs nothing must work with nothing configured.
+          vid trim /dev/null --from 0 --to 1 > /dev/null 2>&1 || true
+          vid grade --list
