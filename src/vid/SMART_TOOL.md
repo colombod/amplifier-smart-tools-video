@@ -3,10 +3,17 @@ smart_tool_format: 1
 name: vid
 version: 0.3.0
 description: >-
-  Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass
+  Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
 use_cases:
-  - >-
-    Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass
+  - Trim a video down to one section, or cut a section out of the middle
+  - Join several clips together, with or without a transition between them
+  - Speed a recording up, slow it down, or ramp the speed across a stretch
+  - Burn captions into the picture from a subtitle file
+  - Find the moment someone said something, or the moment something appeared on screen
+  - Replace, remove or mix the audio, or lay a music bed under a demo
+  - Match a video's colour to a reference image, or apply a named look
+  - Write a narration from a prompt and speak it so it fits the video's own timing
+  - Check that a finished render is actually what was asked for
 platforms:
   - linux
   - macos
