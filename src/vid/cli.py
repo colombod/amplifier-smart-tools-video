@@ -140,7 +140,22 @@ def stitch(
         rest = sources[1:]
     if not rest:
         raise VidError("stitch needs at least one clip to join on. Name another file.")
-    write_plan(plan.with_operation(Stitch(sources=rest, transition=transition, transition_duration=duration)))
+
+    preset, requested, rationale = (None, None, None)
+    if transition is not None:
+        preset, requested, rationale = lib.resolve_transition(transition)
+
+    write_plan(
+        plan.with_operation(
+            Stitch(
+                sources=rest,
+                transition=preset,
+                transition_duration=duration,
+                transition_requested=requested,
+                transition_rationale=rationale,
+            )
+        )
+    )
 
 
 @app.command()
@@ -170,6 +185,23 @@ def render(
     """Compile the plan and encode, once."""
     result = lib.render(read_plan(None), output, print_command=print_command)
     typer.echo(result)
+
+
+@app.command()
+def transitions(
+    describe: Annotated[bool, typer.Option("--describe", help="Show what each one looks like.")] = False,
+) -> None:
+    """Every transition this tool can use, and what each looks like."""
+    from vid.transitions import FEEL, PRESETS
+
+    if describe:
+        width = max(len(name) for name in PRESETS)
+        for name in PRESETS:
+            typer.echo(f"  {name:<{width}}  {FEEL.get(name, '')}")
+        typer.echo("")
+        typer.echo('  Or describe what you want -- `--transition "soft and dreamy"` -- and a model picks.')
+    else:
+        typer.echo(" ".join(PRESETS))
 
 
 @app.command()

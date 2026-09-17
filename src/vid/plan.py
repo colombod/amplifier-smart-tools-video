@@ -82,6 +82,14 @@ class Stitch(BaseModel):
     # operation resolves it -- by probing durations, which is why this is on the
     # plan rather than invented at compile time.
     transition_offset: float = 0.0
+    # PROVENANCE, and it is what keeps a model out of the render path. When a
+    # caller describes a transition instead of naming one, a model resolves the
+    # description ONCE, here, and the plan stores both what was asked and what
+    # was chosen. Re-rendering never calls a model again: the same plan renders
+    # identically on a machine with no credentials, and a person can read the
+    # choice before a frame is touched.
+    transition_requested: str | None = None
+    transition_rationale: str | None = None
 
 
 class Caption(BaseModel):

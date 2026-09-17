@@ -52,6 +52,37 @@ needs matching frame rates — that a caller sometimes has to see.
 required and nowhere else. Cutting at 10.5 seconds is arithmetic. Deciding *which* ten
 seconds are worth keeping is not.
 
+## Where a model is allowed to help
+
+"Where judgment is required" is true and useless — it gives nobody a way to decide a new
+case. The line this tool actually holds is sharper:
+
+> **A model is asked to CHOOSE from things that exist. It is not asked to INVENT one.**
+
+Choosing is safe because a wrong choice is *detectable*. Asked which of fifty-eight
+transitions suits "soft and dreamy", a model returns a name we can check against the list;
+an answer that is not on it is a loud error. Asked which passage of a transcript discusses
+pricing, it returns a segment we already timed; the timestamp was never its to produce.
+
+Inventing has no such floor. A model asked for a timestamp returns a plausible number that
+is indistinguishable from a correct one until somebody watches the video. That is not a
+model being unreliable — it is us asking a question whose wrong answers look exactly like
+right ones.
+
+So the tool's commitment is not "we use AI carefully". It is that **every model-backed
+capability either draws from a closed set, or ships with a way to check its output.** A
+capability that can do neither does not get built, however useful it sounds.
+
+## An edit you can read before it happens
+
+Everything this tool does is written down before anything is rendered. A model that helps
+compose an edit leaves its reasoning in the plan alongside its choice, and a person reads
+both before a single frame moves.
+
+That is the difference between a tool that edits video for you and one you could ever
+trust with footage you cannot re-shoot. Not confidence in the model — the ability to
+disagree with it in time.
+
 ## The bet
 
 The interesting operations are not the mechanical ones. Anyone can trim at a timestamp.

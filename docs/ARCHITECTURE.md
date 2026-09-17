@@ -115,6 +115,54 @@ returned chunk id that does not exist is a loud error, not a plausible wrong ans
 
 That guard is testable, and it is the first thing that should have a test.
 
+## The three tiers, and the one invariant that keeps a model out of the render path
+
+`VISION.md` states the line: a model may CHOOSE from what exists, never INVENT. Here is
+what that looks like in code, using `--transition` as the worked example because it is the
+one place all three tiers are visible at once.
+
+| tier | the caller writes | what happens | guard |
+|---|---|---|---|
+| **1** | `--transition dissolve` | matched against the 58 presets | none needed; nothing was decided |
+| **2** | `--transition "soft and dreamy"` | a model picks one of the 58 | **closed set** — an answer off the list is a loud error |
+| **3** | `--transition "slam in and overshoot"` | a model would WRITE an xfade expression | none yet — parked until `verify` exists |
+
+**Tier 2 is safe for exactly one reason, and it is worth saying plainly: the set is
+closed.** The model returns `dissolve` or it returns something that is not a transition,
+and the second case is caught by a membership test. Tier 3 has no such test — an invented
+expression that compiles and moves wrongly is indistinguishable from a correct one until a
+human watches it. That is the whole reason tier 3 waits on property-based verification
+rather than shipping now.
+
+A near-miss is corrected, not guessed. `--transition disolve` is one word, so it reads as a
+name; the tool suggests `dissolve` rather than handing a typo to a model that would
+cheerfully interpret it as a description and charge for the privilege.
+
+### The invariant: a model runs at PLAN time, never at RENDER time
+
+When a description is resolved, the model runs **once**, while the plan is being built, and
+the plan records both what was asked and what was chosen:
+
+```json
+{ "op": "stitch",
+  "transition": "dissolve",
+  "transition_requested": "soft and dreamy",
+  "transition_rationale": "grainier and softer than a plain crossfade" }
+```
+
+Three properties follow, and they are promises rather than accidents:
+
+- **A plan renders identically on a machine with no credentials at all.** Everything a
+  model contributed is already resolved into the plan; `render` reads values, not intent.
+- **Re-rendering never re-invokes a model.** No cost drift between runs, no nondeterminism,
+  no surprise when a plan from last week renders differently today.
+- **The choice is reviewable before a frame moves.** `vid plan` shows what was asked, what
+  was chosen, and why. Disagreeing is an edit to a JSON file, not an argument with a tool.
+
+This is what makes the earlier claim about auditability real rather than rhetorical. An
+edit a model proposed is as inspectable as one a person typed, because by the time it
+reaches the renderer it *is* one.
+
 ## Finding a moment on screen: embed to filter, caption to finalise
 
 The visual half of `find` and `highlight` needs to answer "when is X on screen?". Embeddings

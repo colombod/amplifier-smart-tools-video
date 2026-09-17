@@ -107,3 +107,26 @@ def check() -> str:
 
     lines += ["", "  Nothing here is sent anywhere. This is a report on your machine."]
     return "\n".join(lines)
+
+
+def resolve_transition(text: str) -> tuple[str, str | None, str | None]:
+    """A `--transition` value, resolved to a preset ffmpeg actually has.
+
+    A name resolves with no model at all. A description needs one, and gets a
+    CLOSED SET to choose from -- so a wrong answer is detectable rather than
+    plausible. Returns `(preset, requested, rationale)`.
+    """
+    from vid.transitions import looks_like_a_description, resolve
+
+    intelligence = None
+    if looks_like_a_description(text):
+        try:
+            from vid.intelligence.interface import default_intelligence
+
+            intelligence = default_intelligence()
+            intelligence.preflight()
+        except Exception:
+            # Left as None so `resolve` can explain the situation properly --
+            # it knows whether a model was needed, and this does not.
+            intelligence = None
+    return resolve(text, intelligence)
