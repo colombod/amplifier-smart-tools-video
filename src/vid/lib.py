@@ -173,3 +173,61 @@ def verify(
 
     text, passed = checks.report(results)
     return passed, text
+
+
+def index(video: str, *, speech: bool = True, model_size: str = "base") -> str:
+    """Build (or extend) a video's index and report what it holds."""
+    from vid.index import build, index_path
+
+    record = build(video, speech=speech, model_size=model_size)
+    lines = [
+        f"indexed {video}",
+        f"  {record['duration']:.1f}s, fingerprint {record['fingerprint']}",
+        f"  shots  {len(record.get('shots', []))}",
+        f"  speech {len(record.get('speech', []))} passages"
+        if "speech" in record else "  speech not indexed",
+        f"  stored {index_path(video)}",
+    ]
+    return "\n".join(lines)
+
+
+def find(query: str, video: str, *, show: bool = False) -> None:
+    """Locate a moment, and either describe it or emit a plan trimmed to it."""
+    import sys
+
+    from vid.find import find as search
+    from vid.index import chunks_of, load
+    from vid.plan import Plan, Trim, write_plan
+    from vid.schemas import VidError
+
+    record = load(video)
+    if record is None:
+        raise VidError(
+            f"{video!r} has not been indexed yet. Run `vid index {video}` first -- "
+            "it is the expensive step, and every later question reuses it."
+        )
+
+    intelligence = None
+    try:
+        from vid.intelligence.interface import default_intelligence
+
+        intelligence = default_intelligence()
+        intelligence.preflight()
+    except Exception:
+        intelligence = None
+
+    hits = search(chunks_of(record), query, intelligence)
+    if not hits:
+        raise VidError(f"Nothing in {video!r} matches {query!r}.")
+
+    if show:
+        for hit in hits:
+            sys.stdout.write(
+                f"{hit.start:.2f}-{hit.end:.2f}s  [{hit.how}] {', '.join(hit.chunk_ids)}\n"
+                f"    {hit.text}\n"
+                + (f"    -- {hit.rationale}\n" if hit.rationale else "")
+            )
+        return
+
+    best = hits[0]
+    write_plan(Plan(source=video).with_operation(Trim(start=best.start, end=best.end)))

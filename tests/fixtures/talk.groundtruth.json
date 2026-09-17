@@ -1,0 +1,23 @@
+{
+  "total_seconds": 29.332245,
+  "segments": [
+    {
+      "topic": "architecture",
+      "text": "Welcome to the product demo. First, let us look at how the system is put together. There is a web front end, a message queue, and two background workers.",
+      "start": 0.0,
+      "end": 10.763492
+    },
+    {
+      "topic": "pricing",
+      "text": "Now let us talk about what it costs. The starter plan is ten dollars per month for a single user. The team plan is forty dollars per month and covers ten seats.",
+      "start": 10.763492,
+      "end": 21.520726
+    },
+    {
+      "topic": "support",
+      "text": "Finally, a word about support. Customers on any plan can open a ticket, and we answer within one business day.",
+      "start": 21.520726,
+      "end": 29.332245
+    }
+  ]
+}

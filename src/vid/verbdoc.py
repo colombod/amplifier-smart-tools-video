@@ -194,6 +194,69 @@ something a model produced.
 **What it costs.** $0.00, and it needs no provider and no network. It does need
 ffmpeg, because it is reading actual frames.
 """,
+    "index": """# vid index -- build a time-coded account of what is in a video
+
+```bash
+vid index talk.mp4                 # shots and speech
+vid index talk.mp4 --no-speech     # shots only: free, no backend needed
+```
+
+Produces two things and stores them where they persist:
+
+- **shots** -- boundaries from ffmpeg scene detection. Deterministic, free, no
+  provider. This is the cheapest useful work in the tool: it takes the visual
+  problem from eighteen thousand frames down to a few dozen, one per shot.
+- **speech** -- a transcript in time-coded passages, produced locally.
+
+**The index is the expensive artifact, so it is built once and reused.** Ten
+questions about one video cost one transcription. It is keyed by the video's
+CONTENT, not its path -- a renamed file is the same video, a re-export is not.
+
+**What it costs.** Shots are free. Speech needs a backend:
+
+```bash
+uv tool install --force 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+```
+
+Nothing is uploaded. Transcription runs on your machine.
+""",
+    "find": """# vid find -- locate a moment by what was said
+
+```bash
+vid find "pricing" talk.mp4                        # a plan, ready to pipe
+vid find "pricing" talk.mp4 --show                 # the hits, with their evidence
+vid find "pricing" talk.mp4 | vid render clip.mp4  # cut straight to it
+```
+
+Searches the index and returns a **time range grounded in the transcript**, with
+the passage that produced it. By default it writes a plan trimmed to that range,
+so it composes with everything else.
+
+## Two tiers, same as the rest of the tool
+
+- **literal** -- the words appear in the transcript. No model, no provider,
+  $0.00. Tried first, so a caller who knows what was said never pays for a model.
+- **described** -- a phrase a model matches to passages. Needs a provider.
+
+A literal hit must carry **at least half** your query's meaningful words. Below
+that it escalates rather than answering: matching one incidental word and
+returning a confident range is worse than admitting the words do not appear.
+
+## The guard
+
+**A model is never asked for a timestamp.** The index holds passages that already
+carry times the transcriber produced. A model is shown those passages and asked
+*which ones, by id*; the time is then a lookup.
+
+This is not a discipline, it is a shape. A model cannot return a wrong time
+because it is never in a position to return a time at all -- the worst it can do
+is name a passage that does not exist, and that is a membership test away from
+being caught. A timestamp invented by a model is indistinguishable from a correct
+one until somebody watches the video, which is exactly why it is never asked for.
+
+**Every hit carries its evidence.** A range with no text beside it is a claim you
+cannot check.
+""",
     "render": """# vid render -- compile the plan and encode, once
 
 ```bash

@@ -187,6 +187,28 @@ def render(
     typer.echo(result)
 
 
+@app.command(name="index")
+def build_index(
+    video: Annotated[str, typer.Argument(help="The video to index.")],
+    speech: Annotated[bool, typer.Option("--speech/--no-speech", help="Transcribe the audio.")] = True,
+    model_size: Annotated[str, typer.Option("--model", help="Whisper size: tiny, base, small, medium.")] = "base",
+    help: _doc("index") = False,
+) -> None:
+    """Build a time-coded account of what is in a video. Reused by every later question."""
+    typer.echo(lib.index(video, speech=speech, model_size=model_size))
+
+
+@app.command()
+def find(
+    query: Annotated[str, typer.Argument(help="What to look for, in words.")],
+    video: Annotated[str, typer.Argument(help="The video to search.")],
+    show: Annotated[bool, typer.Option("--show", help="Print the hits and their evidence instead of a plan.")] = False,
+    help: _doc("find") = False,
+) -> None:
+    """Locate a moment by what was said. Writes a plan trimmed to it."""
+    lib.find(query, video, show=show)
+
+
 @app.command()
 def verify(
     video: Annotated[str, typer.Argument(help="The rendered file to check.")],

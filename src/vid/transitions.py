@@ -171,22 +171,16 @@ def resolve(text: str, intelligence=None) -> tuple[str, str | None, str | None]:
 
 def _select(description: str, intelligence) -> tuple[str, str, str]:
     """Ask a model to pick, and refuse anything that is not on the list."""
-    from vid.intelligence.schemas import AgentRequest
+    from vid.intelligence import ask
 
-    request = AgentRequest(
-        instruction=(
-            "Choose the ONE transition whose motion best matches the description.\n\n"
-            f"DESCRIPTION: {description}\n\n"
-            f"THE ONLY VALID ANSWERS:\n{catalogue()}\n\n"
-            "Reply with the preset name on the first line and one short sentence of "
-            "reasoning on the second. Nothing else. The name must be copied exactly "
-            "from the list above."
-        )
-    )
-    result = intelligence.run(request)
-    reply = (getattr(result, "output", None) or getattr(result, "text", "") or "").strip()
-    if not reply:
-        raise VidError(f"The model returned nothing when asked to choose a transition for {description!r}.")
+    reply = ask(intelligence, (
+        "Choose the ONE transition whose motion best matches the description.\n\n"
+        f"DESCRIPTION: {description}\n\n"
+        f"THE ONLY VALID ANSWERS:\n{catalogue()}\n\n"
+        "Reply with the preset name on the first line and one short sentence of "
+        "reasoning on the second. Nothing else. The name must be copied exactly "
+        "from the list above."
+    ))
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
     choice = lines[0].strip().strip("`\"'").lower()

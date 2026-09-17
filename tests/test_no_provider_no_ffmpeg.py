@@ -122,10 +122,43 @@ def test_a_description_without_a_provider_refuses_rather_than_guessing():
 
     Silently falling back to `fade` would be the worst outcome: a caller who
     asked for something specific gets something generic and is never told.
+
+    THIS TEST WAS WRONG THE FIRST TIME, in a way worth keeping. It ran the CLI in
+    the "scrubbed" environment above and asserted a refusal -- but that
+    environment passes HOME through, and the Copilot SDK reads gh's stored
+    credentials from there. So the provider was never absent: the run SUCCEEDED,
+    picking `hblur` for "soft and dreamy" with a sensible rationale.
+
+    The failure was luckier than the pass would have been. Had the provider path
+    been broken for any other reason, this test would have gone green while
+    proving nothing about degradation -- a check occupying the slot where the
+    real question goes.
+
+    So it now removes the provider EXPLICITLY rather than hoping an environment
+    lacks one.
     """
-    result = _run(
-        ["stitch", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4",
-         "--transition", "soft and dreamy"]
+    from vid.schemas import VidError
+    from vid.transitions import resolve
+
+    with pytest.raises(VidError) as failure:
+        resolve("soft and dreamy", intelligence=None)
+
+    message = str(failure.value)
+    assert "vid transitions" in message or "presets" in message, (
+        "a refusal that does not point at the alternative is half a refusal"
     )
-    assert result.returncode != 0
-    assert "vid transitions" in result.stderr or "presets" in result.stderr
+    assert "fade" not in message.split("presets")[0], "must not suggest a silent fallback"
+
+
+def test_the_provider_scrub_is_honest_about_what_it_does_not_scrub():
+    """Guard the guard, second instance.
+
+    `_bare_env` removes provider API keys but keeps HOME, so credential stores
+    under it -- gh's in particular -- remain reachable. That is fine, and it is
+    recorded here so the next person does not read "scrubbed environment" and
+    believe more than it means.
+    """
+    env = _bare_env()
+    assert "HOME" in env, "several tools need HOME to run at all"
+    for name in PROVIDER_VARS:
+        assert name not in env

@@ -12,6 +12,23 @@ dependencies = [
     "typer>=0.27.2,<0.28.0",
 ]
 
+[project.optional-dependencies]
+# The speech backend, as an EXTRA rather than a follow-up install. This tool is
+# installed with `uv tool install`, which gives it an isolated environment -- so
+# there is no `pip install` a caller could usefully run afterwards, and telling
+# them to would be wrong. A tier a caller cannot reach in one command is a tier
+# they will not reach:
+#
+#   uv tool install 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+#
+# faster-whisper and not whisper.cpp, and not because it transcribes better --
+# whisper.cpp with Metal is faster on a Mac. Because it is the only one an agent
+# can install unattended and expect to succeed: no compiler, no platform branch,
+# no separate step, idempotent model download, works CPU-only in a container.
+speech = [
+    "faster-whisper>=1.0,<2.0",
+]
+
 [project.urls]
 Repository = "https://github.com/colombod/amplifier-smart-tools-video"
 
