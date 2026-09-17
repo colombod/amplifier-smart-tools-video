@@ -9,6 +9,72 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
+## 0.3.0
+
+Four capabilities, and four defects that only measurement found.
+
+### Added
+
+- **`narrate`** — write a narration from a prompt, speak it locally, and fit it to
+  the video's own timing. The shot boundaries become slots with durations; the
+  model writes one line per slot against its budget; every line is spoken and
+  **measured**; an overrun is rewritten, then allowed a modest speed-up, then
+  **reported by name** rather than quietly overrunning. One unfittable line is
+  named and the rest still produce a usable result. `--script-only` prints the
+  script and synthesises nothing.
+- **`index --vision`** — describe one frame per shot, so a silent screen
+  recording stops being invisible to `find`. Shot detection is what makes it
+  affordable: a few dozen frames instead of eighteen thousand. The cost is stated
+  before it is spent, and refused rather than guessed at when nobody can answer.
+  No timestamp ever comes from a model.
+- **`recolor --like <image>`** — take the palette from a reference picture and map
+  the video onto it. Reinhard transfer in Lab, baked into a lookup table applied
+  in the same single pass as everything else. **Needs no provider, no network and
+  no image library** — a `.cube` table is plain text.
+- **`vignette`, `grade`, `lut`** — how the picture *looks*. Seven named looks,
+  because `--look warm` is one decision a caller can make and
+  `--warmth 0.3 --contrast 1.1` is four they have no basis for.
+
+### Fixed
+
+- **Any video without an audio track failed at render** — `-map 0:a` on a stream
+  that does not exist, reported by ffmpeg as `Stream map '' matches no streams`.
+  Screen recordings routinely have no audio and are the commonest thing this tool
+  is pointed at, so **every verb** was broken for them, and no test caught it
+  because every fixture happened to have sound.
+- **Shot detection missed real cuts.** The threshold was `0.4`; genuine hard cuts
+  score as low as `0.076`, so a three-shot video reported one shot. Load-bearing
+  twice over — it underpins both the vision story and narration's slots.
+- **The named looks were invisible.** Colour weights that read as reasonable
+  measured a Lab b* shift of `+0.23` — the right direction and no use to anyone.
+- **Every `--help` now returns a document.** `transitions` and `manifest` had no
+  entry at all, and `audio` fell through to a usage box. That matters for an agent,
+  which asks every verb the same question and got a different *kind* of answer
+  from three of them.
+
+### Extras
+
+`[voice]` adds local speech synthesis, `[all]` installs everything. Verified in a
+clean container: `piper-tts` rides alongside `faster-whisper` with **zero version
+changes** to anything already installed.
+
+### Verified
+
+103 tests. Conformance 15/15 locally, 16/16 against the tool installed from its git
+URL in a container that had never seen the checkout.
+
+Measured rather than asserted: a vignette darkens corners **37.3%** against an
+identical-to-begin-with source; warm and cool move Lab b* **+2.49** and **-3.30**;
+colour transfer closes **98.4%** of the distance to its reference; a narration line
+lands **4.25s into a 6.00s** slot.
+
+### Known limits
+
+- `retime 2x` on a 3.0s clip produces 1.57s rather than 1.50s — a 4.7% overshoot.
+- Palette *quantisation* (the poster look) is designed but not built; `recolor`
+  does the grade.
+- `blur --region`, for obscuring a token in a demo recording, does not exist yet.
+
 ## 0.2.0
 
 Four capabilities that did not exist in 0.1.0, and one defect that only a

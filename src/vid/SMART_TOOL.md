@@ -1,7 +1,7 @@
 ---
 smart_tool_format: 1
 name: vid
-version: 0.2.0
+version: 0.3.0
 description: >-
   Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass
 use_cases:
