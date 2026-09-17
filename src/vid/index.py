@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import hashlib
+import itertools
 import json
 from pathlib import Path
 import subprocess
@@ -127,8 +128,8 @@ def detect_shots(video: str, threshold: float = SCENE_THRESHOLD) -> list[Shot]:
                     times.append(float(token.split(":")[1]))
     total = _duration(video)
     times.append(total)
-    times = sorted(set(round(t, 3) for t in times if 0 <= t <= total))
-    return [Shot(id=f"s{i}", start=a, end=b) for i, (a, b) in enumerate(zip(times, times[1:], strict=False))]
+    times = sorted({round(t, 3) for t in times if 0 <= t <= total})
+    return [Shot(id=f"s{i}", start=a, end=b) for i, (a, b) in enumerate(itertools.pairwise(times))]
 
 
 def _duration(video: str) -> float:

@@ -35,18 +35,24 @@ GROUND_TRUTH = FIXTURE_DIR / "talk.groundtruth.json"
 SCRIPT: list[tuple[str, str]] = [
     (
         "architecture",
-        "Welcome to the product demo. First, let us look at how the system is put "
-        "together. There is a web front end, a message queue, and two background workers.",
+        (
+            "Welcome to the product demo. First, let us look at how the system is put "
+            "together. There is a web front end, a message queue, and two background workers."
+        ),
     ),
     (
         "pricing",
-        "Now let us talk about what it costs. The starter plan is ten dollars per month "
-        "for a single user. The team plan is forty dollars per month and covers ten seats.",
+        (
+            "Now let us talk about what it costs. The starter plan is ten dollars per month "
+            "for a single user. The team plan is forty dollars per month and covers ten seats."
+        ),
     ),
     (
         "support",
-        "Finally, a word about support. Customers on any plan can open a ticket, and we "
-        "answer within one business day.",
+        (
+            "Finally, a word about support. Customers on any plan can open a ticket, and we "
+            "answer within one business day."
+        ),
     ),
 ]
 

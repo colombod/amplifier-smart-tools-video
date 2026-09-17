@@ -24,10 +24,10 @@ that.
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
+import tempfile
 
 from vid.schemas import VidError
 
@@ -60,9 +60,23 @@ def extract_frames(video: str, shots: list[dict], into: Path) -> list[tuple[str,
         at = _representative_moment(shot["start"], shot["end"])
         out = into / f"shot{position:03d}.png"
         result = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-ss", str(at), "-i", video,
-             "-frames:v", "1", "-vf", f"scale={FRAME_WIDTH}:-2", str(out)],
-            capture_output=True, text=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-ss",
+                str(at),
+                "-i",
+                video,
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale={FRAME_WIDTH}:-2",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0 and out.is_file():
             written.append((shot["id"], out))
@@ -82,31 +96,34 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
     to a round trip per shot.
     """
     from vid.intelligence.schemas import AgentRequest, HostWorkspace
-    from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, VidError as _VidError
+    from vid.schemas import DEFAULT_INTELLIGENCE_MODEL
+    from vid.schemas import VidError as _VidError
 
     with tempfile.TemporaryDirectory(prefix="vid-vision-") as work:
         workspace = Path(work)
         frames = extract_frames(video, shots, workspace)
         listing = "\n".join(f"{path.name} -- the shot at {shot_id}" for shot_id, path in frames)
 
-        result = intelligence.run(AgentRequest(
-            prompt=(
-                "This directory contains one still frame from each shot of a video.\n\n"
-                f"{listing}\n\n"
-                "Look at every one of these image files and describe what it SHOWS, so "
-                "that someone searching the video later could find this moment by "
-                "describing it from memory.\n\n"
-                "For each, reply with one line: the filename, a colon, then the "
-                "description. Mention what is on screen, any visible text or UI, and "
-                "what appears to be happening. Two sentences at most. Describe only "
-                "what you can actually see -- do not guess at what came before or after, "
-                "and do not invent detail that is not in the picture.\n"
-                "Nothing but those lines."
-            ),
-            model=DEFAULT_INTELLIGENCE_MODEL,
-            workspace=HostWorkspace(path=workspace),
-            timeout_seconds=90 + 15 * len(frames),
-        ))
+        result = intelligence.run(
+            AgentRequest(
+                prompt=(
+                    "This directory contains one still frame from each shot of a video.\n\n"
+                    f"{listing}\n\n"
+                    "Look at every one of these image files and describe what it SHOWS, so "
+                    "that someone searching the video later could find this moment by "
+                    "describing it from memory.\n\n"
+                    "For each, reply with one line: the filename, a colon, then the "
+                    "description. Mention what is on screen, any visible text or UI, and "
+                    "what appears to be happening. Two sentences at most. Describe only "
+                    "what you can actually see -- do not guess at what came before or after, "
+                    "and do not invent detail that is not in the picture.\n"
+                    "Nothing but those lines."
+                ),
+                model=DEFAULT_INTELLIGENCE_MODEL,
+                workspace=HostWorkspace(path=workspace),
+                timeout_seconds=90 + 15 * len(frames),
+            )
+        )
         if getattr(result, "error", None):
             raise _VidError(f"The model could not describe the frames: {result.error}")
 
@@ -120,8 +137,5 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
                 described.append(Described(shot_id=shot_id, description=text.strip()))
 
         if not described:
-            raise _VidError(
-                "The model returned no usable descriptions. It said: "
-                f"{(result.text or '')[:200]!r}"
-            )
+            raise _VidError(f"The model returned no usable descriptions. It said: {(result.text or '')[:200]!r}")
         return described

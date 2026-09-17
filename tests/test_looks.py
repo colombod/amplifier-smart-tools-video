@@ -35,10 +35,25 @@ def _content(path, pattern: str = "testsrc2") -> str:
     """
     joiner = ":" if "=" in pattern else "="
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-         "-i", f"{pattern}{joiner}s=320x180:r=15:d=2",
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(path)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"{pattern}{joiner}s=320x180:r=15:d=2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
     )
     return str(path)
 
@@ -50,8 +65,22 @@ def _render(plan: Plan, out) -> str:
 
 def _brightness(path: str, crop: str) -> float:
     raw = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-vf", f"crop={crop}",
-         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            path,
+            "-vf",
+            f"crop={crop}",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ],
         capture_output=True,
     ).stdout
     return sum(raw) / len(raw) if raw else 0.0
@@ -71,9 +100,7 @@ def test_a_vignette_really_does_darken_the_corners(tmp_path):
         if label == "source":
             assert abs(centre - corner) < 2.0, "the fixture was not uniform to begin with"
         else:
-            assert corner < centre * 0.8, (
-                f"corner {corner:.1f} is not meaningfully darker than centre {centre:.1f}"
-            )
+            assert corner < centre * 0.8, f"corner {corner:.1f} is not meaningfully darker than centre {centre:.1f}"
 
 
 def test_strength_zero_is_nearly_nothing_and_one_is_a_lot(tmp_path):
@@ -102,9 +129,7 @@ def test_warm_and_cool_move_in_opposite_directions_and_far_enough(tmp_path):
 
     shifts = {}
     for look in ("warm", "cool"):
-        out = _render(
-            Plan(source=source).with_operation(Grade(look=look)), tmp_path / f"{look}.mp4"
-        )
+        out = _render(Plan(source=source).with_operation(Grade(look=look)), tmp_path / f"{look}.mp4")
         shifts[look] = measure_video(out).mean[2] - base.mean[2]
 
     assert shifts["warm"] > 1.0, f"warm shifted b* by only {shifts['warm']:+.2f} -- invisible"
@@ -119,7 +144,8 @@ def test_noir_removes_the_colour(tmp_path):
 
     out = _render(Plan(source=source).with_operation(Grade(look="noir")), tmp_path / "noir.mp4")
     result = measure_video(out)
-    assert abs(result.mean[1]) < 2.0 and abs(result.mean[2]) < 2.0, "noir left colour behind"
+    assert abs(result.mean[1]) < 2.0, f"noir left red/green behind: a*={result.mean[1]:.2f}"
+    assert abs(result.mean[2]) < 2.0, f"noir left yellow/blue behind: b*={result.mean[2]:.2f}"
 
 
 def test_every_named_look_renders(tmp_path):
@@ -133,7 +159,8 @@ def test_an_unknown_look_is_refused_with_the_list(tmp_path):
     with pytest.raises(VidError) as failure:
         resolve_look("cinematic")
     message = str(failure.value)
-    assert "warm" in message and "noir" in message, "a refusal must name the alternatives"
+    assert "warm" in message, "a refusal must name the alternatives"
+    assert "noir" in message, "a refusal must name ALL the alternatives, not the first few"
     assert "recolor" in message, "and point at the escape hatch for something specific"
 
 
@@ -157,7 +184,8 @@ def test_a_whole_chain_is_still_one_ffmpeg_invocation(tmp_path):
 
     assert command.count("-i") == 1, "more than one input means more than one decode"
     graph = next(part for part in command if "vignette" in part)
-    assert "trim" in graph and "colorbalance" in graph, "the chain was split across passes"
+    assert "trim" in graph, "the trim was split into a separate pass"
+    assert "colorbalance" in graph, "the grade was split into a separate pass"
     subprocess.run(command, check=True, capture_output=True)
 
 
@@ -165,7 +193,8 @@ def test_the_look_verbs_need_no_provider(tmp_path):
     source = _content(tmp_path / "src.mp4")
     command = compile_plan(
         Plan(source=source).with_operation(Grade(look="punchy")),
-        str(tmp_path / "o.mp4"), has_audio=False,
+        str(tmp_path / "o.mp4"),
+        has_audio=False,
     )
     assert command[0] == "ffmpeg"
 
@@ -176,7 +205,7 @@ def test_vignette_strength_outside_zero_to_one_is_refused():
 
 
 @pytest.mark.parametrize(
-    "speed,expected",
+    ("speed", "expected"),
     [(2.0, 1.5), (1.5, 2.0), (0.75, 4.0), (0.5, 6.0)],
     ids=["2x", "1.5x", "0.75x", "0.5x"],
 )
@@ -207,15 +236,19 @@ def test_retime_lands_on_the_duration_it_promises(tmp_path, speed, expected):
     out = str(tmp_path / f"r{speed}.mp4")
     command = compile_plan(
         Plan(source=source).with_operation(Retime(speed=speed)),
-        out, durations={source: 3.0}, frame_rate=30.0,
+        out,
+        durations={source: 3.0},
+        frame_rate=30.0,
     )
     subprocess.run(command, check=True, capture_output=True)
 
-    measured = float(subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", out],
-        capture_output=True, text=True,
-    ).stdout.strip())
+    measured = float(
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
 
     assert abs(measured - expected) < 0.01, (
         f"3.0s at {speed}x produced {measured:.4f}s, not {expected:.4f}s "
@@ -228,8 +261,6 @@ def test_retime_without_a_probed_rate_still_works(tmp_path):
     from vid.compile import compile_plan
     from vid.plan import Plan, Retime
 
-    command = compile_plan(
-        Plan(source="a.mp4").with_operation(Retime(speed=2.0)), "o.mp4", has_audio=False
-    )
+    command = compile_plan(Plan(source="a.mp4").with_operation(Retime(speed=2.0)), "o.mp4", has_audio=False)
     graph = next(part for part in command if "setpts" in part)
     assert "fps=" not in graph, "invented a frame rate when none was probed"

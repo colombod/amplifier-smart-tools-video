@@ -15,10 +15,10 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+from pathlib import Path
 import subprocess
 import sys
 import wave
-from pathlib import Path
 
 from vid.schemas import VidError
 
@@ -99,7 +99,8 @@ def ensure_voice(name: str = DEFAULT_VOICE) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [sys.executable, "-m", "piper.download_voices", name, "--download-dir", str(directory)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0 or not model.is_file():
         detail = (result.stderr or "").strip().splitlines()
@@ -142,9 +143,8 @@ class Speaker:
 
             kwargs["syn_config"] = SynthesisConfig(length_scale=1.0 / rate)
 
-        with _quiet_stderr():
-            with wave.open(str(out), "wb") as handle:
-                self._voice.synthesize_wav(text, handle, **kwargs)
+        with _quiet_stderr(), wave.open(str(out), "wb") as handle:
+            self._voice.synthesize_wav(text, handle, **kwargs)
         return duration_of(out)
 
 

@@ -384,10 +384,12 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
             "-i",
             second,
             "-filter_complex",
-            f"[0:v]scale={PROBE_WIDTH}:-2,setsar=1[a];"
-            f"[1:v]scale={PROBE_WIDTH}:-2,setsar=1[b];"
-            f"[a][b]xfade=transition=custom:duration={duration}"
-            f":offset={max(0.0, PROBE_SECONDS - duration)}:expr='{expression}'[v]",
+            (
+                f"[0:v]scale={PROBE_WIDTH}:-2,setsar=1[a];"
+                f"[1:v]scale={PROBE_WIDTH}:-2,setsar=1[b];"
+                f"[a][b]xfade=transition=custom:duration={duration}"
+                f":offset={max(0.0, PROBE_SECONDS - duration)}:expr='{expression}'[v]"
+            ),
             "-map",
             "[v]",
             "-c:v",

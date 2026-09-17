@@ -17,8 +17,8 @@ and sampled rather than trusted.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 
 from vid.schemas import VidError
@@ -80,9 +80,16 @@ class Script:
                 "source": self.source,
                 "prompt": self.prompt,
                 "lines": [
-                    {"index": line.index, "start": line.start, "budget": round(line.budget, 3),
-                     "text": line.text, "spoken": round(line.spoken, 3), "rate": line.rate,
-                     "fitted": line.fitted, "note": line.note}
+                    {
+                        "index": line.index,
+                        "start": line.start,
+                        "budget": round(line.budget, 3),
+                        "text": line.text,
+                        "spoken": round(line.spoken, 3),
+                        "rate": line.rate,
+                        "fitted": line.fitted,
+                        "note": line.note,
+                    }
                     for line in self.lines
                 ],
             },
@@ -127,11 +134,7 @@ def _context_for(record: dict, start: float, length: float) -> str:
     invent something.
     """
     end = start + length
-    said = [
-        chunk["text"]
-        for chunk in record.get("speech", [])
-        if chunk["start"] < end and chunk["end"] > start
-    ]
+    said = [chunk["text"] for chunk in record.get("speech", []) if chunk["start"] < end and chunk["end"] > start]
     seen = [
         shot.get("description", "")
         for shot in record.get("shots", [])
@@ -156,19 +159,23 @@ def write_script(record: dict, prompt: str, intelligence) -> Script:
         f"SEGMENT {i} -- starts {start:.1f}s, lasts {length:.1f}s\n{_context_for(record, start, length)}"
         for i, (start, length) in enumerate(slots)
     )
-    reply = ask(intelligence, (
-        "Write a narration for a video, one line per segment.\n\n"
-        f"WHAT THE NARRATION IS FOR: {prompt}\n\n"
-        f"{described}\n\n"
-        "Rules:\n"
-        "- One line per segment, in order, each on its own line as `N: text`.\n"
-        "- A segment lasting S seconds fits roughly S times 2.4 words. Stay UNDER it; "
-        "a line that overruns will be sent back to you to shorten.\n"
-        "- Write for the ear. Short sentences. No bullet points, no markdown, no stage "
-        "directions, no timestamps.\n"
-        "- If a segment is better left silent, write `N: -` and nothing else.\n"
-        "Nothing but the numbered lines."
-    ), timeout_seconds=120)
+    reply = ask(
+        intelligence,
+        (
+            "Write a narration for a video, one line per segment.\n\n"
+            f"WHAT THE NARRATION IS FOR: {prompt}\n\n"
+            f"{described}\n\n"
+            "Rules:\n"
+            "- One line per segment, in order, each on its own line as `N: text`.\n"
+            "- A segment lasting S seconds fits roughly S times 2.4 words. Stay UNDER it; "
+            "a line that overruns will be sent back to you to shorten.\n"
+            "- Write for the ear. Short sentences. No bullet points, no markdown, no stage "
+            "directions, no timestamps.\n"
+            "- If a segment is better left silent, write `N: -` and nothing else.\n"
+            "Nothing but the numbered lines."
+        ),
+        timeout_seconds=120,
+    )
 
     written: dict[int, str] = {}
     for raw in reply.splitlines():
@@ -177,31 +184,34 @@ def write_script(record: dict, prompt: str, intelligence) -> Script:
             written[int(head.strip())] = tail.strip()
 
     if not written:
-        raise VidError(
-            "The model did not return any numbered narration lines. "
-            f"It said: {reply[:160]!r}"
-        )
+        raise VidError(f"The model did not return any numbered narration lines. It said: {reply[:160]!r}")
 
     for i, (start, length) in enumerate(slots):
         text = written.get(i, "").strip()
-        script.lines.append(
-            Line(index=i, start=start, budget=length,
-                 text="" if text in {"", "-", "--"} else text)
-        )
+        script.lines.append(Line(index=i, start=start, budget=length, text="" if text in {"", "-", "--"} else text))
     return script
 
 
 def _shorten(line: Line, intelligence) -> str:
     from vid.intelligence import ask
 
-    return ask(intelligence, (
-        "This narration line is too long for its slot and must be shortened.\n\n"
-        f"LINE: {line.text}\n"
-        f"It was spoken in {line.spoken:.1f}s and must fit {line.budget:.1f}s.\n\n"
-        f"Rewrite it to be about {int(100 * line.budget / max(line.spoken, 0.1))}% as long, "
-        "keeping the meaning and the tone. Reply with the rewritten line alone -- no "
-        "explanation, no quotes, no label."
-    ), timeout_seconds=60).splitlines()[0].strip().strip('"')
+    return (
+        ask(
+            intelligence,
+            (
+                "This narration line is too long for its slot and must be shortened.\n\n"
+                f"LINE: {line.text}\n"
+                f"It was spoken in {line.spoken:.1f}s and must fit {line.budget:.1f}s.\n\n"
+                f"Rewrite it to be about {int(100 * line.budget / max(line.spoken, 0.1))}% as long, "
+                "keeping the meaning and the tone. Reply with the rewritten line alone -- no "
+                "explanation, no quotes, no label."
+            ),
+            timeout_seconds=60,
+        )
+        .splitlines()[0]
+        .strip()
+        .strip('"')
+    )
 
 
 def fit(script: Script, speaker, workdir: Path, intelligence=None) -> Script:
@@ -274,8 +284,7 @@ def assemble(script: Script, out: Path | str, total: float) -> Path:
         + f";{mixed}amix=inputs={len(spoken)}:duration=longest:normalize=0[m]"
         + f";[m]apad,atrim=end={total},asetpts=PTS-STARTPTS[out]"
     )
-    command = ["ffmpeg", "-y", "-v", "error", *inputs,
-               "-filter_complex", graph, "-map", "[out]", str(out)]
+    command = ["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph, "-map", "[out]", str(out)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         detail = (result.stderr or "").strip().splitlines()

@@ -42,18 +42,16 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     import subprocess
 
     from vid.compile import compile_plan
+    from vid.plan import Retime as _Retime
     from vid.plan import Stitch
     from vid.probe import duration, frame_rate, has_audio, have_ffmpeg
     from vid.schemas import VidError
-
-    from vid.plan import Retime as _Retime
 
     # Retime needs the source duration too: without it the audio cannot be
     # bounded to the length the edit means, and atempo's rounding decides the
     # container's duration instead.
     needs_durations = any(
-        (isinstance(op, Stitch) and op.transition) or isinstance(op, _Retime)
-        for op in plan.operations
+        (isinstance(op, Stitch) and op.transition) or isinstance(op, _Retime) for op in plan.operations
     )
     durations: dict[str, float] = {}
     if needs_durations:
@@ -66,14 +64,8 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     source_has_audio = has_audio(plan.source) if plan.source else True
     from vid.plan import Retime
 
-    rate = (
-        frame_rate(plan.source)
-        if plan.source and any(isinstance(op, Retime) for op in plan.operations)
-        else None
-    )
-    command = compile_plan(
-        plan, output, durations=durations, has_audio=source_has_audio, frame_rate=rate
-    )
+    rate = frame_rate(plan.source) if plan.source and any(isinstance(op, Retime) for op in plan.operations) else None
+    command = compile_plan(plan, output, durations=durations, has_audio=source_has_audio, frame_rate=rate)
 
     if print_command:
         import shlex
@@ -163,8 +155,10 @@ def check() -> str:
         lines += [
             "  [missing] speech synth",
             "            Unlocks: narrate -- write a narration and fit it to the video.",
-            "            uv tool install --force 'vid[voice] @ "
-            "git+https://github.com/colombod/amplifier-smart-tools-video'",
+            (
+                "            uv tool install --force 'vid[voice] @ "
+                "git+https://github.com/colombod/amplifier-smart-tools-video'"
+            ),
         ]
 
     # THE PROVIDER SECTION, which was missing and produced a dead pointer.
@@ -445,8 +439,8 @@ def narrate(
     get wrong and every other artefact in this tool is inspectable before it is
     committed to.
     """
-    import tempfile
     from pathlib import Path
+    import tempfile
 
     from vid.index import load
     from vid.narrate import assemble, fit, write_script
@@ -469,10 +463,7 @@ def narrate(
     except Exception:
         intelligence = None
     if intelligence is None:
-        raise VidError(
-            "Writing a narration needs a model, and none is configured. "
-            "`vid check` says how."
-        )
+        raise VidError("Writing a narration needs a model, and none is configured. `vid check` says how.")
 
     script = write_script(record, prompt, intelligence)
     if script_only:
@@ -493,9 +484,13 @@ def narrate(
         report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
 
     if out is None:
-        report += ["", f"  narration track: {track}",
-                   "  Lay it on with:  vid audio " +
-                   ("mix" if mix else "replace") + f" {video} --with {track} | vid render out.mp4"]
+        report += [
+            "",
+            f"  narration track: {track}",
+            "  Lay it on with:  vid audio "
+            + ("mix" if mix else "replace")
+            + f" {video} --with {track} | vid render out.mp4",
+        ]
         return "\n".join(report)
 
     # Lay it on through the existing audio verbs rather than a parallel path --
@@ -538,7 +533,9 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
     target = measure_image(reference)
     return Recolor(
         reference=reference,
-        source_mean=source.mean, source_std=source.std,
-        reference_mean=target.mean, reference_std=target.std,
+        source_mean=source.mean,
+        source_std=source.std,
+        reference_mean=target.mean,
+        reference_std=target.std,
         strength=strength,
     )

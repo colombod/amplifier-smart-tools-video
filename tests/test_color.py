@@ -20,27 +20,51 @@ pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these read real pixel
 
 def _video(path, colour: str, seconds: float = 3.0) -> str:
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-         "-i", f"color=c={colour}:s=320x180:r=15:d={seconds},noise=alls=28:allf=t+u",
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(path)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c={colour}:s=320x180:r=15:d={seconds},noise=alls=28:allf=t+u",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
     )
     return str(path)
 
 
 def _image(path, colour: str) -> str:
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-         "-i", f"color=c={colour}:s=320x180,noise=alls=28:allf=t+u",
-         "-frames:v", "1", str(path)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c={colour}:s=320x180,noise=alls=28:allf=t+u",
+            "-frames:v",
+            "1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
     )
     return str(path)
 
 
-@pytest.mark.parametrize(
-    "colour", [(1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0), (0.5, 0.5, 0.5), (1, 1, 1), (0, 0, 0)]
-)
+@pytest.mark.parametrize("colour", [(1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0), (0.5, 0.5, 0.5), (1, 1, 1), (0, 0, 0)])
 def test_the_colour_space_round_trips(colour):
     """A broken conversion fails SILENTLY -- it just grades everything wrongly."""
     back = lab_to_rgb(*rgb_to_lab(*colour))
@@ -93,8 +117,7 @@ def test_strength_lands_between_doing_nothing_and_the_full_transfer(tmp_path):
         distances[strength] = measure_video(out).distance_to(target)
 
     assert distances[1.0] < distances[0.3] < start, (
-        f"strength is not monotonic: full={distances[1.0]:.1f} "
-        f"partial={distances[0.3]:.1f} none={start:.1f}"
+        f"strength is not monotonic: full={distances[1.0]:.1f} partial={distances[0.3]:.1f} none={start:.1f}"
     )
 
 
@@ -157,7 +180,8 @@ def test_a_video_with_no_audio_track_still_renders(tmp_path):
     out = str(tmp_path / "out.mp4")
     command = compile_plan(
         Plan(source=silent).with_operation(Trim(start=0.0, end=2.0)),
-        out, has_audio=False,
+        out,
+        has_audio=False,
     )
     assert "0:a" not in " ".join(command), "mapped an audio stream that does not exist"
     subprocess.run(command, check=True, capture_output=True)

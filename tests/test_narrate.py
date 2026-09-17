@@ -112,9 +112,7 @@ def test_the_attempt_cap_bounds_a_model_that_shortens_too_slowly(tmp_path):
     model = Shortener(keep=0.95)
     fit(_script("x" * 200, budget=1.0), FakeSpeaker(0.1), tmp_path, model)
 
-    assert model.calls == REWRITE_ATTEMPTS, (
-        f"asked {model.calls} times with a limit of {REWRITE_ATTEMPTS}"
-    )
+    assert model.calls == REWRITE_ATTEMPTS, f"asked {model.calls} times with a limit of {REWRITE_ATTEMPTS}"
 
 
 def test_a_small_overrun_is_absorbed_by_a_modest_speed_up(tmp_path):
@@ -141,19 +139,21 @@ def test_a_line_that_cannot_fit_is_reported_by_name_not_hidden(tmp_path):
     assert not line.fitted
     assert line.rate <= MAX_RATE, "sped up past the listenable limit to force a fit"
     assert "over" in line.note, line.note
-    assert f"{line.overrun:.2f}s over" in line.note, (
-        "the note must carry the measurement, not just the fact of failure"
-    )
+    assert f"{line.overrun:.2f}s over" in line.note, "the note must carry the measurement, not just the fact of failure"
     assert script.unfitted() == [line]
 
 
 def test_one_bad_line_does_not_spoil_the_others(tmp_path):
     """Graceful degradation is the whole reason for fitting per segment."""
-    script = Script(source="x.mp4", prompt="p", lines=[
-        Line(index=0, start=0.0, budget=5.0, text="x" * 20),
-        Line(index=1, start=5.0, budget=1.0, text="x" * 100),
-        Line(index=2, start=6.0, budget=5.0, text="x" * 20),
-    ])
+    script = Script(
+        source="x.mp4",
+        prompt="p",
+        lines=[
+            Line(index=0, start=0.0, budget=5.0, text="x" * 20),
+            Line(index=1, start=5.0, budget=1.0, text="x" * 100),
+            Line(index=2, start=6.0, budget=5.0, text="x" * 20),
+        ],
+    )
     fit(script, FakeSpeaker(0.1), tmp_path, Stubborn())
 
     assert [line.fitted for line in script.lines] == [True, False, True]
@@ -205,4 +205,6 @@ def test_the_report_shows_the_measurement_beside_the_budget():
     """A caller cannot act on 'it did not fit' without knowing by how much."""
     line = Line(index=0, start=3.0, budget=2.0, text="hello", spoken=4.25, fitted=False)
     rendered = line.report()
-    assert "4.25" in rendered and "2.00" in rendered and "OVER" in rendered
+    assert "4.25" in rendered, "the report omits what was MEASURED"
+    assert "2.00" in rendered, "the report omits the BUDGET it was measured against"
+    assert "OVER" in rendered, "the report does not say it failed to fit"

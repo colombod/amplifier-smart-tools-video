@@ -93,9 +93,8 @@ def test_duration_reports_the_measurement_beside_the_expectation(dissolve):
 
     bad = checks.check_duration(str(dissolve), 9.0)
     assert not bad.held
-    assert "9.00" in bad.expected and "5.2" in bad.measured, (
-        "a violation must show what was measured next to what was wanted, or the caller cannot tell how wrong it is"
-    )
+    assert "9.00" in bad.expected, "a violation must show what was WANTED"
+    assert "5.2" in bad.measured, "a violation must show what was MEASURED, or nobody can tell how wrong it is"
 
 
 def test_resolution_and_audio(dissolve):

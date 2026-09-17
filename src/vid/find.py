@@ -263,8 +263,14 @@ def find(chunks: list[Chunk], query: str, intelligence=None, seen: list[Chunk] |
             # matters: a description is a model's reading of a picture, and a
             # caller weighing a result deserves to know which it got.
             return [
-                Hit(start=hit.start, end=hit.end, chunk_ids=hit.chunk_ids,
-                    text=hit.text, how="seen", rationale=hit.rationale)
+                Hit(
+                    start=hit.start,
+                    end=hit.end,
+                    chunk_ids=hit.chunk_ids,
+                    text=hit.text,
+                    how="seen",
+                    rationale=hit.rationale,
+                )
                 for hit in visual
             ]
 

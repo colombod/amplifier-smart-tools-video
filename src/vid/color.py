@@ -22,10 +22,10 @@ what actually needs judgment.
 
 from __future__ import annotations
 
-import math
-import subprocess
 from dataclasses import dataclass
+import math
 from pathlib import Path
+import subprocess
 
 from vid.schemas import VidError
 
@@ -107,9 +107,7 @@ def _raw_rgb(command: list[str]) -> bytes:
     result = subprocess.run(command, capture_output=True)
     if result.returncode != 0 or not result.stdout:
         detail = (result.stderr or b"").decode(errors="replace").strip().splitlines()
-        raise VidError(
-            f"Could not read pixels: {detail[-1] if detail else 'ffmpeg produced nothing'}"
-        )
+        raise VidError(f"Could not read pixels: {detail[-1] if detail else 'ffmpeg produced nothing'}")
     return result.stdout
 
 
@@ -134,27 +132,40 @@ def _stats_from_pixels(raw: bytes) -> ColorStats:
         taken += 1
 
     means = [total / taken for total in sums]
-    stds = [
-        math.sqrt(max(0.0, squares[c] / taken - means[c] ** 2)) for c in range(3)
-    ]
+    stds = [math.sqrt(max(0.0, squares[c] / taken - means[c] ** 2)) for c in range(3)]
     return ColorStats(mean=tuple(means), std=tuple(stds))  # type: ignore[arg-type]
 
 
 def measure_image(path: str) -> ColorStats:
-    return _stats_from_pixels(_raw_rgb([
-        "ffmpeg", "-v", "error", "-i", path,
-        "-vf", f"scale={SAMPLE_WIDTH}:-2", "-frames:v", "1",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
-    ]))
+    return _stats_from_pixels(
+        _raw_rgb(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                path,
+                "-vf",
+                f"scale={SAMPLE_WIDTH}:-2",
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ]
+        )
+    )
 
 
 def measure_video(path: str, duration: float | None = None) -> ColorStats:
     """Sample frames spread through a video and measure them together."""
     if duration is None:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=nw=1:nk=1", path],
-            capture_output=True, text=True,
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path],
+            capture_output=True,
+            text=True,
         )
         try:
             duration = float(probe.stdout.strip())
@@ -166,11 +177,26 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
         # Skip the first and last tenth: titles and fades are not the body.
         at = duration * (0.1 + 0.8 * index / max(1, SAMPLE_FRAMES - 1))
         try:
-            collected += _raw_rgb([
-                "ffmpeg", "-v", "error", "-ss", f"{at:.3f}", "-i", path,
-                "-vf", f"scale={SAMPLE_WIDTH}:-2", "-frames:v", "1",
-                "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
-            ])
+            collected += _raw_rgb(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-ss",
+                    f"{at:.3f}",
+                    "-i",
+                    path,
+                    "-vf",
+                    f"scale={SAMPLE_WIDTH}:-2",
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ]
+            )
         except VidError:
             continue
     if not collected:
@@ -181,8 +207,7 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
 # --- the transform --------------------------------------------------------
 
 
-def write_cube(source: ColorStats, reference: ColorStats, out: Path | str,
-               strength: float = 1.0) -> Path:
+def write_cube(source: ColorStats, reference: ColorStats, out: Path | str, strength: float = 1.0) -> Path:
     """Bake the transfer into a 3D lookup table ffmpeg can apply.
 
     A `.cube` file is plain TEXT, which is why this whole capability needs
@@ -201,9 +226,7 @@ def write_cube(source: ColorStats, reference: ColorStats, out: Path | str,
         src_spread = source.std[channel]
         # A nearly flat channel has no spread to rescale, and dividing by it
         # would explode. A solid-colour reference is a real thing to point at.
-        scales.append(
-            reference.std[channel] / src_spread if src_spread > 1e-4 else 1.0
-        )
+        scales.append(reference.std[channel] / src_spread if src_spread > 1e-4 else 1.0)
 
     out = Path(out)
     lines = [
@@ -219,13 +242,8 @@ def write_cube(source: ColorStats, reference: ColorStats, out: Path | str,
             for red_index in range(LUT_SIZE):
                 r, g, b = red_index * step, green_index * step, blue_index * step
                 lab = rgb_to_lab(r, g, b)
-                moved = tuple(
-                    (lab[c] - source.mean[c]) * scales[c] + reference.mean[c]
-                    for c in range(3)
-                )
-                blended = tuple(
-                    lab[c] + (moved[c] - lab[c]) * strength for c in range(3)
-                )
+                moved = tuple((lab[c] - source.mean[c]) * scales[c] + reference.mean[c] for c in range(3))
+                blended = tuple(lab[c] + (moved[c] - lab[c]) * strength for c in range(3))
                 nr, ng, nb = lab_to_rgb(*blended)
                 lines.append(f"{nr:.6f} {ng:.6f} {nb:.6f}")
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

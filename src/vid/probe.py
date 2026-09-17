@@ -64,9 +64,20 @@ def has_audio(path: str) -> bool:
     if not have_ffprobe():
         return True
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
-         "stream=codec_type", "-of", "csv=p=0", path],
-        capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return True
@@ -88,16 +99,10 @@ def has_subtitles_filter() -> bool:
     """
     if not shutil.which("ffmpeg"):
         return False
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True
-    )
+    result = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
     if result.returncode != 0:
         return False
-    return any(
-        line.split()[1] == "subtitles"
-        for line in result.stdout.splitlines()
-        if len(line.split()) > 1
-    )
+    return any(line.split()[1] == "subtitles" for line in result.stdout.splitlines() if len(line.split()) > 1)
 
 
 def frame_rate(path: str) -> float | None:
@@ -114,9 +119,20 @@ def frame_rate(path: str) -> float | None:
     if not have_ffprobe():
         return None
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-         "stream=r_frame_rate", "-of", "default=nw=1:nk=1", path],
-        capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=r_frame_rate",
+            "-of",
+            "default=nw=1:nk=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
     )
     raw = result.stdout.strip()
     if result.returncode != 0 or not raw:

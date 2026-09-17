@@ -45,7 +45,7 @@ def _overlap(hit, span) -> float:
 
 
 @pytest.mark.parametrize(
-    "query,topic",
+    ("query", "topic"),
     [
         ("pricing plan cost dollars", "pricing"),
         ("message queue workers", "architecture"),
@@ -137,7 +137,8 @@ def test_every_hit_carries_the_evidence_that_produced_it(talk):
     """A range with no text beside it is a claim a caller cannot check."""
     record, _ = talk
     hit = find(chunks_of(record), "pricing plan cost dollars")[0]
-    assert hit.chunk_ids and hit.text
+    assert hit.chunk_ids, "a hit with no chunk ids cannot be traced back to the transcript"
+    assert hit.text, "a hit with no text cannot be judged without replaying the video"
     assert hit.how == "literal"
     assert "dollar" in hit.text.lower() or "$" in hit.text
 
@@ -164,10 +165,25 @@ def test_the_scene_threshold_catches_obvious_hard_cuts(tmp_path):
     for index, colour in enumerate(("navy", "darkgreen", "maroon")):
         part = tmp_path / f"p{index}.mp4"
         subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-             "-i", f"color=c={colour}:s=320x180:r=15:d=2",
-             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(part)],
-            check=True, capture_output=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={colour}:s=320x180:r=15:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                str(part),
+            ],
+            check=True,
+            capture_output=True,
         )
         parts.append(part)
 
@@ -175,9 +191,10 @@ def test_the_scene_threshold_catches_obvious_hard_cuts(tmp_path):
     listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
     joined = tmp_path / "three.mp4"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
-         "-i", str(listing), "-c", "copy", str(joined)],
-        check=True, capture_output=True, cwd=tmp_path,
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(joined)],
+        check=True,
+        capture_output=True,
+        cwd=tmp_path,
     )
 
     shots = detect_shots(str(joined))

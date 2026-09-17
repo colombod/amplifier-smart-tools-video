@@ -123,7 +123,9 @@ def test_remove_leaves_the_picture_alone(clips, tmp_path):
         {clips["alpha"]: 3.0},
     )
     red, green, blue = _rgb_at(out, 1.0)
-    assert red > 150 and green < 60 and blue < 60, "removing audio changed the picture"
+    assert red > 150, f"removing audio changed the picture: red {red}"
+    assert green < 60, f"removing audio changed the picture: green {green}"
+    assert blue < 60, f"removing audio changed the picture: blue {blue}"
 
 
 def test_replace_swaps_the_track_entirely(clips, tmp_path):

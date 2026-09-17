@@ -48,6 +48,21 @@ def _doc(name: str):
     ]
 
 
+def _print_version(value: bool) -> None:
+    """`--version`, which the skill file told callers to run before it existed.
+
+    Found by writing a CI smoke test that ran the commands our own documentation
+    recommends. The skill said "`vid --version` against the repository's latest
+    tag says whether an upgrade is worth doing" -- and the flag exited 2. Nobody
+    had run the instructions.
+    """
+    if value:
+        from importlib.metadata import version
+
+        typer.echo(version("vid"))
+        raise typer.Exit()
+
+
 @app.callback()
 def cli(
     help: Annotated[
@@ -55,6 +70,10 @@ def cli(
         typer.Option(
             "--help", is_eager=True, callback=_print_skill, help="This tool's skill, for an agent driving it."
         ),
+    ] = False,
+    version: Annotated[
+        bool,
+        typer.Option("--version", is_eager=True, callback=_print_version, help="The installed version."),
     ] = False,
 ) -> None:
     """Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown."""
@@ -298,10 +317,16 @@ def audio_extract(
 def narrate(
     video: Annotated[str, typer.Argument(help="The video to narrate. Index it first.")],
     prompt: Annotated[str, typer.Argument(help="What the narration is for, in your words.")],
-    out: Annotated[str | None, typer.Option("--out", help="Render here. Omit to get the track and the command.")] = None,
-    script_only: Annotated[bool, typer.Option("--script-only", help="Print the script as JSON; synthesise nothing.")] = False,
+    out: Annotated[
+        str | None, typer.Option("--out", help="Render here. Omit to get the track and the command.")
+    ] = None,
+    script_only: Annotated[
+        bool, typer.Option("--script-only", help="Print the script as JSON; synthesise nothing.")
+    ] = False,
     voice: Annotated[str | None, typer.Option("--voice", help="Voice model name.")] = None,
-    mix: Annotated[bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")] = None,
+    mix: Annotated[
+        bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")
+    ] = None,
     help: _doc("narrate") = False,
 ) -> None:
     """Write a narration, fit it to the timing of the video, and lay it on."""
@@ -324,7 +349,10 @@ def recolor(
 @app.command()
 def vignette(
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
-    strength: Annotated[float, typer.Option("--strength", help="0 is nothing, 1 is theatrical. Default reads without announcing itself.")] = 0.35,
+    strength: Annotated[
+        float,
+        typer.Option("--strength", help="0 is nothing, 1 is theatrical. Default reads without announcing itself."),
+    ] = 0.35,
     help: _doc("look") = False,
 ) -> None:
     """Darken the edges, to pull an eye to the middle."""

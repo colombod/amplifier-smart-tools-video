@@ -15,8 +15,9 @@ OS unparsed, so there is no quoting problem to get wrong.
 
 from __future__ import annotations
 
-import re
+import itertools
 from pathlib import Path
+import re
 
 from vid.plan import (
     AudioMix,
@@ -24,9 +25,9 @@ from vid.plan import (
     AudioReplace,
     Caption,
     Cut,
-    Plan,
     Grade,
     Lut,
+    Plan,
     Recolor,
     Retime,
     Stitch,
@@ -93,7 +94,7 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
         )
     points = sorted(ramp, key=lambda p: p.at)
     segments: list[tuple[float, float, float]] = []
-    for first, second in zip(points, points[1:], strict=False):
+    for first, second in itertools.pairwise(points):
         if second.at <= first.at:
             raise VidError(f"Ramp control points must advance in time; {first.at} and {second.at} do not.")
         # SUBDIVIDED, and the first attempt at this was wrong in a way worth
@@ -237,12 +238,10 @@ class Compiler:
 
     def retime(self, op: Retime) -> None:
         if op.speed is not None:
-            self.video = self._step(
-                f"setpts={1 / op.speed:.6f}*PTS{self._regrid()}", self.video, "v"
+            self.video = self._step(f"setpts={1 / op.speed:.6f}*PTS{self._regrid()}", self.video, "v")
+            self._astep(
+                ",".join(atempo_chain(op.speed)) + self._bound_audio(self.elapsed / op.speed if self.elapsed else None)
             )
-            self._astep(",".join(atempo_chain(op.speed)) + self._bound_audio(
-                self.elapsed / op.speed if self.elapsed else None
-            ))
             if self.elapsed:
                 self.elapsed /= op.speed
             return
@@ -252,8 +251,7 @@ class Compiler:
         parts: list[str] = []
         for start, end, speed in segments:
             seg_v = self._step(
-                f"trim=start={start}:end={end},setpts=PTS-STARTPTS,"
-                f"setpts={1 / speed:.6f}*PTS{self._regrid()}",
+                f"trim=start={start}:end={end},setpts=PTS-STARTPTS,setpts={1 / speed:.6f}*PTS{self._regrid()}",
                 self.video,
                 "v",
             )
@@ -383,7 +381,9 @@ class Compiler:
 
         from vid.color import ColorStats, write_cube
 
-        cube = Path(tempfile.gettempdir()) / f"vid-lut-{abs(hash((op.source_mean, op.reference_mean, op.strength)))}.cube"
+        cube = (
+            Path(tempfile.gettempdir()) / f"vid-lut-{abs(hash((op.source_mean, op.reference_mean, op.strength)))}.cube"
+        )
         if not cube.is_file():
             write_cube(
                 ColorStats(mean=op.source_mean, std=op.source_std),

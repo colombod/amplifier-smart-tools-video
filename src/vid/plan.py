@@ -190,7 +190,19 @@ class Lut(BaseModel):
 
 
 Operation = Annotated[
-    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix | Recolor | Vignette | Grade | Lut,
+    Trim
+    | Cut
+    | Retime
+    | Zoom
+    | Stitch
+    | Caption
+    | AudioRemove
+    | AudioReplace
+    | AudioMix
+    | Recolor
+    | Vignette
+    | Grade
+    | Lut,
     Field(discriminator="op"),
 ]
 

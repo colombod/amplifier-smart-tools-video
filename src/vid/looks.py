@@ -80,9 +80,7 @@ def resolve_look(name: str) -> str:
 
 def catalogue() -> str:
     width = max(len(name) for name in LOOKS)
-    return "\n".join(
-        f"  {name:<{width}}  {purpose}" for name, (_, purpose) in sorted(LOOKS.items())
-    )
+    return "\n".join(f"  {name:<{width}}  {purpose}" for name, (_, purpose) in sorted(LOOKS.items()))
 
 
 def vignette_filter(strength: float) -> str:
