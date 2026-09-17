@@ -29,6 +29,27 @@ speech = [
     "faster-whisper>=1.0,<2.0",
 ]
 
+# Text-to-speech, for `narrate`. piper-tts and not a cloud TTS, because
+# narration is a capability people would reach for constantly and paying a
+# credential tax for it would quietly undo the point of the deterministic tiers.
+#
+# Verified in a clean container BEFORE this was committed to: a 32.6 MiB
+# prebuilt wheel, no compiler, and ZERO version changes to anything already
+# installed -- piper declares `onnxruntime<2,>=1` with no numpy pin, and parks
+# torch, cython and cmake behind a `train` extra a plain install never touches.
+# It rides alongside faster-whisper's onnxruntime rather than fighting it, and
+# both were run in one process to prove it.
+voice = [
+    "piper-tts>=1.8,<2.0",
+]
+
+# Everything. For a caller who would rather install once than discover a missing
+# tier mid-task.
+all = [
+    "faster-whisper>=1.0,<2.0",
+    "piper-tts>=1.8,<2.0",
+]
+
 [project.urls]
 Repository = "https://github.com/colombod/amplifier-smart-tools-video"
 

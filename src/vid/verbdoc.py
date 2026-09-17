@@ -218,6 +218,61 @@ chain rather than continuing one.
 
 **What it costs.** $0.00, no provider, no network. All of this is ffmpeg.
 """,
+    "narrate": """# vid narrate -- write a narration and make it FIT
+
+```bash
+vid index talk.mp4                                    # once, first
+vid narrate talk.mp4 "explain this to a new customer" --script-only
+vid narrate talk.mp4 "explain this to a new customer" --out narrated.mp4
+```
+
+Writes a narration for a video, speaks it, and lays it on the clip so each line
+lands on the moment it describes.
+
+## Why it does not just write a script and read it
+
+Generating a script, speaking it, and hoping it lands **fails at the end**, after
+everything expensive has run. Thirty seconds of video under forty-five seconds of
+narration is simply broken, and you find out last.
+
+So the shot boundaries already in the index become **slots**, each with a
+duration. The model writes one line per slot, told that slot's budget. Every line
+is spoken and **measured**. A line that overruns is sent back to be shortened --
+twice at most -- then allowed a modest speed-up, and if it still does not fit it
+is **reported by name** rather than quietly overrunning.
+
+"Does this fit?" is a number: 4.2s against a 3.0s slot. A model is never asked to
+judge its own output.
+
+## Read the script before you spend anything on it
+
+`--script-only` prints the narration as JSON and synthesises nothing. Narration is
+the most expensive thing here to get wrong, and every other artefact in this tool
+is inspectable before you commit to it.
+
+## What it does with the original audio
+
+If the video already has speech, the narration is **mixed over** it. If it is
+silent, the narration **replaces** the empty track. Force either with `--mix` or
+`--replace`.
+
+Lines land at their slot's start with **silence** between them -- never stretched
+speech, which is instantly recognisable and worse than a pause. A slot shorter
+than two seconds is left silent: a one-second shot cannot hold a sentence, and
+cramming one in produces the rushed voiceover everybody recognises.
+
+## What it needs
+
+- **an index** -- `vid index` first. The narration is written against what is
+  actually in the video, not guessed from its filename.
+- **a speech synthesiser** -- `vid[voice]`, which runs locally. Nothing is
+  uploaded, and the voice model is fetched once, anonymously.
+- **a provider** -- writing the narration needs a model. `vid check` says how.
+
+Works far better on a video that has speech or a vision index. On a silent
+recording with neither, the model is told plainly that nothing is known about a
+stretch, rather than left to invent something.
+""",
     "verify": """# vid verify -- check a rendered video against what you expected
 
 ```bash

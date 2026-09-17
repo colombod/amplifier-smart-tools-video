@@ -293,6 +293,20 @@ def audio_extract(
 
 
 @app.command()
+def narrate(
+    video: Annotated[str, typer.Argument(help="The video to narrate. Index it first.")],
+    prompt: Annotated[str, typer.Argument(help="What the narration is for, in your words.")],
+    out: Annotated[str | None, typer.Option("--out", help="Render here. Omit to get the track and the command.")] = None,
+    script_only: Annotated[bool, typer.Option("--script-only", help="Print the script as JSON; synthesise nothing.")] = False,
+    voice: Annotated[str | None, typer.Option("--voice", help="Voice model name.")] = None,
+    mix: Annotated[bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")] = None,
+    help: _doc("narrate") = False,
+) -> None:
+    """Write a narration, fit it to the timing of the video, and lay it on."""
+    typer.echo(lib.narrate(video, prompt, out=out, script_only=script_only, voice=voice, mix=mix))
+
+
+@app.command()
 def verify(
     video: Annotated[str, typer.Argument(help="The rendered file to check.")],
     expect_duration: Annotated[

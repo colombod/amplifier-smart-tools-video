@@ -109,6 +109,19 @@ def check() -> str:
             "            uv tool install --force 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'",
         ]
 
+    lines.append("")
+    from vid.voice import available as voice_available
+
+    if voice_available():
+        lines.append("  [ok]      speech synth    piper")
+    else:
+        lines += [
+            "  [missing] speech synth",
+            "            Unlocks: narrate -- write a narration and fit it to the video.",
+            "            uv tool install --force 'vid[voice] @ "
+            "git+https://github.com/colombod/amplifier-smart-tools-video'",
+        ]
+
     # THE PROVIDER SECTION, which was missing and produced a dead pointer.
     # The tier-2 refusal tells a caller "configure a provider -- `vid check`
     # says how", and until a DTU run put a stranger in front of it, `check`
@@ -305,3 +318,93 @@ def audio_extract(video: str, output: str) -> str:
         reason = detail[-1] if detail else "ffmpeg gave no reason"
         raise VidError(f"Could not extract audio from {video!r}: {reason}")
     return f"wrote {output}"
+
+
+def narrate(
+    video: str,
+    prompt: str,
+    *,
+    out: str | None = None,
+    script_only: bool = False,
+    voice: str | None = None,
+    mix: bool | None = None,
+) -> str:
+    """Write a narration for a video, fit it to the timing, and lay it on.
+
+    Returns a human-readable report. The script is always printed before any
+    audio is synthesised, because narration is the most expensive thing here to
+    get wrong and every other artefact in this tool is inspectable before it is
+    committed to.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from vid.index import load
+    from vid.narrate import assemble, fit, write_script
+    from vid.schemas import VidError
+    from vid.voice import DEFAULT_VOICE, Speaker
+
+    record = load(video)
+    if record is None:
+        raise VidError(
+            f"{video!r} has not been indexed yet, and narration is written against what is "
+            f"actually in the video. Run `vid index {video}` first."
+        )
+
+    intelligence = None
+    try:
+        from vid.intelligence.interface import default_intelligence
+
+        intelligence = default_intelligence()
+        intelligence.preflight()
+    except Exception:
+        intelligence = None
+    if intelligence is None:
+        raise VidError(
+            "Writing a narration needs a model, and none is configured. "
+            "`vid check` says how."
+        )
+
+    script = write_script(record, prompt, intelligence)
+    if script_only:
+        return script.to_json()
+
+    speaker = Speaker(voice or DEFAULT_VOICE)
+    workdir = Path(tempfile.mkdtemp(prefix="vid-narrate-"))
+    fit(script, speaker, workdir, intelligence)
+
+    total = record.get("duration", 0.0)
+    track = assemble(script, workdir / "narration.wav", total)
+
+    report = [f"narration for {video}", ""]
+    report += [line.report() for line in script.lines]
+    unfitted = script.unfitted()
+    if unfitted:
+        report += ["", f"  {len(unfitted)} line(s) did not fit:"]
+        report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
+
+    if out is None:
+        report += ["", f"  narration track: {track}",
+                   "  Lay it on with:  vid audio " +
+                   ("mix" if mix else "replace") + f" {video} --with {track} | vid render out.mp4"]
+        return "\n".join(report)
+
+    # Lay it on through the existing audio verbs rather than a parallel path --
+    # one way to put sound on a video, not two.
+    from vid.compile import compile_plan
+    from vid.plan import AudioMix, AudioReplace, Plan
+
+    has_speech = bool(record.get("speech"))
+    layer = mix if mix is not None else has_speech
+    operation = AudioMix(track=str(track), level=-6.0) if layer else AudioReplace(track=str(track))
+    command = compile_plan(Plan(source=video).with_operation(operation), out, durations={video: total})
+
+    import subprocess
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        raise VidError(f"Could not render {out!r}: {detail[-1] if detail else '?'}")
+
+    report += ["", f"  wrote {out} ({'mixed over' if layer else 'replacing'} the original audio)"]
+    return "\n".join(report)
