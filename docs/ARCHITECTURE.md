@@ -144,18 +144,34 @@ But local inference is not free — it is paid in install complexity instead of 
 that cost lands on whoever has to set the tool up. Increasingly that is an agent, running
 unattended, which cannot answer a prompt or debug a compiler error.
 
-| tier | needs | unlocks | real cost |
-|---|---|---|---|
-| **0** | ffmpeg | every mechanical verb | one system package |
-| **1** | + `faster-whisper` | `index speech`, `find` | one `pip install`, no compiler; model auto-fetched and cached (~140 MB for `base.en`) |
-| **1′** | + whisper.cpp | same, faster on Apple Silicon | `brew install whisper-cpp` on macOS; on Linux there is **no apt package** and it is a cmake build |
-| **2** | + an API key | cloud transcription | no install at all, but money and a network round trip |
-| **3** | + whisperX | true per-word timing | ~600 MB and a slower pass |
+**The tiers are `uv` extras, not a list of things to go and install.** This tool is
+installed with `uv tool install`, which gives it an isolated environment — so there is no
+`pip install` a caller can usefully run afterwards, and telling them to would be wrong.
+An optional backend is declared as an extra and comes in through the same command that
+installs the tool:
 
-**Default: faster-whisper.** Not because it is the best transcriber — whisper.cpp with
-Metal is faster on a Mac — but because it is the only one an agent can install unattended
-and expect to succeed: a single `pip install`, no compiler, no platform branch, idempotent
-model download, works CPU-only in a container.
+| tier | install | unlocks | real cost |
+|---|---|---|---|
+| **0** | `uv tool install 'git+…'` | every mechanical verb | ffmpeg, one system package |
+| **1** | `uv tool install 'vid[speech] @ git+…'` | `index speech`, `find` | no compiler, no platform branch; model auto-fetched and cached (~140 MB for `base.en`) |
+| **1′** | tier 0 + whisper.cpp on PATH | same, faster on Apple Silicon | `brew install whisper-cpp` on macOS; on Linux there is **no apt package** and it is a cmake build |
+| **2** | tier 0 + an API key | cloud transcription | no install at all, but money and a network round trip |
+| **3** | `uv tool install 'vid[speech-words] @ git+…'` | true per-word timing | ~600 MB and a slower pass |
+
+Adding a tier later is `uv tool install --force` with the extra, or `uv tool upgrade
+--with`. Both are one command, which is the bar: **a tier a caller cannot reach in one
+command is a tier they will not reach.**
+
+**Default: faster-whisper**, as the `speech` extra. Not because it is the best transcriber
+— whisper.cpp with Metal is faster on a Mac — but because it is the only one an agent can
+install unattended and expect to succeed: it arrives with the tool itself, needs no
+compiler, no platform branch, no separate step, and its model download is idempotent and
+works CPU-only in a container.
+
+Note what this makes possible: **tier 1′ and tier 2 are not extras at all.** whisper.cpp
+is a binary on PATH and an API key is an environment variable, so neither is a Python
+dependency and neither can be expressed as one. That asymmetry is the finding — see the
+open question below.
 
 Two traps worth recording, since both would be discovered the hard way:
 
@@ -187,6 +203,11 @@ to be treated as part of the product:
   install cost, plus capabilities that are genuinely optional. Our research tools needed
   one backend and did not expose this. This is the clearest evidence we have that the
   spec's `requires[]` needs to express *alternatives* and *what each unlocks*.
+- **And the alternatives are not even the same kind of thing.** One is a Python extra, one
+  is a system binary on PATH, one is an environment variable. A manifest field that can
+  only name packages describes one of the three. A caller asking "what do I need for
+  `find` to work?" has three correct answers with different shapes, and today there is
+  nowhere to put them.
 - **Three distinct provider capabilities** — speech-to-text, vision, text reasoning —
   where our research tools needed one. "Which AI providers does this tool use?" has a
   compound answer here, and the manifest cannot currently give it.
