@@ -173,3 +173,63 @@ def test_the_look_verbs_need_no_provider(tmp_path):
 def test_vignette_strength_outside_zero_to_one_is_refused():
     with pytest.raises(VidError, match="between 0 and 1"):
         vignette_filter(1.5)
+
+
+@pytest.mark.parametrize(
+    "speed,expected",
+    [(2.0, 1.5), (1.5, 2.0), (0.75, 4.0), (0.5, 6.0)],
+    ids=["2x", "1.5x", "0.75x", "0.5x"],
+)
+def test_retime_lands_on_the_duration_it_promises(tmp_path, speed, expected):
+    """A 4.7% overshoot that shipped in 0.2.0 and 0.3.0, pinned in both directions.
+
+    TWO separate errors stacked, and the second was hidden by the first.
+
+    `setpts` rescales timestamps without putting frames back on a uniform grid,
+    so 3.0s at 2x came out 1.567s: 47 frames where 45 were wanted. Appending
+    `fps=<source rate>` fixes that exactly.
+
+    Underneath it, atempo does not land exactly either -- and its error CHANGES
+    SIGN. Speeding up it runs long (1.5066s for 1.500s); slowing down it runs
+    short (5.986s for 6.000s). That sign flip is why the obvious `-shortest`
+    could not fix it: a flag that always takes the shorter stream made the
+    speed-ups exact and truncated every slow-down.
+
+    Both directions are parametrized deliberately. Testing only 2x would have
+    passed on the broken `-shortest` version.
+    """
+    import subprocess
+
+    from vid.compile import compile_plan
+    from vid.plan import Plan, Retime
+
+    source = "tests/fixtures/alpha.mp4"
+    out = str(tmp_path / f"r{speed}.mp4")
+    command = compile_plan(
+        Plan(source=source).with_operation(Retime(speed=speed)),
+        out, durations={source: 3.0}, frame_rate=30.0,
+    )
+    subprocess.run(command, check=True, capture_output=True)
+
+    measured = float(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", out],
+        capture_output=True, text=True,
+    ).stdout.strip())
+
+    assert abs(measured - expected) < 0.01, (
+        f"3.0s at {speed}x produced {measured:.4f}s, not {expected:.4f}s "
+        f"({100 * abs(measured - expected) / expected:.1f}% out)"
+    )
+
+
+def test_retime_without_a_probed_rate_still_works(tmp_path):
+    """Degrading to the old behaviour beats imposing a guessed frame rate."""
+    from vid.compile import compile_plan
+    from vid.plan import Plan, Retime
+
+    command = compile_plan(
+        Plan(source="a.mp4").with_operation(Retime(speed=2.0)), "o.mp4", has_audio=False
+    )
+    graph = next(part for part in command if "setpts" in part)
+    assert "fps=" not in graph, "invented a frame rate when none was probed"

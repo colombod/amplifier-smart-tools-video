@@ -43,10 +43,18 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
 
     from vid.compile import compile_plan
     from vid.plan import Stitch
-    from vid.probe import duration, has_audio, have_ffmpeg
+    from vid.probe import duration, frame_rate, has_audio, have_ffmpeg
     from vid.schemas import VidError
 
-    needs_durations = any(isinstance(op, Stitch) and op.transition for op in plan.operations)
+    from vid.plan import Retime as _Retime
+
+    # Retime needs the source duration too: without it the audio cannot be
+    # bounded to the length the edit means, and atempo's rounding decides the
+    # container's duration instead.
+    needs_durations = any(
+        (isinstance(op, Stitch) and op.transition) or isinstance(op, _Retime)
+        for op in plan.operations
+    )
     durations: dict[str, float] = {}
     if needs_durations:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
@@ -56,7 +64,16 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     # has sound is a property of the FILE, not of the plan, and keeping that out
     # of the compiler is what lets every other verb run with no ffmpeg at all.
     source_has_audio = has_audio(plan.source) if plan.source else True
-    command = compile_plan(plan, output, durations=durations, has_audio=source_has_audio)
+    from vid.plan import Retime
+
+    rate = (
+        frame_rate(plan.source)
+        if plan.source and any(isinstance(op, Retime) for op in plan.operations)
+        else None
+    )
+    command = compile_plan(
+        plan, output, durations=durations, has_audio=source_has_audio, frame_rate=rate
+    )
 
     if print_command:
         import shlex

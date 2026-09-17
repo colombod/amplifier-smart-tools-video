@@ -126,6 +126,7 @@ class Compiler:
         plan: Plan,
         durations: dict[str, float] | None = None,
         has_audio: bool = True,
+        frame_rate: float | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -142,6 +143,10 @@ class Compiler:
         # already guarded on this, so the whole chain degrades to video-only
         # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
         self.audio = "0:a" if has_audio else None
+        #: The source's own frame rate, used to put retimed frames back on a
+        #: uniform grid. None when it could not be read, in which case retime
+        #: behaves as it always did rather than guessing a rate.
+        self.frame_rate = frame_rate
         self._label = 0
 
     def _next(self, prefix: str) -> str:
@@ -196,17 +201,59 @@ class Compiler:
         self.filters.append(f"[{head_v}][{head_a}][{tail_v}][{tail_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]")
         self.video, self.audio = out_v, out_a
 
+    def _bound_audio(self, expected: float | None) -> str:
+        """Pad-then-trim the audio to the duration the edit actually means.
+
+        atempo does not land exactly. Speeding up, its output runs LONG (1.5066s
+        for a 1.500s edit); slowing down, it runs SHORT (5.986s for 6.000s). The
+        sign flips, which is precisely why the obvious `-shortest` cannot fix it
+        -- a flag that always takes the shorter stream turns one error into the
+        other.
+
+        apad covers the short case, atrim the long one, and the result follows
+        the video rather than the resampler's rounding.
+
+        Empty string when the source duration is unknown, so a plan compiled
+        without probing behaves exactly as it always did.
+        """
+        if not expected:
+            return ""
+        return f",apad,atrim=end={expected:.6f},asetpts=PTS-STARTPTS"
+
+    def _regrid(self) -> str:
+        """`fps=` to append after a `setpts`, or nothing when the rate is unknown.
+
+        setpts rescales timestamps but leaves frames off the uniform grid the
+        container expects, so the duration lands long -- 1.567s where 1.500s was
+        asked for, a 4.7% overshoot. Resampling to the SOURCE's own rate fixes it
+        exactly (45 frames, 1.500000s) without changing the frame rate a caller
+        chose.
+
+        Empty when the rate could not be read: reverting to the old, slightly
+        long behaviour is better than imposing a guessed frame rate on someone's
+        footage.
+        """
+        return f",fps={self.frame_rate:g}" if self.frame_rate else ""
+
     def retime(self, op: Retime) -> None:
         if op.speed is not None:
-            self.video = self._step(f"setpts={1 / op.speed:.6f}*PTS", self.video, "v")
-            self._astep(",".join(atempo_chain(op.speed)))
+            self.video = self._step(
+                f"setpts={1 / op.speed:.6f}*PTS{self._regrid()}", self.video, "v"
+            )
+            self._astep(",".join(atempo_chain(op.speed)) + self._bound_audio(
+                self.elapsed / op.speed if self.elapsed else None
+            ))
+            if self.elapsed:
+                self.elapsed /= op.speed
             return
 
         segments = ramp_segments(op.ramp)
+        retimed_total = sum((end - start) / speed for start, end, speed in segments)
         parts: list[str] = []
         for start, end, speed in segments:
             seg_v = self._step(
-                f"trim=start={start}:end={end},setpts=PTS-STARTPTS,setpts={1 / speed:.6f}*PTS",
+                f"trim=start={start}:end={end},setpts=PTS-STARTPTS,"
+                f"setpts={1 / speed:.6f}*PTS{self._regrid()}",
                 self.video,
                 "v",
             )
@@ -227,6 +274,10 @@ class Compiler:
         out_v, out_a = self._next("v"), self._next("a")
         self.filters.append(f"{''.join(parts)}concat=n={len(segments)}:v=1:a=1[{out_v}][{out_a}]")
         self.video, self.audio = out_v, out_a
+        self.elapsed = retimed_total
+        bound = self._bound_audio(retimed_total)
+        if bound:
+            self.audio = self._step(bound.lstrip(","), self.audio, "a")
 
     def zoom(self, op: Zoom) -> None:
         frames = max(1, int(op.duration * 30))
@@ -443,9 +494,10 @@ def compile_plan(
     overwrite: bool = True,
     durations: dict[str, float] | None = None,
     has_audio: bool = True,
+    frame_rate: float | None = None,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
-    compiler = Compiler(plan, durations=durations, has_audio=has_audio)
+    compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate)
     dispatch = {
         "trim": compiler.trim,
         "cut": compiler.cut,
@@ -480,6 +532,15 @@ def compile_plan(
     command += ["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"]
     if compiler.audio is not None:
         command += ["-c:a", "aac"]
+        # NO -shortest HERE, and that was learned the hard way. It looked like
+        # exactly the right tool -- the video lands correctly and only atempo's
+        # rounding runs long -- and it made 2x and 1.5x exact. It also broke
+        # every SLOW-DOWN: at 0.5x, atempo's output is slightly SHORT, so
+        # -shortest truncated a 6.000s edit to 5.986s. A flag that takes the
+        # shorter of two streams cannot fix an error that changes sign.
+        #
+        # The audio is bounded in `retime` itself instead, where the intended
+        # duration is actually known.
     else:
         # Explicit, not implied. `-an` states the intent in the command a
         # caller can read with --print-command.

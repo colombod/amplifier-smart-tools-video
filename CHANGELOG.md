@@ -70,7 +70,10 @@ lands **4.25s into a 6.00s** slot.
 
 ### Known limits
 
-- `retime 2x` on a 3.0s clip produces 1.57s rather than 1.50s — a 4.7% overshoot.
+- ~~`retime 2x` on a 3.0s clip produces 1.57s rather than 1.50s~~ — **fixed after
+  0.3.0 was tagged.** Two stacked errors: `setpts` left frames off the uniform
+  grid, and underneath that `atempo`'s rounding runs long when speeding up and
+  **short** when slowing down. Every speed now lands exactly.
 - Palette *quantisation* (the poster look) is designed but not built; `recolor`
   does the grade.
 - `blur --region`, for obscuring a token in a demo recording, does not exist yet.

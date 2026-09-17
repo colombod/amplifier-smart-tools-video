@@ -98,3 +98,32 @@ def has_subtitles_filter() -> bool:
         for line in result.stdout.splitlines()
         if len(line.split()) > 1
     )
+
+
+def frame_rate(path: str) -> float | None:
+    """The video's nominal frame rate, or None when it cannot be read.
+
+    Needed because `setpts` rescales timestamps WITHOUT putting frames back on a
+    uniform grid, so a 3.0s clip at 2x came out 1.567s instead of 1.500s -- a
+    4.7% overshoot that nothing flagged. Appending `fps=<this>` resamples them
+    and lands it exactly.
+
+    It must be the SOURCE's rate, not a constant: hardcoding 30 would silently
+    convert a 25fps clip while appearing to fix a bug.
+    """
+    if not have_ffprobe():
+        return None
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=r_frame_rate", "-of", "default=nw=1:nk=1", path],
+        capture_output=True, text=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    try:
+        numerator, _, denominator = raw.partition("/")
+        rate = float(numerator) / float(denominator or 1)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return rate if rate > 0 else None
