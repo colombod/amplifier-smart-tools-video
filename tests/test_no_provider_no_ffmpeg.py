@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import sys
 
 import pytest
@@ -45,9 +46,23 @@ EMPTY_PLAN = json.dumps({"plan_format": 1, "source": "talk.mp4", "operations": [
 pytestmark = pytest.mark.skipif(not VID.exists(), reason="run `uv sync` first: no .venv/bin/vid")
 
 
+#: An empty directory, used as the whole of PATH. Created once, never written to.
+_EMPTY_BIN = tempfile.mkdtemp(prefix="vid-no-path-")
+
+
 def _bare_env() -> dict[str, str]:
-    """A PATH with no ffmpeg and no provider credentials anywhere in it."""
-    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
+    """A PATH with no ffmpeg and no provider credentials anywhere in it.
+
+    POINTS AT AN EMPTY DIRECTORY rather than at "/usr/bin:/bin", and that
+    distinction is the whole test. The old value was a guess that those
+    directories would not contain ffmpeg -- true on a laptop where it lives in
+    ~/.local/bin, false on CI where apt puts it at /usr/bin/ffmpeg.
+
+    So this suite passed locally for an environmental accident, not because the
+    scrub worked, and CI said so the first time it ran. Every command invoked
+    here is given by absolute path, so an empty PATH costs nothing.
+    """
+    env = {"PATH": _EMPTY_BIN, "HOME": os.environ.get("HOME", "/tmp")}
     for name in PROVIDER_VARS:
         assert name not in env
     return env
