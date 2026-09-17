@@ -115,6 +115,44 @@ returned chunk id that does not exist is a loud error, not a plausible wrong ans
 
 That guard is testable, and it is the first thing that should have a test.
 
+## Finding a moment on screen: embed to filter, caption to finalise
+
+The visual half of `find` and `highlight` needs to answer "when is X on screen?". Embeddings
+look like the obvious answer, and they are half of it.
+
+**Why embeddings are structurally right.** An embedding maps a segment to a vector. The
+timestamp comes from *which segment we chose to embed* — our own bookkeeping — so the model
+is never in a position to emit a timecode at all. The guard is not enforced by discipline
+here; it is unreachable by construction. That is the strongest form of the rule in this
+document.
+
+**Why embeddings are not sufficient, which measurement decided.** CLIP-class encoders are
+spatially coarse. ViT-B/32 at 224px is 7×7 pixels per patch, so a small on-screen
+element — an error dialog, a button, a price — occupies almost nothing the model can see.
+Fine-grained retrieval recall drops to roughly 40–60% (arXiv 2404.03539), against 85–95%
+for describing the frame and searching the description. Cloud embeddings raise the baseline
+but do not fix the specificity problem.
+
+So embedding alone loses precisely the queries this tool exists for. "Outdoor, daytime" it
+handles; "the moment the error appears" it does not.
+
+**The shape that works is two stages:**
+
+```
+shots        deterministic, free            40 candidates from 18,000 frames
+embed        cheap, fast, coarse            40 → the 5 worth looking at
+describe     vision model, 5 frames only    which of the 5, and why
+```
+
+Each stage is a filter for the next, so the expensive one runs on single digits. And the
+guard survives the whole pipeline: a description is *text about a shot*, the shot id carries
+the time, and the timestamp is a lookup at every stage.
+
+**Backends follow the same tiering as speech.** Local CLIP via a GGML-style runtime is
+~400 MB and needs no torch; Gemini's multimodal embedding needs no install and shares one
+space with text queries, at roughly a tenth of a cent to index a ten-minute video. Neither
+is a default we should pick on a caller's behalf — `check` reports which is available.
+
 ## What is parked, and why it is written down
 
 **Remotion** — a React frame-synthesis engine — was assessed as a rendering backend for
