@@ -115,9 +115,37 @@ vid trim talk.mp4 --to 2:00 | vid stitch - outro.mp4 --transition fade --duratio
 `-` stands for the plan arriving on stdin, so you control where the running edit
 sits in the order.
 
-**Transitions.** `--transition` names one of ffmpeg's `xfade` presets: `fade`,
-`dissolve`, `wipeleft`, `wiperight`, `slideup`, `slidedown`, `circleopen`,
-`circleclose`, `pixelize`, `zoomin`, and around thirty more.
+## Transitions, in three tiers
+
+```bash
+--transition dissolve                          a name. No model. $0.00.
+--transition "soft and dreamy"                 a model picks one of 58.
+--transition "slam in from the right,          no preset fits, so one is
+              overshooting before it settles"  WRITTEN -- and proven.
+```
+
+**Tier 1** matches one of ffmpeg's 58 `xfade` presets. `vid transitions
+--describe` lists them with what each looks like.
+
+**Tier 2** hands a description to a model and asks it to pick from those 58. Its
+answer is checkable against the list, so a wrong one is a loud error rather than
+a plausible answer. Tier 2 always runs first — you never pay for tier 3 when a
+preset would have done.
+
+**Tier 3** only happens when the model reports that nothing in the 58 fits. It
+writes a new `xfade` expression, and then **the tool renders it and measures it
+before believing it.** A short probe of just the blend window is sampled: if the
+middle frame does not sit between the two clips, the transition is refused and
+you are told why, with the expression it tried.
+
+This matters because a generated expression can compile perfectly and still move
+wrongly. One in six did exactly that in testing — it read as obviously correct
+and was wrong, because the expression runs per YUV plane rather than over RGB.
+No model caught that. Three sampled frames did.
+
+**A failed check refuses. It never falls back to `fade.`** Getting something
+generic when you asked for something specific, and not being told, is the worst
+outcome available.
 
 Two things a caller usually finds out the hard way, which this verb handles:
 

@@ -144,14 +144,23 @@ def check() -> str:
     return "\n".join(lines)
 
 
-def resolve_transition(text: str) -> tuple[str, str | None, str | None]:
-    """A `--transition` value, resolved to a preset ffmpeg actually has.
+def resolve_transition(
+    text: str,
+    first: str | None = None,
+    second: str | None = None,
+    duration: float = 0.5,
+) -> tuple[str, str | None, str | None, str | None]:
+    """A `--transition` value, resolved to something ffmpeg can actually run.
 
-    A name resolves with no model at all. A description needs one, and gets a
-    CLOSED SET to choose from -- so a wrong answer is detectable rather than
-    plausible. Returns `(preset, requested, rationale)`.
+    Three tiers. A NAME resolves with no model at all. A DESCRIPTION gets a
+    closed set of 58 to choose from, so a wrong answer is detectable rather than
+    plausible. And when the model reports that nothing in the set fits, a new
+    expression is WRITTEN -- then rendered as a probe and measured, because
+    unbounded output is the one thing here that cannot be trusted on sight.
+
+    Returns `(preset, requested, rationale, expression)`.
     """
-    from vid.transitions import looks_like_a_description, resolve
+    from vid.transitions import looks_like_a_description, resolve_with_clips
 
     intelligence = None
     if looks_like_a_description(text):
@@ -161,10 +170,10 @@ def resolve_transition(text: str) -> tuple[str, str | None, str | None]:
             intelligence = default_intelligence()
             intelligence.preflight()
         except Exception:
-            # Left as None so `resolve` can explain the situation properly --
+            # Left as None so the resolver can explain the situation properly --
             # it knows whether a model was needed, and this does not.
             intelligence = None
-    return resolve(text, intelligence)
+    return resolve_with_clips(text, first, second, duration, intelligence)
 
 
 def verify(

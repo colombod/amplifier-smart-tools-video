@@ -90,6 +90,17 @@ class Stitch(BaseModel):
     # choice before a frame is touched.
     transition_requested: str | None = None
     transition_rationale: str | None = None
+    # TIER 3. A generated xfade expression, present only when `transition` is
+    # "custom". It reaches a plan ONLY after being rendered as a probe against
+    # THESE clips and passing the blend checks -- so a plan never carries an
+    # expression whose behaviour is unknown.
+    #
+    # Verified against the specific clips it will be used on, deliberately. The
+    # expression is deterministic, so proving it once for this pair is enough
+    # for this pair; reusing it against a different pair would be a claim nobody
+    # checked.
+    transition_expr: str | None = None
+    transition_verified: bool = False
 
 
 class Caption(BaseModel):

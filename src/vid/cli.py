@@ -141,9 +141,15 @@ def stitch(
     if not rest:
         raise VidError("stitch needs at least one clip to join on. Name another file.")
 
-    preset, requested, rationale = (None, None, None)
+    preset, requested, rationale, expression = (None, None, None, None)
     if transition is not None:
-        preset, requested, rationale = lib.resolve_transition(transition)
+        # The clips are handed over so a GENERATED transition can be proven
+        # against the pair it will actually join. Tier 1 and tier 2 ignore them.
+        first = plan.source if plan.source else (rest[0] if rest else None)
+        second = rest[0] if rest else None
+        preset, requested, rationale, expression = lib.resolve_transition(
+            transition, first, second, duration
+        )
 
     write_plan(
         plan.with_operation(
@@ -153,6 +159,10 @@ def stitch(
                 transition_duration=duration,
                 transition_requested=requested,
                 transition_rationale=rationale,
+                transition_expr=expression,
+                # True only on the tier-3 path, where `probe` actually rendered
+                # and measured it. A preset needs no proving; it is ffmpeg's.
+                transition_verified=expression is not None,
             )
         )
     )

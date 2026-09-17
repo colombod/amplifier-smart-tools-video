@@ -221,10 +221,25 @@ class Compiler:
             )
         out_v, out_a = self._next("v"), self._next("a")
         offset = max(0.0, self.elapsed - op.transition_duration)
+        expr = ""
+        if op.transition == "custom":
+            if not op.transition_expr:
+                raise VidError(
+                    "A custom transition needs an expression, and this plan carries none. "
+                    "Custom transitions are generated and verified when the plan is built."
+                )
+            if not op.transition_verified:
+                raise VidError(
+                    "This plan carries an UNVERIFIED custom transition. A generated "
+                    "expression reaches a plan only after being proven to blend against "
+                    "the clips it will be used on -- refusing rather than rendering "
+                    "something whose behaviour nobody checked."
+                )
+            expr = f":expr='{op.transition_expr}'"
         self.filters.append(
             f"[{self.video}][{other_v}]"
             f"xfade=transition={op.transition}:duration={op.transition_duration}:offset={offset}"
-            f"[{out_v}]"
+            f"{expr}[{out_v}]"
         )
         self.filters.append(
             f"[{self.audio}][{other_a}]acrossfade=d={op.transition_duration}[{out_a}]"
