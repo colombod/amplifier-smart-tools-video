@@ -81,6 +81,20 @@ class Hit:
     rationale: str | None = None
 
 
+def visual_chunks(record: dict) -> list[Chunk]:
+    """Shot descriptions, as searchable passages.
+
+    Deliberately the same Chunk type as speech: a hit is a time range with the
+    evidence that produced it, and whether that evidence was heard or seen does
+    not change its shape -- only its label.
+    """
+    return [
+        Chunk(id=shot["id"], start=shot["start"], end=shot["end"], text=shot["description"])
+        for shot in record.get("shots", [])
+        if shot.get("description")
+    ]
+
+
 def _terms(query: str) -> list[str]:
     words = re.findall(r"[a-z0-9']+", query.lower())
     return [w for w in words if w not in _NOISE and len(w) > 2]
@@ -222,22 +236,42 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
     return [_merge([known[i] for i in wanted], how="described", rationale=rationale)]
 
 
-def find(chunks: list[Chunk], query: str, intelligence=None) -> list[Hit]:
-    """Literal first, then a model if one is available and nothing matched."""
-    if not chunks:
+def find(chunks: list[Chunk], query: str, intelligence=None, seen: list[Chunk] | None = None) -> list[Hit]:
+    """Literal first, then what was seen, then a model if one is available.
+
+    SPEECH BEFORE VISION, on purpose. A transcript says what was actually meant;
+    a frame description says what a model made of a picture. When both could
+    answer, the transcript is the better evidence, and searching it first also
+    costs nothing.
+    """
+    seen = seen or []
+    if not chunks and not seen:
         raise VidError(
-            "This video has no speech in its index. Run `vid index <video>` first, "
-            "and check the video actually carries audio."
+            "This video has nothing searchable in its index -- no speech, and no "
+            "shot descriptions. Run `vid index <video>` for speech, or "
+            "`vid index <video> --vision` to describe what is on screen."
         )
 
-    hits = find_literal(chunks, query)
+    hits = find_literal(chunks, query) if chunks else []
     if hits:
         return hits
 
+    if seen:
+        visual = find_literal(seen, query)
+        if visual:
+            # Relabelled so a caller can tell heard from seen. The distinction
+            # matters: a description is a model's reading of a picture, and a
+            # caller weighing a result deserves to know which it got.
+            return [
+                Hit(start=hit.start, end=hit.end, chunk_ids=hit.chunk_ids,
+                    text=hit.text, how="seen", rationale=hit.rationale)
+                for hit in visual
+            ]
+
     if intelligence is None:
         raise VidError(
-            f"Nothing in the transcript literally matches {query!r}, and matching it by "
-            "meaning needs a model that is not configured. Either search for words the "
+            f"Nothing in this video's index literally matches {query!r}, and matching it "
+            "by meaning needs a model that is not configured. Either search for words the "
             "speaker actually used, or configure a provider -- `vid check` says how."
         )
-    return find_described(chunks, query, intelligence)
+    return find_described(chunks or seen, query, intelligence)

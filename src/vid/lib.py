@@ -233,18 +233,80 @@ def verify(
     return passed, text
 
 
-def index(video: str, *, speech: bool = True, model_size: str = "base") -> str:
+def index(
+    video: str,
+    *,
+    speech: bool = True,
+    model_size: str = "base",
+    vision: bool = False,
+    yes: bool = False,
+) -> str:
     """Build (or extend) a video's index and report what it holds."""
-    from vid.index import build, index_path
+    import json
+    import sys
+
+    from vid.index import build, describe, index_path
+    from vid.schemas import VidError
 
     record = build(video, speech=speech, model_size=model_size)
+
+    if vision:
+        pending = [shot for shot in record.get("shots", []) if not shot.get("description")]
+        if not pending:
+            return _index_report(video, record, note="every shot already described")
+
+        # COST IS STATED BEFORE IT IS SPENT. A verb that quietly makes a model
+        # call per shot on a two-hour recording is how people stop trusting a
+        # tool. A person gets asked; an agent gets the number in the refusal and
+        # can decide for itself -- neither one is surprised by a bill.
+        notice = (
+            f"{video}: {len(pending)} shot(s) to describe.\n"
+            "  Shot detection already reduced this from every frame in the video "
+            "to one frame per shot."
+        )
+        if not yes:
+            if sys.stdin.isatty():
+                sys.stderr.write(notice + "\n")
+                if input("  Describe them? [y/N] ").strip().lower() not in {"y", "yes"}:
+                    return "Nothing described. The index is unchanged."
+            else:
+                raise VidError(notice + "\n  Refusing to spend that unasked. Re-run with --yes.")
+
+        intelligence = None
+        try:
+            from vid.intelligence.interface import default_intelligence
+
+            intelligence = default_intelligence()
+            intelligence.preflight()
+        except Exception:
+            intelligence = None
+        if intelligence is None:
+            raise VidError(
+                "Describing what is on screen needs a model, and none is configured. "
+                "Shot detection and speech indexing keep working without one -- "
+                "`vid check` says how to configure a provider."
+            )
+
+        record = describe(video, record, intelligence)
+        index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    return _index_report(video, record)
+
+
+def _index_report(video: str, record: dict, note: str = "") -> str:
+    from vid.index import index_path
+
+    shots = record.get("shots", [])
+    described = sum(1 for shot in shots if shot.get("description"))
     lines = [
         f"indexed {video}",
         f"  {record['duration']:.1f}s, fingerprint {record['fingerprint']}",
-        f"  shots  {len(record.get('shots', []))}",
+        f"  shots  {len(shots)}" + (f", {described} described" if described else ""),
         f"  speech {len(record.get('speech', []))} passages" if "speech" in record else "  speech not indexed",
         f"  stored {index_path(video)}",
     ]
+    if note:
+        lines.append(f"  ({note})")
     return "\n".join(lines)
 
 
@@ -273,7 +335,9 @@ def find(query: str, video: str, *, show: bool = False) -> None:
     except Exception:
         intelligence = None
 
-    hits = search(chunks_of(record), query, intelligence)
+    from vid.find import visual_chunks
+
+    hits = search(chunks_of(record), query, intelligence, seen=visual_chunks(record))
     if not hits:
         raise VidError(f"Nothing in {video!r} matches {query!r}.")
 

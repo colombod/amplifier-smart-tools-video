@@ -140,3 +140,45 @@ def test_every_hit_carries_the_evidence_that_produced_it(talk):
     assert hit.chunk_ids and hit.text
     assert hit.how == "literal"
     assert "dollar" in hit.text.lower() or "$" in hit.text
+
+
+def test_the_scene_threshold_catches_obvious_hard_cuts(tmp_path):
+    """The default that shipped wrong, pinned so it cannot drift back.
+
+    `detect_shots` defaulted to 0.4, and obvious hard cuts between solid colour
+    title cards score as low as 0.076 -- so a three-shot video reported ONE shot
+    and nothing looked broken. It underpins both the vision story and narration's
+    slots, so under-detecting quietly degrades two features at once.
+
+    The costs are asymmetric: over-detecting splits a shot in two, which costs one
+    extra description and still finds the moment; under-detecting loses the
+    boundary with no way to recover it.
+    """
+    import subprocess
+
+    from vid.index import SCENE_THRESHOLD, detect_shots
+
+    assert SCENE_THRESHOLD <= 0.1, "a threshold this high misses real cuts"
+
+    parts = []
+    for index, colour in enumerate(("navy", "darkgreen", "maroon")):
+        part = tmp_path / f"p{index}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+             "-i", f"color=c={colour}:s=320x180:r=15:d=2",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(part)],
+            check=True, capture_output=True,
+        )
+        parts.append(part)
+
+    listing = tmp_path / "list.txt"
+    listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
+    joined = tmp_path / "three.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+         "-i", str(listing), "-c", "copy", str(joined)],
+        check=True, capture_output=True, cwd=tmp_path,
+    )
+
+    shots = detect_shots(str(joined))
+    assert len(shots) == 3, f"three obvious cuts produced {len(shots)} shot(s)"

@@ -338,6 +338,31 @@ Produces two things and stores them where they persist:
 questions about one video cost one transcription. It is keyed by the video's
 CONTENT, not its path -- a renamed file is the same video, a re-export is not.
 
+## Describing what is SHOWN
+
+```bash
+vid index talk.mp4 --vision          # asks first, then describes
+vid index talk.mp4 --vision --yes    # for a script or an agent
+```
+
+Without this, `find` searches only what was SAID -- so a silent screen recording
+is invisible to it. `--vision` describes one frame per shot and stores the
+description against that shot's existing time range, and `find` then searches
+both, labelling a hit `[seen]` or `[literal]` so you know which kind of evidence
+answered you.
+
+**Shot detection is what makes this affordable.** A ten-minute recording is about
+eighteen thousand frames, and describing eighteen thousand frames is absurd at any
+price. Shot boundaries take it to a few dozen -- one frame each.
+
+**The cost is stated before it is spent.** The command says how many shots it is
+about to describe and waits for you to agree. In a script or an agent, where
+nobody can answer, it refuses and tells you to pass `--yes` -- so nothing is ever
+billed by surprise.
+
+**No timestamp ever comes from a model.** The shot boundaries are ffmpeg's; a
+model only says what a frame shows. A time is a lookup, never a guess.
+
 **What it costs.** Shots are free. Speech needs a backend:
 
 ```bash

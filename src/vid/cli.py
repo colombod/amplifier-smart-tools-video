@@ -208,10 +208,12 @@ def build_index(
     video: Annotated[str, typer.Argument(help="The video to index.")],
     speech: Annotated[bool, typer.Option("--speech/--no-speech", help="Transcribe the audio.")] = True,
     model_size: Annotated[str, typer.Option("--model", help="Whisper size: tiny, base, small, medium.")] = "base",
+    vision: Annotated[bool, typer.Option("--vision", help="Also describe what is SHOWN, one frame per shot.")] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Do not ask before spending on descriptions.")] = False,
     help: _doc("index") = False,
 ) -> None:
     """Build a time-coded account of what is in a video. Reused by every later question."""
-    typer.echo(lib.index(video, speech=speech, model_size=model_size))
+    typer.echo(lib.index(video, speech=speech, model_size=model_size, vision=vision, yes=yes))
 
 
 @app.command()

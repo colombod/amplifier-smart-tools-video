@@ -86,7 +86,27 @@ def load(video: str) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def detect_shots(video: str, threshold: float = 0.4) -> list[Shot]:
+#: How different two frames must be to count as a cut.
+#:
+#: 0.05, and NOT the 0.4 this shipped with, because 0.4 was measured missing
+#: obvious hard cuts. Straight colour-and-title changes score as low as 0.076:
+#:
+#:     a three-shot video    cuts scored 0.399 and 0.193  -> 0.4 found ONE shot
+#:     another three-shot    cuts scored 0.076 and 0.467  -> 0.4 found TWO
+#:
+#: The costs are ASYMMETRIC, and that is what settles the number. Over-detecting
+#: splits one shot into two: one extra frame described, cheap, and a caller can
+#: still find the moment. Under-detecting loses a boundary entirely -- the moment
+#: cannot be found, and narration gets one giant slot instead of several. There
+#: is no recovering from the second, so the threshold leans loose.
+#:
+#: This mattered more than it looked. Shot detection underpins BOTH the vision
+#: story (a few dozen frames instead of eighteen thousand) and narration's slots.
+#: A 29-second fixture reporting one shot looked plausible and was wrong.
+SCENE_THRESHOLD = 0.05
+
+
+def detect_shots(video: str, threshold: float = SCENE_THRESHOLD) -> list[Shot]:
     """Shot boundaries, deterministically and for free.
 
     This is the cheapest useful thing in the whole tool: no model, no network, no
@@ -155,6 +175,29 @@ def transcribe(video: str, model_size: str = "base") -> list[Chunk]:
         Chunk(id=f"c{i}", start=round(segment.start, 3), end=round(segment.end, 3), text=segment.text.strip())
         for i, segment in enumerate(segments)
     ]
+
+
+def describe(video: str, record: dict, intelligence) -> dict:
+    """Add a description to every shot that does not have one.
+
+    Descriptions live ON the shots, beside time ranges ffmpeg already produced.
+    A model never supplies a time -- that is the whole point of describing frames
+    rather than asking when something happened.
+    """
+    from vid.vision import describe_shots
+
+    shots = record.get("shots") or []
+    pending = [shot for shot in shots if not shot.get("description")]
+    if not pending:
+        return record
+
+    described = describe_shots(video, pending, intelligence)
+    by_id = {item.shot_id: item.description for item in described}
+    for shot in shots:
+        if shot["id"] in by_id:
+            shot["description"] = by_id[shot["id"]]
+    record["shots"] = shots
+    return record
 
 
 def build(video: str, *, speech: bool = True, shots: bool = True, model_size: str = "base") -> dict:
