@@ -145,8 +145,31 @@ class AudioMix(BaseModel):
     level: float = -18.0
 
 
+class Recolor(BaseModel):
+    """Map the video's colour onto a reference image's.
+
+    THE PLAN CARRIES THE MEASUREMENTS, NOT A FILE PATH. Six numbers and a
+    strength, rather than a pointer to a lookup table somewhere on this machine.
+    A plan is meant to be saved, diffed, mailed and replayed, and a plan that
+    depends on a temp file is a plan that stops working tomorrow.
+
+    The lookup table is regenerated from these numbers at render. It is pure
+    arithmetic, it takes no time worth measuring, and the result is identical
+    every time -- so there is nothing to gain by keeping the file and everything
+    to gain by keeping the plan self-contained.
+    """
+
+    op: Literal["recolor"] = "recolor"
+    reference: str
+    source_mean: tuple[float, float, float]
+    source_std: tuple[float, float, float]
+    reference_mean: tuple[float, float, float]
+    reference_std: tuple[float, float, float]
+    strength: float = 1.0
+
+
 Operation = Annotated[
-    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix,
+    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix | Recolor,
     Field(discriminator="op"),
 ]
 

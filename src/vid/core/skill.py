@@ -31,6 +31,7 @@ CAPABILITIES = (
     ),
     Capability("audio", "Remove, replace, mix or extract the audio track. Never needs a provider.", model_backed=False),
     Capability("narrate", "Write a narration from a prompt, fit it to the timing of the video, and lay it on.", model_backed=True),
+    Capability("recolor", "Map the palette of a reference image onto the video. Pure arithmetic, no provider.", model_backed=False),
     Capability("caption", "Burn subtitles into the picture.", model_backed=False),
     Capability("plan", "Show the edit as JSON, without performing it.", model_backed=False),
     Capability("render", "Compile the plan and encode, once. The ONLY verb that touches pixels.", model_backed=False),

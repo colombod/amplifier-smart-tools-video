@@ -43,7 +43,7 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
 
     from vid.compile import compile_plan
     from vid.plan import Stitch
-    from vid.probe import duration, have_ffmpeg
+    from vid.probe import duration, has_audio, have_ffmpeg
     from vid.schemas import VidError
 
     needs_durations = any(isinstance(op, Stitch) and op.transition for op in plan.operations)
@@ -52,7 +52,11 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
         durations = {path: duration(path) for path in dict.fromkeys(p for p in paths if p and p != "-")}
 
-    command = compile_plan(plan, output, durations=durations)
+    # Probed here beside the durations, and for the same reason: whether a file
+    # has sound is a property of the FILE, not of the plan, and keeping that out
+    # of the compiler is what lets every other verb run with no ffmpeg at all.
+    source_has_audio = has_audio(plan.source) if plan.source else True
+    command = compile_plan(plan, output, durations=durations, has_audio=source_has_audio)
 
     if print_command:
         import shlex
@@ -472,3 +476,28 @@ def narrate(
 
     report += ["", f"  wrote {out} ({'mixed over' if layer else 'replacing'} the original audio)"]
     return "\n".join(report)
+
+
+def recolor_op(video: str, reference: str, strength: float = 1.0):
+    """Measure both palettes and build the operation that maps one onto the other.
+
+    Everything here is arithmetic: frames sampled with ffmpeg, statistics
+    computed in Python, no provider, no network, nothing uploaded.
+    """
+    from pathlib import Path
+
+    from vid.color import measure_image, measure_video
+    from vid.plan import Recolor
+    from vid.schemas import VidError
+
+    if not Path(reference).is_file():
+        raise VidError(f"No such reference image: {reference!r}")
+
+    source = measure_video(video)
+    target = measure_image(reference)
+    return Recolor(
+        reference=reference,
+        source_mean=source.mean, source_std=source.std,
+        reference_mean=target.mean, reference_std=target.std,
+        strength=strength,
+    )

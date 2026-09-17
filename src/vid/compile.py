@@ -16,8 +16,21 @@ OS unparsed, so there is no quoting problem to get wrong.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
-from vid.plan import AudioMix, AudioRemove, AudioReplace, Caption, Cut, Plan, Retime, Stitch, Trim, Zoom
+from vid.plan import (
+    AudioMix,
+    AudioRemove,
+    AudioReplace,
+    Caption,
+    Cut,
+    Plan,
+    Recolor,
+    Retime,
+    Stitch,
+    Trim,
+    Zoom,
+)
 from vid.schemas import VidError
 
 #: `atempo` is documented as reliable in this range. Outside it, chain stages.
@@ -105,7 +118,12 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
 class Compiler:
     """Turns a plan into inputs plus a filter graph."""
 
-    def __init__(self, plan: Plan, durations: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        plan: Plan,
+        durations: dict[str, float] | None = None,
+        has_audio: bool = True,
+    ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
         self.plan = plan
@@ -117,7 +135,10 @@ class Compiler:
         self.inputs: list[str] = [plan.source]
         self.filters: list[str] = []
         self.video = "0:v"
-        self.audio = "0:a"
+        # None when the source carries no audio stream. Every audio step is
+        # already guarded on this, so the whole chain degrades to video-only
+        # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
+        self.audio = "0:a" if has_audio else None
         self._label = 0
 
     def _next(self, prefix: str) -> str:
@@ -283,6 +304,28 @@ class Compiler:
         style = f":force_style='{op.style}'" if op.style else ""
         self.video = self._step(f"subtitles='{path}'{style}", self.video, "v")
 
+    def recolor(self, op: Recolor) -> None:
+        """Apply the colour transfer, as a lookup table ffmpeg reads once.
+
+        The table is regenerated here from the numbers in the plan rather than
+        carried as a file, so a plan stays portable. Generating it is pure
+        arithmetic over 4913 entries -- instant, and identical every time.
+        """
+        import tempfile
+
+        from vid.color import ColorStats, write_cube
+
+        cube = Path(tempfile.gettempdir()) / f"vid-lut-{abs(hash((op.source_mean, op.reference_mean, op.strength)))}.cube"
+        if not cube.is_file():
+            write_cube(
+                ColorStats(mean=op.source_mean, std=op.source_std),
+                ColorStats(mean=op.reference_mean, std=op.reference_std),
+                cube,
+                strength=op.strength,
+            )
+        path = str(cube).replace("\\", "/").replace(":", r"\:")
+        self.video = self._step(f"lut3d='{path}'", self.video, "v")
+
     # ---- audio ----------------------------------------------------------
     #
     # These are the only operations that touch audio ALONE. Everything else --
@@ -357,9 +400,10 @@ def compile_plan(
     *,
     overwrite: bool = True,
     durations: dict[str, float] | None = None,
+    has_audio: bool = True,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
-    compiler = Compiler(plan, durations=durations)
+    compiler = Compiler(plan, durations=durations, has_audio=has_audio)
     dispatch = {
         "trim": compiler.trim,
         "cut": compiler.cut,
@@ -367,6 +411,7 @@ def compile_plan(
         "zoom": compiler.zoom,
         "stitch": compiler.stitch,
         "caption": compiler.caption,
+        "recolor": compiler.recolor,
         "audio_remove": compiler.audio_remove,
         "audio_replace": compiler.audio_replace,
         "audio_mix": compiler.audio_mix,

@@ -309,6 +309,19 @@ def narrate(
 
 
 @app.command()
+def recolor(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    like: Annotated[str, typer.Option("--like", help="A reference image to take the palette from.")] = ...,
+    strength: Annotated[float, typer.Option("--strength", help="0 leaves it alone, 1 is the full transfer.")] = 1.0,
+    help: _doc("recolor") = False,
+) -> None:
+    """Map the video's colour onto a reference image's. No model, no network."""
+    plan = read_plan(video)
+    source = plan.source if plan.source else video
+    write_plan(plan.with_operation(lib.recolor_op(source, like, strength)))
+
+
+@app.command()
 def verify(
     video: Annotated[str, typer.Argument(help="The rendered file to check.")],
     expect_duration: Annotated[

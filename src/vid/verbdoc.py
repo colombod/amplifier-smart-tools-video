@@ -273,6 +273,55 @@ Works far better on a video that has speech or a vision index. On a silent
 recording with neither, the model is told plainly that nothing is known about a
 stretch, rather than left to invent something.
 """,
+    "recolor": """# vid recolor -- take the palette from an image
+
+```bash
+vid recolor talk.mp4 --like brand-shot.jpg | vid render out.mp4
+vid recolor talk.mp4 --like brand-shot.jpg --strength 0.6 | vid render out.mp4
+```
+
+"Make this recording look like that photograph." A reference image is the only
+unambiguous way to say what you want -- a named look like `--warm` is a guess at
+your intent, while a picture IS your intent. It is also the only practical way to
+match footage to a deck, a brand, or a clip shot somewhere else.
+
+## What it actually does
+
+Reinhard colour transfer. Both the video and the image are measured in a
+perceptual colour space -- mean and spread, per channel -- and the transform that
+moves the video's distribution onto the image's is baked into a lookup table.
+
+The video is sampled at **nine frames** spread through it, skipping the first and
+last tenth: one frame lets a single dark shot decide the whole grade, and titles
+or fades at the ends are not representative of the body.
+
+## `--strength`
+
+`1.0` is the full transfer. A full transfer onto a very *different* reference can
+look ridiculous, so this is a dial rather than a clamp you cannot see. `0.6` is a
+good starting point when the reference is only loosely related to your footage.
+`0` leaves the video alone.
+
+## What it costs
+
+**$0.00. No provider, no network, nothing uploaded.** This is arithmetic from end
+to end -- and it is worth saying plainly, because "match this video to that image"
+sounds like the kind of thing that ought to need a model, and it does not.
+
+It also costs **no extra decode.** The transform is computed once, not per frame,
+and applied by ffmpeg as part of the same single pass as `trim`, `zoom` and the
+rest.
+
+## How to tell it worked
+
+```bash
+vid recolor talk.mp4 --like ref.jpg | vid render out.mp4
+```
+
+The check is arithmetic too: the output's colour statistics should sit measurably
+**closer to the reference's** than the source's did. That turns "did the grade
+work" from an opinion into a number.
+""",
     "verify": """# vid verify -- check a rendered video against what you expected
 
 ```bash

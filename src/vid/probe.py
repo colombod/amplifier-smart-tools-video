@@ -45,3 +45,29 @@ def duration(path: str) -> float:
         return float(json.loads(result.stdout)["format"]["duration"])
     except (KeyError, ValueError, json.JSONDecodeError) as exc:
         raise VidError(f"{path!r} has no readable duration -- is it a video file?") from exc
+
+
+def has_audio(path: str) -> bool:
+    """Whether the file carries an audio stream at all.
+
+    Load-bearing, and it was missing. The compiler assumed `0:a` existed on every
+    source, so ANY video without an audio track failed at render with
+    `Stream map '' matches no streams` -- an ffmpeg message that names neither
+    the file nor the reason. Screen recordings routinely have no audio, and they
+    are one of the commonest things this tool is pointed at.
+
+    Returns True when it cannot tell: guessing "there is audio" degrades to the
+    old behaviour for an unreadable file, while guessing "there is none" would
+    silently DROP the audio from a file that has it. Losing sound is worse than
+    a loud failure.
+    """
+    if not have_ffprobe():
+        return True
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+         "stream=codec_type", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return True
+    return "audio" in result.stdout
