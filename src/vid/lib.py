@@ -76,6 +76,7 @@ def check() -> str:
     """A report on this machine: which tier is reachable, and what would unlock the next."""
     import importlib.util
     import shutil
+    import subprocess
 
     lines = ["vid -- what this installation can do", ""]
     ffmpeg = shutil.which("ffmpeg")
@@ -103,6 +104,40 @@ def check() -> str:
             "  [missing] speech backend",
             "            Unlocks: index speech, and find-by-what-was-said.",
             "            uv tool install --force 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'",
+        ]
+
+    # THE PROVIDER SECTION, which was missing and produced a dead pointer.
+    # The tier-2 refusal tells a caller "configure a provider -- `vid check`
+    # says how", and until a DTU run put a stranger in front of it, `check`
+    # inspected exactly two things and never mentioned a provider at all. The
+    # instruction led somewhere that did not contain the answer.
+    #
+    # It could only be found on a machine with no credentials. Every box that
+    # built this tool had a gh login, so the refusal never fired here and the
+    # dead pointer was never followed.
+    lines.append("")
+    gh = shutil.which("gh")
+    if gh:
+        signed_in = (
+            subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
+        )
+        if signed_in:
+            lines.append("  [ok]      provider        GitHub Copilot, via the gh CLI")
+            lines.append("            Describing a transition or a moment in words works.")
+        else:
+            lines += [
+                "  [missing] provider        gh is installed but not signed in",
+                "            Unlocks: --transition \"soft and dreamy\", and find-by-meaning.",
+                "            gh auth login",
+            ]
+    else:
+        lines += [
+            "  [missing] provider        none configured",
+            "            Unlocks: describing a transition or a moment in words instead of naming it.",
+            "            Everything else works without one -- naming a preset, and",
+            "            searching for words the speaker actually used, need no provider.",
+            "            Install the GitHub CLI and sign in:  https://cli.github.com/",
+            "            then: gh auth login",
         ]
 
     lines += ["", "  Nothing here is sent anywhere. This is a report on your machine."]

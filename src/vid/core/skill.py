@@ -17,7 +17,12 @@ CAPABILITIES = (
     Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
     Capability("stitch", "Join clips, with or without a transition.", model_backed=False),
     Capability("index", "Build a time-coded account of a video: shots, and speech as timed passages.", model_backed=False),
-    Capability("find", "Locate a moment by what was said. Writes a plan trimmed to it.", model_backed=True),
+    # NOT model_backed: the literal tier answers any query using words the
+    # speaker actually said, with no provider at all, and a DTU run showed that
+    # is the common case -- it served a real query on a credential-free box.
+    # Marking it model-backed under-sold what works uncredentialed, which is
+    # the one thing the spec most wants a consumer to be able to trust.
+    Capability("find", "Locate a moment by what was said. Literal search needs no provider; describing it by meaning escalates to one.", model_backed=False),
     Capability("caption", "Burn subtitles into the picture.", model_backed=False),
     Capability("plan", "Show the edit as JSON, without performing it.", model_backed=False),
     Capability("render", "Compile the plan and encode, once. The ONLY verb that touches pixels.", model_backed=False),

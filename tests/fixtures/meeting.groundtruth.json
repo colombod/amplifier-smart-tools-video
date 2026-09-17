@@ -1,0 +1,117 @@
+{
+  "total_seconds": 60.724036,
+  "turns": [
+    {
+      "speaker": "a",
+      "topic": "rollout",
+      "text": "So the plan is to deploy the new release to the staging cluster on Tuesday.",
+      "start": 0.0,
+      "end": 4.714921
+    },
+    {
+      "speaker": "b",
+      "topic": null,
+      "text": "Right, yeah.",
+      "start": 4.714921,
+      "end": 6.108753
+    },
+    {
+      "speaker": "a",
+      "topic": "rollout",
+      "text": "We deploy to staging first, then production on Thursday if nothing breaks.",
+      "start": 6.108753,
+      "end": 11.274059000000001
+    },
+    {
+      "speaker": "b",
+      "topic": "rollout",
+      "text": "And the rollback? If the deploy goes wrong on Thursday, what happens?",
+      "start": 11.274059000000001,
+      "end": 16.174603
+    },
+    {
+      "speaker": "a",
+      "topic": "rollout",
+      "text": "We keep the previous release running, so a rollback is just a switch.",
+      "start": 16.174603,
+      "end": 20.560998
+    },
+    {
+      "speaker": "b",
+      "topic": null,
+      "text": "Mhm. OK.",
+      "start": 20.560998,
+      "end": 22.576826
+    },
+    {
+      "speaker": "a",
+      "topic": "money",
+      "text": "The other thing is, well, the other thing is what we are paying every month.",
+      "start": 22.576826,
+      "end": 26.993787
+    },
+    {
+      "speaker": "b",
+      "topic": null,
+      "text": "Go on.",
+      "start": 26.993787,
+      "end": 27.891021000000002
+    },
+    {
+      "speaker": "a",
+      "topic": "money",
+      "text": "The bill from the provider has gone up three times since January.",
+      "start": 27.891021000000002,
+      "end": 32.147484000000006
+    },
+    {
+      "speaker": "b",
+      "topic": "money",
+      "text": "Three times? That is eating straight into our margin.",
+      "start": 32.147484000000006,
+      "end": 36.096917000000005
+    },
+    {
+      "speaker": "a",
+      "topic": "money",
+      "text": "It is. If it keeps climbing we cannot keep the current plan for the team.",
+      "start": 36.096917000000005,
+      "end": 41.171429
+    },
+    {
+      "speaker": "b",
+      "topic": "money",
+      "text": "So we either move provider or we make the workers less hungry.",
+      "start": 41.171429,
+      "end": 45.324626
+    },
+    {
+      "speaker": "b",
+      "topic": null,
+      "text": "Yeah. Yeah.",
+      "start": 45.324626,
+      "end": 46.823855
+    },
+    {
+      "speaker": "a",
+      "topic": "hiring",
+      "text": "Last thing. We should hire another engineer before the next deploy cycle.",
+      "start": 46.823855,
+      "end": 51.848889
+    },
+    {
+      "speaker": "b",
+      "topic": "hiring",
+      "text": "Agreed. Someone senior, who has run a platform team before.",
+      "start": 51.848889,
+      "end": 56.703084
+    },
+    {
+      "speaker": "a",
+      "topic": "hiring",
+      "text": "I will write the job description this week and send it round.",
+      "start": 56.703084,
+      "end": 60.724036
+    }
+  ]
+}

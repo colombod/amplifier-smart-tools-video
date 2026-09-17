@@ -147,3 +147,137 @@ def segment_for(topic: str, segments: list[Segment]) -> Segment:
         if segment.topic == topic:
             return segment
     raise KeyError(topic)
+
+
+# ---------------------------------------------------------------------------
+# A MEETING-SHAPED FIXTURE
+#
+# The simple talk above is one voice reading three clean paragraphs. Checking
+# `find` against a real 52-minute two-person meeting showed what that misses --
+# and the gap was not audio quality, it was CONVERSATIONAL SHAPE:
+#
+#   two speakers        turns interrupt each other mid-sentence
+#   backchannel         "yeah", "mhm" -- passages carrying no searchable content
+#   false starts        a word repeated, then abandoned
+#   topic drift         a subject mentioned in passing long before it is discussed
+#   the paraphrase gap  the searcher's word is not the speaker's word
+#
+# That last one matters most, and the real meeting is what surfaced it. Three
+# plausible queries against 52 minutes were ALL answered by the literal tier,
+# because people searching a recording tend to remember words rather than
+# paraphrases. So the described tier -- the one that needs a model -- was never
+# exercised on real speech at all.
+#
+# This fixture forces it. The "spend" topic is discussed at length WITHOUT the
+# words a searcher would reach for, so a query like "budget" or "cost" cannot
+# match literally and must escalate.
+#
+# The real recording stays out of this repository: it is private, and it is not
+# ours to publish. It shaped this fixture and then went back in its box.
+# ---------------------------------------------------------------------------
+
+MEETING_VIDEO = FIXTURE_DIR / "meeting.mp4"
+MEETING_TRUTH = FIXTURE_DIR / "meeting.groundtruth.json"
+
+#: (voice, topic, line). `topic` is None for backchannel and filler -- passages
+#: that exist to make the transcript realistic and must never be an answer.
+MEETING: list[tuple[str, str | None, str]] = [
+    ("a", "rollout", "So the plan is to deploy the new release to the staging cluster on Tuesday."),
+    ("b", None, "Right, yeah."),
+    ("a", "rollout", "We deploy to staging first, then production on Thursday if nothing breaks."),
+    ("b", "rollout", "And the rollback? If the deploy goes wrong on Thursday, what happens?"),
+    ("a", "rollout", "We keep the previous release running, so a rollback is just a switch."),
+    ("b", None, "Mhm. OK."),
+
+    # The paraphrase trap. This is the money topic and it never says money,
+    # cost, budget, spend or price. A literal search for any of those fails.
+    ("a", "money", "The other thing is, well, the other thing is what we are paying every month."),
+    ("b", None, "Go on."),
+    ("a", "money", "The bill from the provider has gone up three times since January."),
+    ("b", "money", "Three times? That is eating straight into our margin."),
+    ("a", "money", "It is. If it keeps climbing we cannot keep the current plan for the team."),
+    ("b", "money", "So we either move provider or we make the workers less hungry."),
+    ("b", None, "Yeah. Yeah."),
+
+    # Drift trap: "deploy" appears here, far from the rollout discussion, so a
+    # naive literal search finds two runs and has to rank them.
+    ("a", "hiring", "Last thing. We should hire another engineer before the next deploy cycle."),
+    ("b", "hiring", "Agreed. Someone senior, who has run a platform team before."),
+    ("a", "hiring", "I will write the job description this week and send it round."),
+]
+
+#: espeak voice names, chosen to be clearly distinguishable.
+_VOICES = {"a": "en+m3", "b": "en+f2"}
+
+
+@dataclass(frozen=True)
+class Turn:
+    speaker: str
+    topic: str | None
+    text: str
+    start: float
+    end: float
+
+
+def _speak_as(voice: str, text: str, wav: Path) -> None:
+    binary = shutil.which("espeak-ng") or shutil.which("espeak")
+    subprocess.run(
+        [binary, "-v", voice, "-s", "150", "-w", str(wav), text],
+        check=True, capture_output=True,
+    )
+
+
+def ensure_meeting() -> tuple[Path, list[Turn]]:
+    """Build the two-speaker meeting if missing; return it with its turn map."""
+    if not (have_tts() and have_ffmpeg()):
+        raise RuntimeError("espeak-ng and ffmpeg must both be on PATH to build speech fixtures")
+
+    if MEETING_VIDEO.exists() and MEETING_TRUTH.exists():
+        data = json.loads(MEETING_TRUTH.read_text())
+        return MEETING_VIDEO, [Turn(**turn) for turn in data["turns"]]
+
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    work = FIXTURE_DIR / "_meeting"
+    work.mkdir(exist_ok=True)
+
+    turns: list[Turn] = []
+    parts: list[Path] = []
+    cursor = 0.0
+    for index, (speaker, topic, line) in enumerate(MEETING):
+        wav = work / f"{index}.wav"
+        _speak_as(_VOICES[speaker], line, wav)
+        length = _duration(wav)
+        turns.append(Turn(speaker=speaker, topic=topic, text=line,
+                          start=cursor, end=cursor + length))
+        cursor += length
+        parts.append(wav)
+
+    listing = work / "list.txt"
+    listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
+    joined = work / "all.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+         "-i", str(listing), "-c", "copy", str(joined)],
+        check=True, capture_output=True, cwd=work,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", f"color=c=slategray:s=640x360:r=15:d={cursor}",
+         "-i", str(joined),
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-shortest", str(MEETING_VIDEO)],
+        check=True, capture_output=True,
+    )
+
+    MEETING_TRUTH.write_text(json.dumps(
+        {"total_seconds": cursor, "turns": [turn.__dict__ for turn in turns]}, indent=2))
+    shutil.rmtree(work, ignore_errors=True)
+    return MEETING_VIDEO, turns
+
+
+def span_of(topic: str, turns: list[Turn]) -> tuple[float, float]:
+    """The full time range a topic occupies, ignoring backchannel between turns."""
+    matching = [turn for turn in turns if turn.topic == topic]
+    if not matching:
+        raise KeyError(topic)
+    return matching[0].start, matching[-1].end
