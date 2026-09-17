@@ -1,0 +1,5 @@
+{
+  "manifest": "src/vid/SMART_TOOL.md",
+  "cli_argv": ["vid"],
+  "deterministic_smoke": ["manifest"]
+}
