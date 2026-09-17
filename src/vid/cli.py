@@ -322,6 +322,50 @@ def recolor(
 
 
 @app.command()
+def vignette(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    strength: Annotated[float, typer.Option("--strength", help="0 is nothing, 1 is theatrical. Default reads without announcing itself.")] = 0.35,
+    help: _doc("look") = False,
+) -> None:
+    """Darken the edges, to pull an eye to the middle."""
+    from vid.plan import Vignette
+
+    write_plan(read_plan(video).with_operation(Vignette(strength=strength)))
+
+
+@app.command()
+def grade(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    look: Annotated[str | None, typer.Option("--look", help="warm, cool, punchy, flat, noir, soft, bright.")] = None,
+    show: Annotated[bool, typer.Option("--list", help="Show the looks and what each is for.")] = False,
+    help: _doc("look") = False,
+) -> None:
+    """Apply a named look to the whole clip."""
+    from vid.looks import catalogue
+    from vid.plan import Grade
+    from vid.schemas import VidError
+
+    if show:
+        typer.echo(catalogue())
+        return
+    if not look:
+        raise VidError("Name a look with --look, or run `vid grade --list` to see them.")
+    write_plan(read_plan(video).with_operation(Grade(look=look)))
+
+
+@app.command()
+def lut(
+    table: Annotated[str, typer.Argument(help="A .cube lookup table.")],
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    help: _doc("look") = False,
+) -> None:
+    """Apply a .cube lookup table you already have."""
+    from vid.plan import Lut
+
+    write_plan(read_plan(video).with_operation(Lut(path=table)))
+
+
+@app.command()
 def verify(
     video: Annotated[str, typer.Argument(help="The rendered file to check.")],
     expect_duration: Annotated[

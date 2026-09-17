@@ -168,8 +168,29 @@ class Recolor(BaseModel):
     strength: float = 1.0
 
 
+class Vignette(BaseModel):
+    """Darken the edges, to pull an eye to the middle."""
+
+    op: Literal["vignette"] = "vignette"
+    strength: float = 0.35
+
+
+class Grade(BaseModel):
+    """A named look, applied to the whole clip."""
+
+    op: Literal["grade"] = "grade"
+    look: str
+
+
+class Lut(BaseModel):
+    """Apply a .cube lookup table you already have."""
+
+    op: Literal["lut"] = "lut"
+    path: str
+
+
 Operation = Annotated[
-    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix | Recolor,
+    Trim | Cut | Retime | Zoom | Stitch | Caption | AudioRemove | AudioReplace | AudioMix | Recolor | Vignette | Grade | Lut,
     Field(discriminator="op"),
 ]
 

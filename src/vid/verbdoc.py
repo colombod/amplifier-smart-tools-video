@@ -322,6 +322,54 @@ The check is arithmetic too: the output's colour statistics should sit measurabl
 **closer to the reference's** than the source's did. That turns "did the grade
 work" from an opinion into a number.
 """,
+    "look": """# vid vignette / grade / lut -- how the picture LOOKS
+
+```bash
+vid grade talk.mp4 --look warm | vid render out.mp4
+vid vignette talk.mp4 | vid render out.mp4
+vid lut mylook.cube talk.mp4 | vid render out.mp4
+vid grade --list                      # the looks, and what each is for
+```
+
+Everything else here changes WHICH frames you see and WHEN. These three change
+how they look -- which for a recording going in front of an audience is not
+decoration. A raw screen capture is rarely the thing you want to show.
+
+## ORDER MATTERS, and it is yours
+
+A vignette applied **before** a zoom gets zoomed INTO -- its dark corners are
+magnified away. Applied **after**, it frames the zoomed result:
+
+```bash
+vid zoom talk.mp4 --to 1.5 | vid vignette | vid render out.mp4   # frames the zoom
+vid vignette talk.mp4 | vid zoom --to 1.5 | vid render out.mp4   # zooms into the vignette
+```
+
+Same for `stitch`: grade **before** it and only the first clip is graded; grade
+**after** and the whole joined result is. The plan is an ordered list and does
+exactly what you wrote, which is why these are operations in a chain rather than
+flags on `render`.
+
+## The looks
+
+Named, not parameterised, on purpose. `--look warm` is one decision you can make
+in a second. `--warmth 0.3 --contrast 1.1 --saturation 1.2` is four decisions you
+have no basis for.
+
+Run `vid grade --list` for the current set with a line on what each is FOR.
+
+## When a name is not enough
+
+- **`vid recolor --like photo.jpg`** matches a reference picture. A picture is a
+  far better statement of intent than any number.
+- **`vid lut mylook.cube`** applies a table you already have.
+
+## What these cost
+
+**$0.00 each. No provider, no network, no model.** They are ffmpeg filters, and
+they compile into the same single pass as `trim`, `zoom` and the rest -- so
+`trim | grade | vignette | render` is still **one decode and one encode**.
+""",
     "verify": """# vid verify -- check a rendered video against what you expected
 
 ```bash

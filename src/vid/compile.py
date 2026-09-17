@@ -25,10 +25,13 @@ from vid.plan import (
     Caption,
     Cut,
     Plan,
+    Grade,
+    Lut,
     Recolor,
     Retime,
     Stitch,
     Trim,
+    Vignette,
     Zoom,
 )
 from vid.schemas import VidError
@@ -326,6 +329,31 @@ class Compiler:
         path = str(cube).replace("\\", "/").replace(":", r"\:")
         self.video = self._step(f"lut3d='{path}'", self.video, "v")
 
+    # ---- looks ----------------------------------------------------------
+    #
+    # ORDER IS THE CALLER'S, AND IT MATTERS. A vignette before a zoom is zoomed
+    # INTO -- its dark corners get magnified away. After a zoom, it frames the
+    # zoomed result. The plan is an ordered list and this just honours it, which
+    # is the whole reason these are operations rather than flags on render.
+
+    def vignette(self, op: Vignette) -> None:
+        from vid.looks import vignette_filter
+
+        self.video = self._step(vignette_filter(op.strength), self.video, "v")
+
+    def grade(self, op: Grade) -> None:
+        from vid.looks import resolve_look
+
+        self.video = self._step(resolve_look(op.look), self.video, "v")
+
+    def lut(self, op: Lut) -> None:
+        if not Path(op.path).is_file():
+            raise VidError(f"No such lookup table: {op.path!r}")
+        # A Windows drive-letter colon reads as an argument separator to the
+        # filter parser, exactly as it does for subtitle paths.
+        path = op.path.replace("\\", "/").replace(":", r"\:")
+        self.video = self._step(f"lut3d='{path}'", self.video, "v")
+
     # ---- audio ----------------------------------------------------------
     #
     # These are the only operations that touch audio ALONE. Everything else --
@@ -412,6 +440,9 @@ def compile_plan(
         "stitch": compiler.stitch,
         "caption": compiler.caption,
         "recolor": compiler.recolor,
+        "vignette": compiler.vignette,
+        "grade": compiler.grade,
+        "lut": compiler.lut,
         "audio_remove": compiler.audio_remove,
         "audio_replace": compiler.audio_replace,
         "audio_mix": compiler.audio_mix,
