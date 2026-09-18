@@ -163,6 +163,144 @@ This is what makes the earlier claim about auditability real rather than rhetori
 edit a model proposed is as inspectable as one a person typed, because by the time it
 reaches the renderer it *is* one.
 
+## Where the intelligence actually runs
+
+"Smart tool" suggests one kind of smartness. This one has **four**, and two of them never
+leave the machine. A caller deciding what to install — or whether they can use this at all
+on a locked-down box — needs the boundary drawn rather than described.
+
+```mermaid
+flowchart TB
+    subgraph NOMODEL["🟢 NO MODEL — ffmpeg only, $0.00, works offline"]
+        direction LR
+        MECH["trim · cut · retime · zoom · stitch<br/>audio remove/replace/mix<br/>grade · vignette · lut<br/><b>recolor</b> — Reinhard transfer in Lab<br/>render · verify · plan"]
+        SHOTS["shot detection<br/><i>ffmpeg scene filter</i>"]
+    end
+
+    subgraph LOCAL["🔵 LOCAL MODEL — downloaded once, no credential, nothing uploaded"]
+        direction LR
+        WHISPER["<b>faster-whisper</b><br/>speech → timed text<br/><i>vid[speech] · ~390 MB</i>"]
+        PIPER["<b>piper</b><br/>text → speech<br/><i>vid[voice] · 46 MB + 60 MB voice</i>"]
+    end
+
+    subgraph REMOTE["🟠 REMOTE MODEL — needs a provider, leaves the machine"]
+        direction LR
+        TEXT["<b>text reasoning</b><br/>writes narration · picks a transition<br/>matches a query by meaning"]
+        VISION["<b>vision</b><br/>describes one frame per shot"]
+    end
+
+    NOMODEL -.->|"every verb still works<br/>if the tiers below are absent"| OUT["one ffmpeg pass"]
+    LOCAL -.-> OUT
+    REMOTE -.-> OUT
+
+    style NOMODEL fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style LOCAL fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style REMOTE fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+```
+
+**The green box is the whole tool minus four verbs.** Eighteen of twenty-one capabilities
+need no model of any kind, and `recolor` is the one worth pointing at: matching a video's
+palette to a reference photograph *sounds* like it ought to need a model, and it is
+arithmetic end to end. Keeping capabilities in the green box is what leaves the smart tiers
+for work that genuinely needs judgment.
+
+**The blue box costs disk, not credentials.** Transcription and speech synthesis both run
+locally — a caller on an air-gapped machine can index, search by what was said, and speak a
+narration they wrote themselves. Verified in a clean container: both engines install with
+`uv`, need no compiler, and coexist without fighting over `onnxruntime`.
+
+**Only the orange box leaves the machine**, and every verb that touches it says so before it
+spends anything. `vid check` reports which of the three zones this installation actually has.
+
+---
+
+## Voice-over: the narration pipeline
+
+`vid narrate <video> "<prompt>"` is the one capability that uses **all three zones in a
+single command**, and the way it moves between them is the design.
+
+### Why it cannot just write a script and read it
+
+Generate a narration, speak it, lay it on — that fails, and it fails at the **end**, after
+everything expensive has run. Thirty seconds of video under forty-five seconds of speech is
+simply broken, and you find out last.
+
+So the video's own **shot boundaries become slots**, each with a duration. The model writes
+one line per slot, told that slot's budget. Every line is spoken and **measured**. A line
+that overruns is sent back to be shortened — twice at most — then allowed a modest
+speed-up, and if it still does not fit it is **reported by name** rather than quietly
+overrunning.
+
+### The loop alternates zones on purpose
+
+```mermaid
+flowchart TD
+    A["<b>index</b><br/>shot boundaries + speech"]:::green
+    B["model writes one line<br/>per slot, given its budget"]:::orange
+    C["<b>piper</b> speaks the line"]:::blue
+    D{"measured duration<br/>≤ slot budget?"}:::green
+    E["rewrite shorter<br/><i>max 2 attempts</i>"]:::orange
+    F["nudge the rate<br/><i>capped at 1.25x</i>"]:::blue
+    G["assemble on a silent bed<br/>at each slot's start time"]:::green
+    H["lay on via <b>audio mix/replace</b>"]:::green
+    I["report the line BY NAME<br/>with its measurement"]:::green
+
+    D2{"fits now?"}:::green
+
+    A --> B --> C --> D
+    D -->|fits| G
+    D -->|"over, attempts left"| E
+    E --> C
+    D -->|"over, attempts spent"| F
+    F --> D2
+    D2 -->|yes| G
+    D2 -->|no| I
+    G --> H
+
+    classDef green fill:#e8f5e9,stroke:#2e7d32
+    classDef blue fill:#e3f2fd,stroke:#1565c0
+    classDef orange fill:#fff3e0,stroke:#ef6c00
+```
+
+**Every decision in that loop is green.** The model writes and rewrites; it is never asked
+whether its own output fits. "Does this fit?" is a number — 4.25s against a 3.00s slot — and
+the arithmetic that answers it needs no provider and cannot be talked round.
+
+This is the transition gate in a different domain. Where a cheap deterministic check exists
+on a model's output, generation is defensible; where it does not, it is a coin flip with
+good manners.
+
+### What the loop guarantees
+
+- **It degrades per segment.** Three lines where the middle one cannot fit produce
+  `[fitted, OVER, fitted]` — one line named with its overrun, and the rest still usable.
+  This is the entire reason for fitting per slot rather than globally.
+- **The script is inspectable before anything is synthesised.** `--script-only` prints it as
+  JSON and spends nothing. Narration is the most expensive thing here to get wrong.
+- **Silence between lines, never stretched speech.** A slowed voice filling a gap is
+  instantly recognisable and worse than a pause.
+- **Slots under two seconds are left silent.** A one-second shot cannot hold a sentence, and
+  cramming one in produces the rushed voiceover everybody recognises.
+- **It lays the result on through the existing audio verbs** — `mix` when the source already
+  has speech, `replace` when it is silent — rather than a parallel path. One way to put
+  sound on a video, not two.
+
+### What each half needs, and what happens without it
+
+| half | zone | without it |
+|---|---|---|
+| writing the narration | 🟠 remote text model | `narrate` refuses, naming what to configure |
+| speaking it | 🔵 local `vid[voice]` | `narrate` refuses, naming the install command |
+| timing, assembly, laying it on | 🟢 ffmpeg | these are the parts that always work |
+
+**Both halves are required and they are independent**, which is the thing that catches
+people: an agent driving this tool once reached "not configured" partway through, had to
+work out which of two separate things was missing, and substituted the operating system's
+own speech synthesiser instead. `vid check` reports both, and the skill file now states the
+pairing up front.
+
+---
+
 ## Finding a moment on screen: embed to filter, caption to finalise
 
 The visual half of `find` and `highlight` needs to answer "when is X on screen?". Embeddings
