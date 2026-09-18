@@ -1,8 +1,8 @@
 # Architecture
 
-![Animated overview of Vid: editing clips, adding captions and audio, finding moments, and composing one render.](assets/vid-preview.gif)
+![Animated overview of Vid: editing clips, choosing preset or custom transitions, adding captions and audio, finding moments, and composing one render.](assets/vid-preview.gif)
 
-A 48-second, silent capability preview. Motion graphics created with Unfold and stitched with Vid. Optional AI features require provider setup.
+A 60-second, silent capability preview covering editing, preset and custom transitions, and the single-render workflow. Motion graphics created with Unfold and stitched with Vid. Optional AI features require provider setup.
 
 Mechanics. For *why this exists*, read `VISION.md`.
 
