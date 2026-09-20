@@ -92,19 +92,17 @@ def test_zoom_preserves_the_source_resolution(clip, tmp_path):
     assert frame_size(out) == frame_size(str(clip.path))
 
 
-def test_zoom_render_is_not_absurdly_slow(clip, tmp_path):
-    """A regression guard on the FIX, not just the bug: a compile that still
-    produced a wildly-long clip would also make this test slow. Bounding wall
-    time here means a future regression fails fast instead of hanging CI.
-    """
-    import time
-
-    started = time.monotonic()
-    render(
-        Plan(source=str(clip.path)).with_operation(Zoom(to=1.3, at=1.0, duration=1.0)),
-        str(tmp_path / "zoomed.mp4"),
-    )
-    assert time.monotonic() - started < 30, "rendering a 3s clip took over 30s -- likely ballooned again"
+# A wall-clock timing assertion used to live here ("rendering a 3s clip took
+# over 30s -- likely ballooned again"), meant as a regression guard on the FIX
+# for the duration bug above. Removed: it was a weaker, flakier proxy for
+# something already asserted directly. `test_zoom_preserves_the_source_duration`
+# measures the RENDERED duration with ffprobe -- the actual invariant a
+# "duration ballooned again" regression would break. A 400s-vs-8s regression
+# fails that assertion outright; it does not need a second, timing-based trip
+# wire. Wall-clock elapsed time on a shared CI runner is machine-speed
+# dependent (a loaded runner can blow a 30s budget with nothing wrong), so this
+# test could go red for reasons that have nothing to do with the code -- while
+# adding no information the duration assertion doesn't already provide.
 
 
 @pytest.fixture(scope="module")

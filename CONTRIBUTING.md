@@ -90,3 +90,26 @@ The outer `uv run` puts this project's `vid` on `PATH` for the kit to invoke; th
 ```bash
 uv run -- uv run --no-project https://raw.githubusercontent.com/microsoft/amplifier-smart-tools/main/conformance/run.py .
 ```
+
+#### CI parity
+
+A dev machine's ffmpeg is not CI's ffmpeg. `.github/workflows/ci.yml` installs
+ffmpeg via `apt-get install -y ffmpeg` on `ubuntu-latest`; a newer local build can
+accept a filter graph that stable ffmpeg rejects outright (this happened: exit
+234 on 6.1.1, invisible locally, immediate on CI). "Green here" only means
+"green on CI" when both machines run the same ffmpeg, so run the real gates in
+a container built to match:
+
+```bash
+scripts/ci-parity.sh          # everything: prek, type-check, test-job replica
+scripts/ci-parity.sh test     # just the `test` CI job replica (ruff + pytest)
+scripts/ci-parity.sh typecheck
+scripts/ci-parity.sh prek
+scripts/ci-parity.sh clean    # remove the image and cached volumes
+```
+
+First run builds the image and installs dependencies (a couple of minutes);
+after that, dependency installs are cached in named Docker volumes and a
+`test` run is dominated by pytest actually rendering video (~60s), not
+reinstalling anything. See the comment header in `scripts/ci-parity.sh` for
+what it creates and how to remove it.

@@ -164,6 +164,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# scripts/ci-parity.sh's dev-gate venv: a Docker named volume is mounted here,
+# so this shows up as an empty directory on the host -- never real content.
+.venv-ci-parity-dev
+
 # Spyder project settings
 .spyderproject
 .spyproject
