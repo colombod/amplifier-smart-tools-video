@@ -1,5 +1,7 @@
 # Vid Smart Tool
 
+[Explore the website](https://colombod.github.io/amplifier-smart-tools-video/)
+
 Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass.
 
 Vid is a [Smart Tool](https://github.com/microsoft/amplifier-smart-tools): a library with a thin CLI over it, whose model-backed capabilities sit behind an interface.
