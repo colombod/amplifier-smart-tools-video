@@ -9,6 +9,56 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
+## 0.3.2
+
+Spec compliance and three rendering bugs fixed. The tool was run through
+`smart-tool-creator check-spec-adherence` for the first time; it scored 7 adhere / 10 deviate
+while passing the deterministic conformance kit 16/16. Closing those deviations while
+actually rendering video to verify results uncovered three real bugs that no test, kit or
+reviewer had caught.
+
+### Fixed
+
+- **`zoom` rendered 50x longer than requested.** ffmpeg's `zoompan` takes output **frames per
+  input frame**, not the effect's total length. The code set it to `duration * fps`, so each
+  input frame fanned out into 60 output frames. `--at` was also ignored — the ramp ran
+  across the whole clip instead of starting at the specified time. Result: an 8-second clip
+  rendered as 400 seconds. Rewritten as segmented crop+scale2ref ramps; duration and
+  resolution now hold exactly.
+
+- **Composed audio chains broke for 10 of 12 audio-touching combinations.** A chain like
+  `trim | audio remove | render` failed with "Filter 'asetpts:default' has output 1 (a2)
+  unconnected". The compiler emitted an audio branch, a later `audio remove`/`audio replace`
+  dropped the reference, and the dead pad made ffmpeg refuse the whole graph. Fixed with a
+  post-pass that seals dangling outputs to nullsink/anullsink. A second defect surfaced
+  underneath: `trim`/`cut` never updated `elapsed`, so `audio replace`/`audio mix` after
+  them had no duration bound and rendered hours of silence instead of failing.
+
+- **Scene detection never checked ffmpeg's exit code.** A failed detection silently persisted
+  an index claiming one shot spanning the whole video, indistinguishable from a real
+  single-shot result. Shot detection is foundational to both `narrate` (slots) and
+  `index --vision` (what frames to describe), so undetected failures cascaded downstream.
+  Now refuses to fall back — an index with a false single-shot claim is worse than no index.
+
+- **`ty check` (the Typer type checker) was enabled as a declared hook but had ~50 failures,
+  was absent from CI, and contributors learned to ignore it.** Fixed the genuine issues
+  (dispatch-dict narrowing, tuple shapes, piper kwargs unpacking, Typer overloads) and added
+  `ty check` to CI so it cannot rot again.
+
+### Changed
+
+- **Library now exports `audio_remove`, `audio_replace`, and `audio_mix`.** These were
+  available only through the CLI before.
+- **All error messages from external commands now include remediation hints.** ffmpeg/ffprobe
+  failures name what to check and point to `vid check`.
+- **Rendered skill now documents its actual prerequisites.** The manifest was correct; the
+  skill claimed only `uv` was needed.
+- **Help text introspection tests added.** A test that reads the real Click command tree and
+  fails if any flag is undocumented prevents drift between `--help` output and documented
+  arguments.
+- **Composed-chain render tests added.** Each of the 12 audio-touching combinations now has
+  a test that renders to a file and measures duration with ffprobe.
+
 ## 0.3.0
 
 Four capabilities, and four defects that only measurement found.

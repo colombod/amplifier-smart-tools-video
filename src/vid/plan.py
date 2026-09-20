@@ -15,7 +15,7 @@ import json
 import sys
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from vid.schemas import VidError
 
@@ -261,7 +261,13 @@ def read_plan(source: str | None = None) -> Plan:
             "Re-create it with this version rather than hand-editing the number."
         )
 
-    return Plan.model_validate(data)
+    try:
+        return Plan.model_validate(data)
+    except ValidationError as exc:
+        raise VidError(
+            f"That plan claims format {PLAN_FORMAT} but does not match its shape:\n{exc}\n"
+            "Rebuild it with the verb that produces this stage rather than hand-editing the JSON."
+        ) from exc
 
 
 def write_plan(plan: Plan) -> None:

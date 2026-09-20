@@ -11,6 +11,7 @@ from typing import Any
 from copilot import CopilotClient, PermissionHandler, Tool, ToolInvocation, ToolResult
 import jsonschema
 
+from vid.core.manifest import manifest_install as _manifest_install
 from vid.intelligence.schemas import AgentRequest, AgentResult
 from vid.schemas import VidError
 
@@ -38,13 +39,15 @@ class CopilotIntelligence:
             return self._token
         if shutil.which("gh") is None:
             raise VidError(
-                "Model-backed capabilities need the GitHub CLI. Install gh and sign in with `gh auth login`."
+                "Model-backed capabilities need the GitHub CLI. "
+                f"Install it ({_manifest_install('gh')}) and sign in with `gh auth login`."
             )
         minted = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
         if minted.returncode != 0:
             raise VidError(
                 f"The GitHub CLI is not signed in: {minted.stderr.strip()} "
-                "Run `gh auth login` with an account that has Copilot access."
+                "Run `gh auth login` with an account that has a GitHub Copilot subscription "
+                f"({_manifest_install('github-copilot-subscription')})."
             )
         self._token = minted.stdout.strip()
         return self._token

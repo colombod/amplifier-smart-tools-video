@@ -1,6 +1,6 @@
 [project]
 name = "vid"
-version = "0.3.1"
+version = "0.3.2"
 description = "Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable \u2014 every verb passes an edit plan, and one render compiles it to a single ffmpeg pass"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -116,3 +116,33 @@ ban-relative-imports = "all"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# ty flags two of Typer's own idioms in cli.py as errors, not bugs:
+#
+# - invalid-type-form: `_doc(name)` (a function call) used in parameter-
+#   annotation position. Each verb's `--help` needs its own callback bound to
+#   that verb's name, so `_doc` is a factory returning a distinct
+#   `Annotated[bool, typer.Option(...)]` per call. Making it a static,
+#   call-free alias was evaluated and rejected: a single shared callback would
+#   need to recover its verb name from the click `Context`, which means a
+#   hand-maintained path -> name table for the `audio` sub-app (its click
+#   command names, e.g. "remove", don't match their verb-doc keys, e.g.
+#   "audio_remove") and a changed signature on every callback -- real
+#   behaviour risk to a documented surface with its own drift tests
+#   (tests/test_help_drift.py), spent satisfying a type checker rather than
+#   fixing an actual defect.
+# - invalid-parameter-default: Typer's own spelling for a REQUIRED option is
+#   `Annotated[str, typer.Option(...)] = ...`. The `...` (Ellipsis) sentinel
+#   is recognised by Typer/Click at runtime and is never actually handed to
+#   the function; ty does not know that convention and sees a plain
+#   `EllipsisType` default against a `str` annotation.
+#
+# Both are Typer conventions used by every verb in this file. Suppressed here,
+# scoped to this one file, rather than fixed, because there is nothing wrong
+# to fix.
+[[tool.ty.overrides]]
+include = ["src/vid/cli.py"]
+
+[tool.ty.overrides.rules]
+invalid-type-form = "ignore"
+invalid-parameter-default = "ignore"

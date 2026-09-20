@@ -27,6 +27,8 @@ import math
 from pathlib import Path
 import subprocess
 
+from vid.core.manifest import manifest_install
+from vid.probe import have_ffmpeg, have_ffprobe
 from vid.schemas import VidError
 
 #: Frames sampled from a video to measure its colour. Nine, spread evenly and
@@ -97,17 +99,41 @@ def lab_to_rgb(lightness: float, a: float, b: float) -> tuple[float, float, floa
     r = 3.2406 * x - 1.5372 * y - 0.4986 * z
     g = -0.9689 * x + 1.8758 * y + 0.0415 * z
     bl = 0.0557 * x - 0.2040 * y + 1.0570 * z
-    return tuple(min(1.0, max(0.0, _from_linear(c))) for c in (r, g, bl))  # type: ignore[return-value]
+    clamped_r = min(1.0, max(0.0, _from_linear(r)))
+    clamped_g = min(1.0, max(0.0, _from_linear(g)))
+    clamped_b = min(1.0, max(0.0, _from_linear(bl)))
+    return (clamped_r, clamped_g, clamped_b)
 
 
 # --- measuring ------------------------------------------------------------
+
+
+def _require_ffmpeg_tools() -> None:
+    """Refuse loudly, naming the remedy, rather than let a missing binary
+    escape as a bare `FileNotFoundError` from inside `subprocess.run`.
+
+    Recolor samples frames to measure a palette while a plan is still being
+    BUILT, unlike every other plan-building capability -- so it needs its own
+    preflight rather than relying on `render`'s. The install reference comes
+    from the manifest (`vid.core.manifest`) rather than a second, hand-copied
+    string, so the two can never disagree.
+    """
+    if not have_ffmpeg() or not have_ffprobe():
+        raise VidError(
+            "ffmpeg is not on PATH, and recolor needs it to sample colour from a frame before the "
+            f"plan can even be built. Install it ({manifest_install('ffmpeg')}) -- see `vid check` "
+            "for the command for your system."
+        )
 
 
 def _raw_rgb(command: list[str]) -> bytes:
     result = subprocess.run(command, capture_output=True)
     if result.returncode != 0 or not result.stdout:
         detail = (result.stderr or b"").decode(errors="replace").strip().splitlines()
-        raise VidError(f"Could not read pixels: {detail[-1] if detail else 'ffmpeg produced nothing'}")
+        raise VidError(
+            f"Could not read pixels: {detail[-1] if detail else 'ffmpeg produced nothing'}. "
+            "Verify the file with `ffprobe`, or try `vid check`."
+        )
     return result.stdout
 
 
@@ -133,10 +159,11 @@ def _stats_from_pixels(raw: bytes) -> ColorStats:
 
     means = [total / taken for total in sums]
     stds = [math.sqrt(max(0.0, squares[c] / taken - means[c] ** 2)) for c in range(3)]
-    return ColorStats(mean=tuple(means), std=tuple(stds))  # type: ignore[arg-type]
+    return ColorStats(mean=(means[0], means[1], means[2]), std=(stds[0], stds[1], stds[2]))
 
 
 def measure_image(path: str) -> ColorStats:
+    _require_ffmpeg_tools()
     return _stats_from_pixels(
         _raw_rgb(
             [
@@ -160,7 +187,17 @@ def measure_image(path: str) -> ColorStats:
 
 
 def measure_video(path: str, duration: float | None = None) -> ColorStats:
-    """Sample frames spread through a video and measure them together."""
+    """Sample frames spread through a video and measure them together.
+
+    EVERY PLANNED SAMPLE OR NONE OF THEM. A dropped sample used to be silently
+    skipped and the grade computed from whatever fraction survived -- a video
+    with one troublesome timestamp would measure as though it were a shorter,
+    cleaner one, with nothing to show a caller that part of the plan was
+    skipped. Refusing the whole measurement instead means the result is either
+    the full nine-sample average it claims to be, or an explicit list of which
+    samples failed and why.
+    """
+    _require_ffmpeg_tools()
     if duration is None:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path],
@@ -173,6 +210,7 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
             raise VidError(f"{path!r} has no readable duration.") from exc
 
     collected = bytearray()
+    failed: list[str] = []
     for index in range(SAMPLE_FRAMES):
         # Skip the first and last tenth: titles and fades are not the body.
         at = duration * (0.1 + 0.8 * index / max(1, SAMPLE_FRAMES - 1))
@@ -197,8 +235,15 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
                     "-",
                 ]
             )
-        except VidError:
-            continue
+        except VidError as exc:
+            failed.append(f"{at:.2f}s: {exc}")
+    if failed:
+        raise VidError(
+            f"Could not sample {len(failed)} of {SAMPLE_FRAMES} planned frame(s) from {path!r}:\n  "
+            + "\n  ".join(failed)
+            + "\nA grade measured from a partial sample set can be visibly wrong with no sign anything "
+            "was skipped, so none of it was used. Verify the file with `ffprobe`, or try `vid check`."
+        )
     if not collected:
         raise VidError(f"Could not sample any frame from {path!r}.")
     return _stats_from_pixels(bytes(collected))

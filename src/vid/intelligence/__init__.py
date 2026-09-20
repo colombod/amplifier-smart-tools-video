@@ -23,7 +23,11 @@ def ask(intelligence, prompt: str, *, timeout_seconds: int = 60) -> str:
         )
     )
     if getattr(result, "error", None):
-        raise VidError(f"The model could not answer: {result.error}")
+        raise VidError(
+            f"The model could not answer: {result.error}\n"
+            "Check that `gh auth login` is signed in with an account that has a Copilot "
+            "subscription, or run `vid check` to see what this machine has configured."
+        )
     text = (getattr(result, "text", "") or "").strip()
     if not text:
         raise VidError("The model returned an empty answer.")

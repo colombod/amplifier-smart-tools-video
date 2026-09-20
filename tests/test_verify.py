@@ -16,6 +16,7 @@ import pytest
 from tests.fixtures import ensure_clips, have_ffmpeg
 from vid import verify as checks
 from vid.plan import Plan, Stitch
+from vid.schemas import VidError
 
 pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these read real frames")
 
@@ -148,3 +149,16 @@ def test_the_report_names_the_absence_of_a_model(dissolve):
     text, passed = checks.report([checks.check_duration(str(dissolve), 9.0)])
     assert not passed
     assert "not opinions" in text
+
+
+def test_an_unreadable_path_names_the_remedy_not_just_the_raw_stderr(tmp_path):
+    """A real ffprobe failure -- no such file -- must come back with something
+    a caller can act on, not just ffprobe's own stderr with nothing added."""
+    missing = tmp_path / "does-not-exist.mp4"
+
+    with pytest.raises(VidError) as failure:
+        checks.duration(str(missing))
+
+    message = str(failure.value)
+    assert "ffprobe could not read" in message
+    assert "vid check" in message, "the failure must name a remedy, not only report the raw stderr"

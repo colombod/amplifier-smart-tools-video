@@ -1,7 +1,7 @@
 ---
 smart_tool_format: 1
 name: vid
-version: 0.3.1
+version: 0.3.2
 description: >-
   Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
 use_cases:
@@ -21,10 +21,14 @@ platforms:
 requires:
   - name: ffmpeg
     purpose: >-
-      Decodes, filters and encodes video. `render`, `verify` and `index` cannot work
-      without it. Everything that only builds an edit plan -- trim, cut, retime, zoom,
-      stitch, caption, plan, transitions -- runs fine without it, because a plan is JSON
-      and nothing touches a frame until render. `vid check` reports which state you are in.
+      Decodes, filters and encodes video. `render`, `verify`, `index` and `recolor` cannot
+      work without it. `recolor` is the one exception among the plan-building verbs: it
+      samples frames from the source video and a reference image to measure a palette
+      while the plan is still being built, so it touches ffmpeg immediately rather than
+      waiting for render. Everything else that only builds an edit plan -- trim, cut,
+      retime, zoom, stitch, caption, plan, transitions -- runs fine without it, because a
+      plan is JSON and nothing touches a frame until render. `vid check` reports which
+      state you are in.
 
       ONE BUILD FEATURE MATTERS: `caption` burns subtitles in using ffmpeg's `subtitles`
       filter, which only exists when ffmpeg was compiled against libass. Some Homebrew
@@ -44,6 +48,13 @@ requires:
       uv tool install 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'
     optional: true
     install: https://github.com/colombod/amplifier-smart-tools-video#speech
+  - name: piper-tts
+    purpose: >-
+      Speaks the narration `narrate` writes, locally. Nothing is uploaded, and the
+      voice model is fetched once, anonymously. Installed as an extra, not a separate
+      step: uv tool install 'vid[voice] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+    optional: true
+    install: https://github.com/colombod/amplifier-smart-tools-video#voice
   - name: gh
     purpose: >-
       Generates the token that signs in to GitHub Copilot. Without it, the model-backed
@@ -105,6 +116,12 @@ Three rules that make chains predictable:
 
 - Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass.
 
+## When not to use vid
+
+- **Images.** There is no video to build a plan against.
+- **Audio-only files.** `vid audio extract` pulls audio OUT of a video; nothing here processes a standalone audio file as input.
+- **Downloading video.** vid edits a file already on disk. It has no fetcher.
+
 ## Before writing code
 
 Confirm every capability and argument against `vid <command> --help` before using it.
@@ -127,11 +144,14 @@ Verify with `vid manifest`, which needs no credentials.
 
 ## Prerequisites
 
-Deterministic capabilities need only `uv`. Model-backed capabilities run through GitHub
-Copilot, signed in as the GitHub CLI's user: `gh` must be installed and `gh auth login`
-completed with an account that has a Copilot subscription. Without that, a model-backed
-capability fails immediately and names what to configure; it never falls back to a
-deterministic answer.
+Verbs that only build or inspect a plan need `uv` alone. `render`, `verify`, `index`, and
+`recolor` need ffmpeg on PATH -- they are the ones that touch a frame. `index`'s default
+speech transcription also needs the `speech` extra (faster-whisper). Model-backed
+capabilities run through GitHub Copilot, signed in as the GitHub CLI's user: `gh` must be
+installed and `gh auth login` completed with an account that has a Copilot subscription.
+Without that, a model-backed capability fails immediately and names what to configure; it
+never falls back to a deterministic answer. Run `vid check` for exactly what this
+installation can do.
 
 Runs on Linux, macOS, and Windows.
 

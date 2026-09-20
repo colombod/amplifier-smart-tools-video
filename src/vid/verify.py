@@ -47,8 +47,15 @@ def _ffprobe(path: str, *args: str) -> dict:
         text=True,
     )
     if result.returncode != 0:
-        raise VidError(f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}")
-    return json.loads(result.stdout or "{}")
+        raise VidError(
+            f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}\n"
+            "Verify the path is a video file ffprobe can open (try `ffprobe` on it directly), "
+            "or run `vid check`."
+        )
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise VidError(f"ffprobe returned something that is not JSON for {path!r}: {exc}") from exc
 
 
 def _rgb_at(path: str, at: float) -> tuple[int, int, int]:

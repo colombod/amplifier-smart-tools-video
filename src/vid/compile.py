@@ -15,6 +15,7 @@ OS unparsed, so there is no quoting problem to get wrong.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 from pathlib import Path
 import re
@@ -40,17 +41,32 @@ from vid.schemas import VidError
 #: `atempo` is documented as reliable in this range. Outside it, chain stages.
 ATEMPO_MIN, ATEMPO_MAX = 0.5, 2.0
 
-#: A slow zoom moves `zoompan`'s crop by a fraction of a source pixel per frame,
-#: and the crop quantises to whole pixels -- so the motion alternates 1,1,2,1,1,2
-#: and visibly stutters. Upscaling first makes each rounding error a fraction of
-#: an output pixel. The factor is folklore, but the jitter is real and this is
-#: the accepted fix.
+#: A crop landing on a fractional source pixel quantises to a whole pixel, which
+#: shows up as visible stutter across a slow zoom. Upscaling first makes each
+#: rounding error a fraction of an output pixel instead of a whole one. The
+#: factor is folklore, but the jitter is real and this is the accepted fix.
 ZOOM_UPSCALE = 4
 
-#: How finely a ramp between two control points is subdivided. Each piece costs a
-#: trim plus an atempo chain in the graph, so this trades filter-graph size
-#: against how closely the curve is followed.
+#: How finely a ramp between two control points is subdivided -- a retime speed
+#: curve, or a zoom's ramp from one level to another. Neither can be expressed
+#: as a single ffmpeg expression (`atempo` takes a scalar; a `crop` filter's
+#: width and height are fixed at graph setup, not re-evaluated per frame), so
+#: each is approximated as this many constant pieces. More pieces follow the
+#: curve more closely at the cost of a larger filter graph.
 RAMP_STEPS = 8
+
+
+def lut_cache_dir() -> Path:
+    """Where generated recolor LUTs persist, keyed by the numbers that produced
+    them. Same convention as `index.index_dir()` and `voice.voices_dir()`: an
+    env override, then XDG, never the shared temp directory."""
+    import os
+
+    override = os.environ.get("VID_LUT_CACHE_DIR")
+    if override:
+        return Path(override)
+    base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+    return Path(base) / "vid" / "luts"
 
 
 def atempo_chain(speed: float) -> list[str]:
@@ -119,6 +135,51 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
     return segments
 
 
+def zoom_segments(at: float, duration: float, to: float) -> list[tuple[float, float | None, float]]:
+    """A zoom ramp, decomposed into constant-zoom `(start, end, zoom)` pieces.
+
+    `zoompan` looks like the obvious filter for this and cannot give an exact
+    answer: its `d` option is OUTPUT FRAMES PER INPUT FRAME CONSUMED, not the
+    effect's length, and it always resamples to a literal output frame rate
+    this module has no way to know -- probing a source's rate is `render`'s
+    job precisely so every other verb, this one included, needs no ffmpeg to
+    compile. Get either wrong and the rendered clip runs at some multiple of
+    the source's length instead of matching it.
+
+    So the ramp is segmented instead, the same way `ramp_segments` segments a
+    retime curve: a hold at 1.0 before `at`, RAMP_STEPS pieces approximating
+    the curve from 1.0 to `to`, then a hold at `to` from `at + duration` to
+    the actual end of the clip -- `end=None` on that last piece, because the
+    total duration is never known here either; ffmpeg's own `trim` resolves
+    it. Each piece is a plain crop at a fixed level, which has no time
+    dependence and so leaves every frame's timestamp untouched.
+    """
+    pieces: list[tuple[float, float | None, float]] = []
+    if at > 0:
+        pieces.append((0.0, at, 1.0))
+    if duration > 0:
+        for index in range(RAMP_STEPS):
+            lo = at + duration * index / RAMP_STEPS
+            hi = at + duration * (index + 1) / RAMP_STEPS
+            position = (index + 0.5) / RAMP_STEPS
+            pieces.append((lo, hi, 1.0 + (to - 1.0) * position))
+    pieces.append((at + max(duration, 0.0), None, to))
+    return pieces
+
+
+def _substitute_zoom(expr: str, value: float) -> str:
+    """Bake one segment's fixed zoom level into an `x`/`y` positioning expression.
+
+    `op.x`/`op.y` default to `zoompan`'s own convention -- a bare `zoom` naming
+    the current zoom factor -- and a hand-written plan may follow the same
+    convention, since the contract only promises "an ffmpeg expression". Each
+    segment produced by `zoom_segments` has exactly one, constant, zoom level,
+    so the name is replaced with its value rather than carried into `crop`,
+    which has no such variable.
+    """
+    return re.sub(r"\bzoom\b", f"{value:.6f}", expr)
+
+
 class Compiler:
     """Turns a plan into inputs plus a filter graph."""
 
@@ -183,11 +244,25 @@ class Compiler:
         self.video = self._step(f"trim=start={op.start}{end},setpts=PTS-STARTPTS", self.video, "v")
         aend = f":end={op.end}" if op.end is not None else ""
         self._astep(f"atrim=start={op.start}{aend},asetpts=PTS-STARTPTS")
+        # An explicit end bounds the result exactly, known without probing
+        # anything -- it is arithmetic on the numbers this op already carries.
+        # Without one, the result is still exact whenever the length coming in
+        # was already known; otherwise it stays the 0.0 "unknown" sentinel
+        # `_bound_audio` already treats as falsy, same as before this op ran.
+        if op.end is not None:
+            self.elapsed = op.end - op.start
+        elif self.elapsed:
+            self.elapsed -= op.start
 
     def cut(self, op: Cut) -> None:
         """Remove a range by keeping what is either side of it and rejoining."""
         head_v = self._step(f"trim=start=0:end={op.start},setpts=PTS-STARTPTS", self.video, "v")
         tail_v = self._step(f"trim=start={op.end},setpts=PTS-STARTPTS", self.video, "v")
+        # The removed span's length is always known; the RESULT's is only
+        # knowable when the length coming in already was (the tail's own
+        # length needs the total, which nothing here probes).
+        if self.elapsed:
+            self.elapsed -= op.end - op.start
         if self.audio is None:
             # A silent video still cuts. concat's a=0 form takes video only --
             # feeding it an absent stream put the literal string "None" in the
@@ -278,16 +353,63 @@ class Compiler:
             self.audio = self._step(bound.lstrip(","), self.audio, "a")
 
     def zoom(self, op: Zoom) -> None:
-        frames = max(1, int(op.duration * 30))
-        step = (op.to - 1.0) / frames
-        self.video = self._step(
-            f"scale=iw*{ZOOM_UPSCALE}:-2,"
-            f"zoompan=z='min(zoom+{step:.6f},{op.to})':d={frames}"
-            f":x='{op.x}':y='{op.y}':fps=30,"
-            f"scale=iw/{ZOOM_UPSCALE}:-2",
-            self.video,
-            "v",
-        )
+        """Ken Burns: crop-and-rescale, segmented into constant-zoom pieces.
+
+        See `zoom_segments` for why this is segmented rather than one
+        `zoompan` call. Each segment is rescaled against a REFERENCE copy of
+        its own untouched frames (`scale2ref`) rather than an expression
+        computed from the cropped size, because a crop that does not divide
+        the frame evenly leaves a one-pixel rounding difference between
+        segments -- and `concat` refuses to join clips of different sizes.
+        """
+        at = op.at if op.at is not None else 0.0
+        segments = zoom_segments(at, op.duration, op.to)
+
+        # An explicit `split`, not `self.video` written as the input to each
+        # segment's trim filter in turn. Reusing a label as the input to
+        # several filters is NOT guaranteed to fan out like a genuine split --
+        # measured directly: two branches trimmed from the same already-
+        # trimmed pad and then concatenated ran to the length of the
+        # ORIGINAL, untrimmed source, not the trimmed one, because the second
+        # branch's `trim` was not bounded by the first's EOF.
+        if len(segments) == 1:
+            sources = [self.video]
+        else:
+            sources = [self._next("v") for _ in segments]
+            self.filters.append(f"[{self.video}]split={len(sources)}" + "".join(f"[{s}]" for s in sources))
+
+        labels: list[str] = []
+        for source, (start, stop, level) in zip(sources, segments, strict=True):
+            trim = f"trim=start={start}:end={stop}" if stop is not None else f"trim=start={start}"
+            ref, pre = self._next("v"), self._next("v")
+            self.filters.append(f"[{source}]{trim},setpts=PTS-STARTPTS,split=2[{ref}][{pre}]")
+
+            cropped = self._next("v")
+            x_expr = _substitute_zoom(op.x, level)
+            y_expr = _substitute_zoom(op.y, level)
+            self.filters.append(
+                f"[{pre}]scale=iw*{ZOOM_UPSCALE}:-2,"
+                f"crop=w='iw/{level:.6f}':h='ih/{level:.6f}':x='{x_expr}':y='{y_expr}'[{cropped}]"
+            )
+
+            scaled, ref_out = self._next("v"), self._next("v")
+            self.filters.append(f"[{cropped}][{ref}]scale2ref=w=rw:h=rh[{scaled}][{ref_out}]")
+            self.filters.append(f"[{ref_out}]nullsink")
+
+            segment_out = self._next("v")
+            # scale2ref does not guarantee SAR=1:1 across segments cropped at
+            # different levels; concat rejects a SAR mismatch just as it does
+            # a size mismatch, so it is reset uniformly before rejoining.
+            self.filters.append(f"[{scaled}]setsar=1[{segment_out}]")
+            labels.append(segment_out)
+
+        if len(labels) == 1:
+            self.video = labels[0]
+            return
+
+        out = self._next("v")
+        self.filters.append("".join(f"[{label}]" for label in labels) + f"concat=n={len(labels)}:v=1:a=0[{out}]")
+        self.video = out
 
     def stitch(self, op: Stitch) -> None:
         for source in op.sources:
@@ -376,15 +498,26 @@ class Compiler:
         The table is regenerated here from the numbers in the plan rather than
         carried as a file, so a plan stays portable. Generating it is pure
         arithmetic over 4913 entries -- instant, and identical every time.
-        """
-        import tempfile
 
+        CACHED IN THE XDG CACHE DIRECTORY, NOT THE SHARED TEMP DIRECTORY. The
+        cube must still exist when ffmpeg actually reads it, which happens
+        later -- after `compile_plan` has returned an argv, at whatever point
+        the caller runs it (or not at all, for `--print-command`). That rules
+        out a `tempfile.TemporaryDirectory()` scoped to this function: it
+        would delete the file before ffmpeg ever opened it. So this is real,
+        managed cache state, keyed by the numbers that determine its content,
+        placed the same way `voices_dir()` places voice models -- not a
+        temp file nobody owns, left behind in a directory the OS sweeps by
+        accident rather than by design.
+        """
         from vid.color import ColorStats, write_cube
 
-        cube = (
-            Path(tempfile.gettempdir()) / f"vid-lut-{abs(hash((op.source_mean, op.reference_mean, op.strength)))}.cube"
-        )
+        key = hashlib.sha256(
+            repr((op.source_mean, op.source_std, op.reference_mean, op.reference_std, op.strength)).encode()
+        ).hexdigest()[:16]
+        cube = lut_cache_dir() / f"{key}.cube"
         if not cube.is_file():
+            cube.parent.mkdir(parents=True, exist_ok=True)
             write_cube(
                 ColorStats(mean=op.source_mean, std=op.source_std),
                 ColorStats(mean=op.reference_mean, std=op.reference_std),
@@ -487,6 +620,68 @@ def _as_map_target(label: str) -> str:
     return label if re.fullmatch(r"\d+:[vad]", label) else f"[{label}]"
 
 
+#: ffmpeg's filtergraph mini-language puts every label a chain touches in a
+#: bracket group at the very start (inputs) or the very end (outputs) of the
+#: chain, never in the middle -- and every entry this compiler builds, by hand
+#: or through `_step`, follows that shape. So the labels an already-built
+#: entry consumes and produces can be read back out of the string it was
+#: already turned into, rather than threaded through a second bookkeeping
+#: path that every future operation would have to remember to update.
+_LEADING_LABELS = re.compile(r"^(?:\[[^\]]+\])+")
+_TRAILING_LABELS = re.compile(r"(?:\[[^\]]+\])+$")
+_LABEL = re.compile(r"\[([^\]]+)\]")
+
+
+def _entry_io(entry: str) -> tuple[list[str], list[str]]:
+    """The input and output labels of one compiled filter-chain entry."""
+    lead = _LEADING_LABELS.match(entry)
+    inputs = _LABEL.findall(lead.group(0)) if lead else []
+    rest = entry[lead.end() :] if lead else entry
+    trail = _TRAILING_LABELS.search(rest)
+    outputs = _LABEL.findall(trail.group(0)) if trail else []
+    return inputs, outputs
+
+
+def _seal_dangling_outputs(compiler: Compiler) -> None:
+    """Sink any filter output nothing downstream ever reads.
+
+    Every verb before this pass runs against the graph AS IT STANDS AT THAT
+    MOMENT -- it has no way to know a later verb will throw its output away.
+    `trim` puts audio alongside video because at the time it runs that is
+    correct; if `audio remove` or `audio replace` follows, the audio label
+    `trim` produced is simply never referenced again. ffmpeg does not treat an
+    unconnected filter output as "dead code to prune" -- it refuses to build
+    the graph at all ("has output N unconnected ... Invalid argument").
+
+    So this runs once, after every operation has had its turn, over the
+    FINISHED graph rather than the plan: for every label a filter produced,
+    if nothing downstream consumes it and it is not one of the two labels
+    actually mapped to output, it is routed to a null sink -- exactly the
+    trick `zoom` already uses on its own reference-scaling branch (`nullsink`
+    on `ref_out`). That keeps this general across any current or future verb
+    pair with the same shape, instead of special-casing `audio remove` and
+    `audio replace` against each verb that can precede them.
+    """
+    produced: list[str] = []
+    seen: set[str] = set()
+    consumed: set[str] = set()
+    for entry in compiler.filters:
+        inputs, outputs = _entry_io(entry)
+        consumed.update(inputs)
+        for label in outputs:
+            if label not in seen:
+                seen.add(label)
+                produced.append(label)
+    consumed.add(compiler.video)
+    if compiler.audio is not None:
+        consumed.add(compiler.audio)
+    for label in produced:
+        if label in consumed:
+            continue
+        sink = "nullsink" if label.startswith("v") else "anullsink"
+        compiler.filters.append(f"[{label}]{sink}")
+
+
 def compile_plan(
     plan: Plan,
     output: str,
@@ -498,26 +693,43 @@ def compile_plan(
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
     compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate)
-    dispatch = {
-        "trim": compiler.trim,
-        "cut": compiler.cut,
-        "retime": compiler.retime,
-        "zoom": compiler.zoom,
-        "stitch": compiler.stitch,
-        "caption": compiler.caption,
-        "recolor": compiler.recolor,
-        "vignette": compiler.vignette,
-        "grade": compiler.grade,
-        "lut": compiler.lut,
-        "audio_remove": compiler.audio_remove,
-        "audio_replace": compiler.audio_replace,
-        "audio_mix": compiler.audio_mix,
-    }
+    # A `match` on the operation's own class, not a dict of bound methods keyed
+    # by name. The dict handed every handler the full `Operation` union rather
+    # than its own concrete type, which is a real narrowing gap (13 diagnostics
+    # from one line). Matching on the class narrows `operation` to its concrete
+    # type in each case, so each handler receives exactly the type it declares.
     for operation in plan.operations:
-        handler = dispatch.get(operation.op)
-        if handler is None:
-            raise VidError(f"This version of vid cannot compile a {operation.op!r} operation.")
-        handler(operation)
+        match operation:
+            case Trim():
+                compiler.trim(operation)
+            case Cut():
+                compiler.cut(operation)
+            case Retime():
+                compiler.retime(operation)
+            case Zoom():
+                compiler.zoom(operation)
+            case Stitch():
+                compiler.stitch(operation)
+            case Caption():
+                compiler.caption(operation)
+            case Recolor():
+                compiler.recolor(operation)
+            case Vignette():
+                compiler.vignette(operation)
+            case Grade():
+                compiler.grade(operation)
+            case Lut():
+                compiler.lut(operation)
+            case AudioRemove():
+                compiler.audio_remove(operation)
+            case AudioReplace():
+                compiler.audio_replace(operation)
+            case AudioMix():
+                compiler.audio_mix(operation)
+            case _:
+                raise VidError(f"This version of vid cannot compile a {operation.op!r} operation.")
+
+    _seal_dangling_outputs(compiler)
 
     command = ["ffmpeg"]
     if overwrite:

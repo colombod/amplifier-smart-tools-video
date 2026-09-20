@@ -1,10 +1,20 @@
-"""Top level entry point for the Vid library."""
+"""Top level entry point for the Vid library.
+
+EVERYTHING THE CLI CAN DO IS REACHABLE HERE. Every plan-editing capability --
+trim, cut, retime, zoom, stitch, caption, the audio edits, recolor, vignette,
+grade, lut, plan display -- owns its own validation, normalization and
+operation construction as a public function that takes and returns a `Plan`.
+The CLI's job is only argument parsing, reading the piped plan off stdin, and
+writing the result back out; a Python caller does the same work by building or
+receiving a `Plan` directly and calling these functions with no CLI involved.
+"""
 
 from pathlib import Path
 
 from vid.core import manifest
 from vid.core import skill as skill_module
-from vid.schemas import Manifest
+from vid.plan import Plan
+from vid.schemas import Manifest, VidError
 
 
 def load_manifest() -> Manifest:
@@ -32,7 +42,7 @@ def repository_url() -> str | None:
     return skill_module.repository_url()
 
 
-def render(plan, output: str, *, print_command: bool = False) -> str:
+def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     """Compile a plan and run it, or show what would run.
 
     Probing happens here rather than in the compiler: durations are a property of
@@ -42,16 +52,20 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     import subprocess
 
     from vid.compile import compile_plan
+    from vid.plan import AudioMix, AudioReplace, Stitch
     from vid.plan import Retime as _Retime
-    from vid.plan import Stitch
     from vid.probe import duration, frame_rate, has_audio, have_ffmpeg
-    from vid.schemas import VidError
 
     # Retime needs the source duration too: without it the audio cannot be
     # bounded to the length the edit means, and atempo's rounding decides the
-    # container's duration instead.
+    # container's duration instead. `audio replace`/`audio mix` need it for the
+    # same reason -- both pad-then-trim the incoming track to "however long the
+    # video is right now", and without a known length that bound silently
+    # becomes "no bound at all", padding the incoming track's silence forever
+    # rather than to the video's actual length.
     needs_durations = any(
-        (isinstance(op, Stitch) and op.transition) or isinstance(op, _Retime) for op in plan.operations
+        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix))
+        for op in plan.operations
     )
     durations: dict[str, float] = {}
     if needs_durations:
@@ -65,7 +79,13 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     from vid.plan import Retime
 
     rate = frame_rate(plan.source) if plan.source and any(isinstance(op, Retime) for op in plan.operations) else None
-    command = compile_plan(plan, output, durations=durations, has_audio=source_has_audio, frame_rate=rate)
+
+    # RESOLVED BEFORE IT IS USED, not after. A caller who wrote `out.mp4` from
+    # one working directory and reads the report from another cannot resolve a
+    # bare relative path -- the same reason `index` and narration's default
+    # track already report an absolute path.
+    resolved_output = str(Path(output).resolve())
+    command = compile_plan(plan, resolved_output, durations=durations, has_audio=source_has_audio, frame_rate=rate)
 
     if print_command:
         import shlex
@@ -81,8 +101,13 @@ def render(plan, output: str, *, print_command: bool = False) -> str:
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-12:])
-        raise VidError(f"ffmpeg failed:\n{tail}")
-    return output
+        raise VidError(
+            f"ffmpeg failed to render {resolved_output!r}:\n{tail}\n"
+            "Check that every input file the plan names is readable, or run `vid check` "
+            "to confirm this installation's ffmpeg and filters are working. `--print-command` "
+            "shows the exact invocation without running it."
+        )
+    return resolved_output
 
 
 def check() -> str:
@@ -248,7 +273,6 @@ def verify(
     """
     from vid import verify as checks
     from vid.probe import have_ffmpeg
-    from vid.schemas import VidError
 
     if not have_ffmpeg():
         raise VidError(
@@ -282,10 +306,44 @@ def index(
 ) -> str:
     """Build (or extend) a video's index and report what it holds."""
     import json
-    import sys
 
     from vid.index import build, describe, index_path
-    from vid.schemas import VidError
+    from vid.probe import have_ffmpeg, have_ffprobe
+
+    # PREFLIGHT BEFORE ANY WORK STARTS. Shot detection shells out to ffmpeg and
+    # the duration read shells out to ffprobe; both used to be discovered
+    # missing only when one of those subprocess calls failed, well outside this
+    # tool's own remedial error path. Checking first means the caller learns
+    # what to install before any indexing work has spent time on the file.
+    if not (have_ffmpeg() and have_ffprobe()):
+        raise VidError(
+            "Indexing reads the file directly -- shot detection needs ffmpeg and the duration "
+            "read needs ffprobe, both on PATH before any indexing work starts. "
+            "Run `vid check` for the install command for your system."
+        )
+
+    # THE PROVIDER IS CONFIRMED BEFORE `build()` EVER RUNS, not after. `build()`
+    # writes the index to disk unconditionally -- on a video with no prior
+    # index, a caller with no gh/Copilot access used to pay for the whole
+    # build (shot detection, a real transcription) only to be refused
+    # afterward, with a brand new index file left behind that nobody asked
+    # for. Checking the provider first means a missing prerequisite leaves no
+    # new state at all.
+    intelligence = None
+    if vision:
+        try:
+            from vid.intelligence.interface import default_intelligence
+
+            intelligence = default_intelligence()
+            intelligence.preflight()
+        except Exception:
+            intelligence = None
+        if intelligence is None:
+            raise VidError(
+                "Describing what is on screen needs a model, and none is configured. "
+                "Shot detection and speech indexing keep working without one -- "
+                "`vid check` says how to configure a provider."
+            )
 
     record = build(video, speech=speech, model_size=model_size)
 
@@ -303,28 +361,8 @@ def index(
             "  Shot detection already reduced this from every frame in the video "
             "to one frame per shot."
         )
-        if not yes:
-            if sys.stdin.isatty():
-                sys.stderr.write(notice + "\n")
-                if input("  Describe them? [y/N] ").strip().lower() not in {"y", "yes"}:
-                    return "Nothing described. The index is unchanged."
-            else:
-                raise VidError(notice + "\n  Refusing to spend that unasked. Re-run with --yes.")
-
-        intelligence = None
-        try:
-            from vid.intelligence.interface import default_intelligence
-
-            intelligence = default_intelligence()
-            intelligence.preflight()
-        except Exception:
-            intelligence = None
-        if intelligence is None:
-            raise VidError(
-                "Describing what is on screen needs a model, and none is configured. "
-                "Shot detection and speech indexing keep working without one -- "
-                "`vid check` says how to configure a provider."
-            )
+        if not _confirm_before_spending(notice, yes):
+            return "Nothing described. The index is unchanged."
 
         record = describe(video, record, intelligence)
         index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -349,14 +387,34 @@ def _index_report(video: str, record: dict, note: str = "") -> str:
     return "\n".join(lines)
 
 
+def _confirm_before_spending(notice: str, yes: bool) -> bool:
+    """Whether to go ahead with a spend the caller has not pre-approved.
+
+    THE PROMPT IS A DIAGNOSTIC, not a result, so it -- and the notice above it
+    -- go to stderr. Only the caller's typed answer touches stdin. This used to
+    go through the builtin `input()`, whose prompt argument is written to
+    stdout regardless: an interactive `vid index --vision` interleaved that
+    prompt into the machine-readable result `index` prints on completion.
+    """
+    import sys
+
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        raise VidError(notice + "\n  Refusing to spend that unasked. Re-run with --yes.")
+    sys.stderr.write(notice + "\n")
+    sys.stderr.write("  Describe them? [y/N] ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip().lower() in {"y", "yes"}
+
+
 def find(query: str, video: str, *, show: bool = False) -> None:
     """Locate a moment, and either describe it or emit a plan trimmed to it."""
     import sys
 
     from vid.find import find as search
     from vid.index import chunks_of, load
-    from vid.plan import Plan, Trim, write_plan
-    from vid.schemas import VidError
+    from vid.plan import Trim, write_plan
 
     record = load(video)
     if record is None:
@@ -403,7 +461,6 @@ def audio_extract(video: str, output: str) -> str:
     import subprocess
 
     from vid.probe import have_ffmpeg
-    from vid.schemas import VidError
 
     if not have_ffmpeg():
         raise VidError(
@@ -411,16 +468,41 @@ def audio_extract(video: str, output: str) -> str:
             "Run `vid check` for the install command for your system."
         )
 
+    resolved_output = str(Path(output).resolve())
     result = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", video, "-vn", output],
+        ["ffmpeg", "-y", "-v", "error", "-i", video, "-vn", resolved_output],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         detail = (result.stderr or "").strip().splitlines()
         reason = detail[-1] if detail else "ffmpeg gave no reason"
-        raise VidError(f"Could not extract audio from {video!r}: {reason}")
-    return f"wrote {output}"
+        raise VidError(
+            f"Could not extract audio from {video!r}: {reason}\n"
+            "Check the file is a readable video, or run `vid check` to confirm ffmpeg is working."
+        )
+    return f"wrote {resolved_output}"
+
+
+def audio_remove(plan: Plan) -> Plan:
+    """Drop the audio track. The result is a silent video."""
+    from vid.plan import AudioRemove
+
+    return plan.with_operation(AudioRemove())
+
+
+def audio_replace(plan: Plan, track: str) -> Plan:
+    """Swap the audio track for another file's. Result is always the video's length."""
+    from vid.plan import AudioReplace
+
+    return plan.with_operation(AudioReplace(track=track))
+
+
+def audio_mix(plan: Plan, track: str, level: float = -18.0) -> Plan:
+    """Lay another track under the existing audio, keeping both."""
+    from vid.plan import AudioMix
+
+    return plan.with_operation(AudioMix(track=track, level=level))
 
 
 def narrate(
@@ -440,12 +522,14 @@ def narrate(
     committed to.
     """
     from pathlib import Path
+    import shutil
+    import subprocess
     import tempfile
 
-    from vid.index import load
+    from vid.index import fingerprint, load
     from vid.narrate import assemble, fit, write_script
-    from vid.schemas import VidError
-    from vid.voice import DEFAULT_VOICE, Speaker
+    from vid.voice import DEFAULT_VOICE, INSTALL_HINT, Speaker
+    from vid.voice import available as voice_available
 
     record = load(video)
     if record is None:
@@ -453,6 +537,13 @@ def narrate(
             f"{video!r} has not been indexed yet, and narration is written against what is "
             f"actually in the video. Run `vid index {video}` first."
         )
+
+    # CHECK FIRST, WORK SECOND. Synthesis needs Piper, and this used to be
+    # discovered only after `write_script` had already spent a model call --
+    # the missing prerequisite was found on the far side of a bill. `--script-
+    # only` never touches Piper at all, so it is exempt from this preflight.
+    if not script_only and not voice_available():
+        raise VidError(INSTALL_HINT)
 
     intelligence = None
     try:
@@ -470,48 +561,88 @@ def narrate(
         return script.to_json()
 
     speaker = Speaker(voice or DEFAULT_VOICE)
-    workdir = Path(tempfile.mkdtemp(prefix="vid-narrate-"))
-    fit(script, speaker, workdir, intelligence)
-
     total = record.get("duration", 0.0)
-    track = assemble(script, workdir / "narration.wav", total)
 
-    report = [f"narration for {video}", ""]
-    report += [line.report() for line in script.lines]
-    unfitted = script.unfitted()
-    if unfitted:
-        report += ["", f"  {len(unfitted)} line(s) did not fit:"]
-        report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
+    # SCOPED, LIKE VISION'S FRAME EXTRACTION. Every intermediate WAV -- one per
+    # line, plus the assembled track -- lives in a directory that is deleted
+    # the moment this block ends, so nothing here leaks the way an unscoped
+    # `tempfile.mkdtemp` would.
+    with tempfile.TemporaryDirectory(prefix="vid-narrate-") as work:
+        workdir = Path(work)
+        fit(script, speaker, workdir, intelligence)
+        temp_track = assemble(script, workdir / "narration.wav", total)
 
-    if out is None:
-        report += [
-            "",
-            f"  narration track: {track}",
-            "  Lay it on with:  vid audio "
-            + ("mix" if mix else "replace")
-            + f" {video} --with {track} | vid render out.mp4",
-        ]
+        report = [f"narration for {video}", ""]
+        report += [line.report() for line in script.lines]
+        unfitted = script.unfitted()
+        if unfitted:
+            report += ["", f"  {len(unfitted)} line(s) did not fit:"]
+            report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
+
+        if out is None:
+            # The scoped directory above is destroyed as soon as this block
+            # ends, so the artefact reported back to the caller has to already
+            # be somewhere durable -- a path into a directory that no longer
+            # exists is not a usable track.
+            durable_dir = _narration_dir()
+            durable_dir.mkdir(parents=True, exist_ok=True)
+            track = durable_dir / f"{fingerprint(video)}.wav"
+            shutil.copyfile(temp_track, track)
+            report += [
+                "",
+                f"  narration track: {track}",
+                "  Lay it on with:  vid audio "
+                + ("mix" if mix else "replace")
+                + f" {video} --with {track} | vid render out.mp4",
+            ]
+            return "\n".join(report)
+
+        # Lay it on through the existing audio verbs rather than a parallel path --
+        # one way to put sound on a video, not two.
+        from vid.compile import compile_plan
+        from vid.plan import AudioMix, AudioReplace, Plan
+
+        # RESOLVED BEFORE IT IS WRITTEN, same as `render` and `audio_extract` --
+        # a relative `--out` has to come back as something the caller can find
+        # regardless of which directory reads the report.
+        resolved_out = str(Path(out).resolve())
+        has_speech = bool(record.get("speech"))
+        layer = mix if mix is not None else has_speech
+        operation = AudioMix(track=str(temp_track), level=-6.0) if layer else AudioReplace(track=str(temp_track))
+        command = compile_plan(Plan(source=video).with_operation(operation), resolved_out, durations={video: total})
+
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip().splitlines()
+            raise VidError(
+                f"Could not render {resolved_out!r}: {detail[-1] if detail else '?'}\n"
+                "Check the narration track and source video are both readable, or run "
+                "`vid check` to confirm ffmpeg is working."
+            )
+
+        report += ["", f"  wrote {resolved_out} ({'mixed over' if layer else 'replacing'} the original audio)"]
         return "\n".join(report)
 
-    # Lay it on through the existing audio verbs rather than a parallel path --
-    # one way to put sound on a video, not two.
-    from vid.compile import compile_plan
-    from vid.plan import AudioMix, AudioReplace, Plan
 
-    has_speech = bool(record.get("speech"))
-    layer = mix if mix is not None else has_speech
-    operation = AudioMix(track=str(track), level=-6.0) if layer else AudioReplace(track=str(track))
-    command = compile_plan(Plan(source=video).with_operation(operation), out, durations={video: total})
+def _narration_dir() -> Path:
+    """Where a narration track persists once written.
 
-    import subprocess
+    The synthesis workdir is a scoped temp directory, gone the moment
+    `narrate` returns, so the track this reports back to the caller (when
+    `--out` is omitted) has to be copied somewhere durable first. Same
+    convention as the index and the voice cache: an env override, else the
+    XDG state home -- a caller's next `vid audio` command can still find it.
+    """
+    import os
 
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip().splitlines()
-        raise VidError(f"Could not render {out!r}: {detail[-1] if detail else '?'}")
-
-    report += ["", f"  wrote {out} ({'mixed over' if layer else 'replacing'} the original audio)"]
-    return "\n".join(report)
+    override = os.environ.get("VID_NARRATION_DIR")
+    if override:
+        # RESOLVED, same as `render`'s and `audio_extract`'s output paths: a
+        # relative override reported back to a caller reading from a
+        # different cwd would name a location only this process could find.
+        return Path(override).resolve()
+    base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    return Path(base) / "vid" / "narration"
 
 
 def recolor_op(video: str, reference: str, strength: float = 1.0):
@@ -524,7 +655,6 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
 
     from vid.color import measure_image, measure_video
     from vid.plan import Recolor
-    from vid.schemas import VidError
 
     if not Path(reference).is_file():
         raise VidError(f"No such reference image: {reference!r}")
@@ -539,3 +669,167 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
         reference_std=target.std,
         strength=strength,
     )
+
+
+def recolor(plan: Plan, like: str, strength: float = 1.0) -> Plan:
+    """Map a plan's own source video's colour onto a reference image's."""
+    if plan.source is None:
+        raise VidError("recolor needs a plan with a source video to measure.")
+    operation = recolor_op(plan.source, like, strength)
+    return plan.with_operation(operation)
+
+
+# region: plan-editing capabilities
+#
+# Every one of these takes the plan being edited and returns the next one; none
+# of them touch stdin, stdout, or argv. The CLI's job is only to read the
+# incoming plan (or start one from a source path) and write the one returned
+# here back out -- everything a caller sees a verb "decide" happens in this
+# region, and is exactly as reachable from Python as from the command line.
+
+
+def trim(plan: Plan, start: str = "0", end: str | None = None) -> Plan:
+    """Keep a time range, discard the rest. `start`/`end` accept `90`, `1:30`, `0:10.5`."""
+    from vid.plan import Trim
+    from vid.timecode import parse_timecode
+
+    return plan.with_operation(Trim(start=parse_timecode(start), end=parse_timecode(end) if end else None))
+
+
+def cut(plan: Plan, start: str, end: str) -> Plan:
+    """Remove a time range, keeping what surrounds it."""
+    from vid.plan import Cut
+    from vid.timecode import parse_timecode
+
+    return plan.with_operation(Cut(start=parse_timecode(start), end=parse_timecode(end)))
+
+
+def retime(plan: Plan, speed: str | None = None, ramp: str | None = None) -> Plan:
+    """Change speed, constantly (`speed`, e.g. `2x`) or along a curve (`ramp`, e.g.
+    `"1x@0 0.25x@1:05 1x@1:12"`). Exactly one of the two must be given."""
+    from vid.plan import RampPoint, Retime
+    from vid.timecode import parse_speed, parse_timecode
+
+    if (speed is None) == (ramp is None):
+        raise VidError("Give exactly one of --speed (a constant) or --ramp (a curve).")
+    if speed is not None:
+        return plan.with_operation(Retime(speed=parse_speed(speed)))
+    assert ramp is not None  # guaranteed by the mutual-exclusion check above
+
+    points = []
+    for token in ramp.split():
+        value, _, at = token.partition("@")
+        if not at:
+            raise VidError(f"{token!r} is not a ramp point. Write `speed@time`, as in `0.25x@1:05`.")
+        points.append(RampPoint(at=parse_timecode(at), speed=parse_speed(value)))
+    return plan.with_operation(Retime(ramp=points))
+
+
+def zoom(plan: Plan, to: float = 1.3, at: str | None = None, duration: float = 3.0) -> Plan:
+    """Animated zoom (Ken Burns), optionally centred on a moment."""
+    from vid.plan import Zoom
+    from vid.timecode import parse_timecode
+
+    return plan.with_operation(Zoom(to=to, at=parse_timecode(at) if at else None, duration=duration))
+
+
+def stitch(plan: Plan | None, sources: list[str], *, transition: str | None = None, duration: float = 0.5) -> Plan:
+    """Join clips onto `plan`, with or without a transition.
+
+    Pass an existing `Plan` (continuing a pipe, or one built by another call
+    here) and every clip to append in `sources`. Pass `None` and `sources`
+    starts a fresh plan from its own first entry, appending the rest.
+    """
+    from vid.plan import Stitch
+
+    rest = list(sources)
+    if plan is None:
+        if not rest:
+            raise VidError("stitch needs at least one clip to join on. Name another file.")
+        plan = Plan(source=rest[0])
+        rest = rest[1:]
+    if not rest:
+        raise VidError("stitch needs at least one clip to join on. Name another file.")
+
+    preset, requested, rationale, expression = (None, None, None, None)
+    if transition is not None:
+        # The clips are handed over so a GENERATED transition can be proven
+        # against the pair it will actually join. Tier 1 and tier 2 ignore them.
+        first = plan.source if plan.source else (rest[0] if rest else None)
+        second = rest[0] if rest else None
+        preset, requested, rationale, expression = resolve_transition(transition, first, second, duration)
+
+    return plan.with_operation(
+        Stitch(
+            sources=rest,
+            transition=preset,
+            transition_duration=duration,
+            transition_requested=requested,
+            transition_rationale=rationale,
+            transition_expr=expression,
+            # True only on the tier-3 path, where `probe` actually rendered
+            # and measured it. A preset needs no proving; it is ffmpeg's.
+            transition_verified=expression is not None,
+        )
+    )
+
+
+def caption(plan: Plan, subtitles: str, style: str | None = None) -> Plan:
+    """Burn subtitles into the picture from a subtitle file."""
+    from vid.plan import Caption
+
+    return plan.with_operation(Caption(subtitles=subtitles, style=style))
+
+
+def show(plan: Plan) -> Plan:
+    """The edit, without performing it. The plan already is its own display."""
+    return plan
+
+
+def vignette(plan: Plan, strength: float = 0.35) -> Plan:
+    """Darken the edges, to pull an eye to the middle."""
+    from vid.plan import Vignette
+
+    return plan.with_operation(Vignette(strength=strength))
+
+
+def grade(plan: Plan | None, look: str | None = None, *, show: bool = False) -> Plan | str:
+    """Apply a named look to `plan`, or (with `show=True`) list the catalogue.
+
+    `plan` may be `None` when `show` is True, since nothing is read or written
+    in that case -- only the catalogue text comes back.
+    """
+    from vid.looks import catalogue
+    from vid.plan import Grade
+
+    if show:
+        return catalogue()
+    if not look:
+        raise VidError("Name a look with --look, or run `vid grade --list` to see them.")
+    if plan is None:
+        raise VidError("grade needs a plan to add the look to.")
+    return plan.with_operation(Grade(look=look))
+
+
+def lut(plan: Plan, table: str) -> Plan:
+    """Apply a .cube lookup table you already have."""
+    from vid.plan import Lut
+
+    return plan.with_operation(Lut(path=table))
+
+
+def transitions(describe: bool = False) -> str:
+    """Every transition this tool can use, and (with `describe`) what each looks like."""
+    from vid.transitions import FEEL, PRESETS
+
+    if not describe:
+        return " ".join(PRESETS)
+
+    width = max(len(name) for name in PRESETS)
+    lines = [f"  {name:<{width}}  {FEEL.get(name, '')}" for name in PRESETS]
+    lines.append("")
+    lines.append('  Or describe what you want -- `--transition "soft and dreamy"` -- and a model picks.')
+    return "\n".join(lines)
+
+
+# endregion

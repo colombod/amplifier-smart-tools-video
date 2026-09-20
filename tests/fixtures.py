@@ -18,8 +18,10 @@ tell clip A from clip B proves nothing:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -122,6 +124,143 @@ def ensure_clips() -> dict[str, Clip]:
     return clips
 
 
+def ensure_undecodable_clip() -> Path:
+    """A file ffprobe can read the duration of, but ffmpeg cannot decode a single
+    frame from -- the real shape of "scene detection fails but duration probing
+    succeeds", not a stand-in for it.
+
+    Built with `-movflags +faststart` so the `moov` box (container metadata,
+    including duration) sits BEFORE `mdat` (the encoded frame data). Zeroing
+    everything from `mdat` onward destroys every frame while leaving the
+    metadata ffprobe reads intact -- verified: `ffprobe -show_entries
+    format=duration` still succeeds on the result, while ffmpeg's decoder
+    exits non-zero on it.
+    """
+    path = FIXTURE_DIR / "undecodable.mp4"
+    if path.exists():
+        return path
+    if not have_ffmpeg():
+        raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    source = FIXTURE_DIR / "_undecodable_source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=320x240:r=30:d=3",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    data = bytearray(source.read_bytes())
+    mdat_index = data.find(b"mdat")
+    if mdat_index == -1:
+        raise RuntimeError("expected an 'mdat' box in the generated clip -- ffmpeg's mp4 muxer changed shape")
+    start = mdat_index + 8  # past the fourcc and its 4-byte size prefix
+    for i in range(start, len(data)):
+        data[i] = 0
+    path.write_bytes(bytes(data))
+    source.unlink()
+    return path
+
+
+def ensure_corner_clip() -> Clip:
+    """A red clip with a small blue marker in its top-left corner, built once.
+
+    Not part of `CLIPS` -- it exists to prove a CROP happened, not to be told
+    apart in a stitch. A flat colour cannot show that: zooming toward centre
+    on a solid-colour clip looks identical zoomed or not. A marker confined to
+    one corner does not -- it is exactly what a centred crop pushes out of
+    frame first, so sampling that corner tells "cropped" from "not cropped".
+    """
+    path = FIXTURE_DIR / "corner.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x240:r=30:d=3",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=550:sample_rate=48000:duration=3",
+                "-vf",
+                "drawbox=x=0:y=0:w=40:h=40:color=blue:t=fill",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="corner", colour="red", hz=550, seconds=3.0)
+
+
+def corner_pixel(path: Path | str, at: float) -> tuple[int, int, int]:
+    """Average RGB of a small patch at the very corner (0,0) of one frame.
+
+    Blue while the marker is still in frame, red once a crop has pushed it
+    out -- a `-vf scale=1:1` average of the WHOLE frame (as `frame_colour`
+    takes) would dilute a 40x40 marker in a 320x240 frame past the point of
+    a reliable assertion; restricting the average to a small patch at the
+    marker's own corner keeps the signal undiluted.
+    """
+    out = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "crop=4:4:2:2,scale=1:1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    if len(out) < 3:
+        raise RuntimeError(f"no frame at {at}s in {path}")
+    return (out[0], out[1], out[2])
+
+
 def probe_duration(path: Path | str) -> float:
     """Seconds, from ffprobe. The primary assertion for stitch and transition."""
     out = subprocess.run(
@@ -175,3 +314,71 @@ def frame_colour(path: Path | str, at: float) -> tuple[int, int, int]:
     if len(pixel) < 3:
         raise RuntimeError(f"no frame at {at}s in {path}")
     return (pixel[0], pixel[1], pixel[2])
+
+
+def has_audio_stream(path: Path | str) -> bool:
+    """Whether the file carries an audio stream at all -- not whether it is
+    silent. A silent track and no track look identical in a player and are
+    different files; only ffprobe's stream list tells them apart."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return "audio" in out
+
+
+def tone_strength(path: Path | str, hz: int, at: float = 0.5, window: float = 0.3) -> float:
+    """How strongly `hz` is present in a window of `path`'s audio, relative to
+    the loudest of the fixtures' own three tones (440/660/880Hz).
+
+    Goertzel: one bin of a DFT, computed directly. Cheaper than an FFT and it
+    is the only bin any caller here ever wants.
+    """
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(at),
+            "-t",
+            str(window),
+            "-i",
+            str(path),
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-f",
+            "s16le",
+            "-",
+        ],
+        capture_output=True,
+    ).stdout
+    count = len(raw) // 2
+    if count < 256:
+        return 0.0
+    samples = struct.unpack(f"<{count}h", raw[: count * 2])
+
+    def power(freq: int) -> float:
+        k = 2 * math.cos(2 * math.pi * freq / 8000)
+        s1 = s2 = 0.0
+        for sample in samples:
+            s0 = sample + k * s1 - s2
+            s2, s1 = s1, s0
+        return math.sqrt(abs(s1 * s1 + s2 * s2 - k * s1 * s2)) / count
+
+    strongest = max(power(f) for f in (440, 660, 880)) or 1.0
+    return power(hz) / strongest

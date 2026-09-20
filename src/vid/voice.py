@@ -135,16 +135,18 @@ class Speaker:
         out = Path(out)
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        kwargs = {}
-        if rate != 1.0:
-            # piper expresses rate as a length scale: >1 is SLOWER. A caller
-            # asking for 1.2x speed wants a scale of 1/1.2.
-            from piper import SynthesisConfig
+        from piper import SynthesisConfig
 
-            kwargs["syn_config"] = SynthesisConfig(length_scale=1.0 / rate)
+        # piper expresses rate as a length scale: >1 is SLOWER. A caller
+        # asking for 1.2x speed wants a scale of 1/1.2. Passed as an explicit
+        # keyword rather than a `**kwargs` dict: a dict of one value type is
+        # still a value type that could apply to ANY of synthesize_wav's other
+        # keyword parameters, which is exactly what made this unpack-checkable
+        # as `bool` in one place and `SynthesisConfig` in another.
+        syn_config = SynthesisConfig(length_scale=1.0 / rate) if rate != 1.0 else None
 
         with _quiet_stderr(), wave.open(str(out), "wb") as handle:
-            self._voice.synthesize_wav(text, handle, **kwargs)
+            self._voice.synthesize_wav(text, handle, syn_config=syn_config)
         return duration_of(out)
 
 

@@ -55,6 +55,24 @@ jobs:
       - name: Tests
         run: .venv/bin/python -m pytest -q
 
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Create the environment
+        # All extras, unlike the test job: ty must resolve every import it
+        # sees (piper, faster-whisper) even though they are lazy at runtime.
+        run: uv sync --frozen --all-extras --all-groups
+
+      - name: Type check
+        # The declared local gate (.pre-commit-config.yaml's `ty-check` hook),
+        # run the same way here so CI cannot go green while it stays red.
+        run: uv run ty check --output-format concise --no-progress .
+
   conformance:
     runs-on: ubuntu-latest
     steps:

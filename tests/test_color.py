@@ -18,6 +18,55 @@ from vid.schemas import VidError
 pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these read real pixels")
 
 
+def _scrub_path(monkeypatch, tmp_path) -> None:
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+
+
+# ---------------------------------------------------------------------------
+# Deviations "failure-names-remedy" / "prerequisite-failures-match-manifest":
+# a missing ffmpeg used to reach `subprocess.run` directly and escape as a
+# bare `FileNotFoundError`, and a genuine pixel-read failure named only the
+# raw ffmpeg stderr with no action a caller could take.
+# ---------------------------------------------------------------------------
+
+
+def test_measure_image_with_no_ffmpeg_names_the_manifests_install_reference(monkeypatch, tmp_path):
+    _scrub_path(monkeypatch, tmp_path)
+
+    with pytest.raises(VidError) as failure:
+        measure_image("whatever.png")
+
+    message = str(failure.value)
+    assert "ffmpeg" in message.lower()
+    assert "https://ffmpeg.org/download.html" in message, "must cite the manifest's own ffmpeg install reference"
+
+
+def test_measure_video_with_no_ffmpeg_names_the_manifests_install_reference(monkeypatch, tmp_path):
+    _scrub_path(monkeypatch, tmp_path)
+
+    with pytest.raises(VidError) as failure:
+        measure_video("whatever.mp4")
+
+    message = str(failure.value)
+    assert "ffmpeg" in message.lower()
+    assert "https://ffmpeg.org/download.html" in message
+
+
+def test_raw_rgb_failure_names_a_remedy_not_just_the_raw_stderr(tmp_path):
+    import vid.color as color_module
+
+    with pytest.raises(VidError) as failure:
+        color_module._raw_rgb(
+            ["ffmpeg", "-v", "error", "-i", str(tmp_path / "does-not-exist.mp4"), "-f", "rawvideo", "-"]
+        )
+
+    message = str(failure.value)
+    assert "Could not read pixels" in message
+    assert "vid check" in message or "ffprobe" in message
+
+
 def _video(path, colour: str, seconds: float = 3.0) -> str:
     subprocess.run(
         [
@@ -186,6 +235,34 @@ def test_a_video_with_no_audio_track_still_renders(tmp_path):
     assert "0:a" not in " ".join(command), "mapped an audio stream that does not exist"
     subprocess.run(command, check=True, capture_output=True)
     assert not has_audio(out)
+
+
+def test_measure_video_refuses_a_partial_sample_set(tmp_path, monkeypatch):
+    """One unreadable sample among the nine planned must fail the whole
+    measurement, and name which timestamp failed -- a grade quietly computed
+    from eight of nine samples looks identical to one computed from all nine,
+    and there would be nothing to tell a caller the difference.
+    """
+    import vid.color as color_module
+
+    video = _video(tmp_path / "v.mp4", "0x336699")
+    real_raw_rgb = color_module._raw_rgb
+    calls = {"n": 0}
+
+    def _flaky(command):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise VidError("synthetic failure for this sample")
+        return real_raw_rgb(command)
+
+    monkeypatch.setattr(color_module, "_raw_rgb", _flaky)
+
+    with pytest.raises(VidError) as failure:
+        color_module.measure_video(video)
+
+    message = str(failure.value)
+    assert "1 of 9" in message
+    assert "synthetic failure for this sample" in message
 
 
 def test_has_audio_assumes_sound_when_it_cannot_tell(tmp_path):

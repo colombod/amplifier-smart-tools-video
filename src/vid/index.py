@@ -22,9 +22,25 @@ import json
 from pathlib import Path
 import subprocess
 
+from vid.probe import have_ffmpeg, have_ffprobe
 from vid.schemas import VidError
 
 INDEX_FORMAT = 1
+
+
+def _require_ffmpeg_tools() -> None:
+    """Refuse loudly, naming the remedy, rather than let a missing binary
+    escape as a bare `FileNotFoundError` from inside `subprocess.run`.
+
+    The install guidance matches `probe.duration`'s and the manifest's own
+    entry for ffmpeg (`SMART_TOOL.md`): ffmpeg ships ffprobe, so one message
+    covers both.
+    """
+    if not have_ffmpeg() or not have_ffprobe():
+        raise VidError(
+            "ffmpeg is not on PATH, and indexing needs it to detect shots and read durations. "
+            "Install ffmpeg (it ships ffprobe) -- see `vid check` for the command for your system."
+        )
 
 
 def index_dir() -> Path:
@@ -33,7 +49,10 @@ def index_dir() -> Path:
 
     override = os.environ.get("VID_INDEX_DIR")
     if override:
-        return Path(override)
+        # RESOLVED, same as `render`'s and `audio_extract`'s output paths: a
+        # relative override reported back to a caller reading from a
+        # different cwd would name a location only this process could find.
+        return Path(override).resolve()
     base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
     return Path(base) / "vid" / "index"
 
@@ -84,7 +103,16 @@ def load(video: str) -> dict | None:
     path = index_path(video)
     if not path.is_file():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        # A corrupt or truncated index must never escape as a bare traceback --
+        # `cli.main` only translates `VidError` into a named, non-zero exit.
+        # Naming the path AND the remedy is what turns this from "the tool
+        # crashed" into "remove this one file and rebuild it".
+        raise VidError(
+            f"The index at {path} is not valid JSON ({exc}). Remove it and run `vid index {video}` again to rebuild it."
+        ) from exc
 
 
 #: How different two frames must be to count as a cut.
@@ -115,11 +143,25 @@ def detect_shots(video: str, threshold: float = SCENE_THRESHOLD) -> list[Shot]:
     down to a few dozen -- one per shot. Describing forty frames costs cents;
     describing six hundred does not.
     """
+    _require_ffmpeg_tools()
     result = subprocess.run(
         ["ffmpeg", "-v", "info", "-i", video, "-vf", f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        # A NONZERO EXIT MUST NEVER FALL BACK TO THE [0.0, duration] DEFAULT.
+        # That default is meant for a video that genuinely has one shot; if it
+        # is used instead because ffmpeg could not read the frames, the two
+        # are indistinguishable in the written index. Refusing here, before
+        # `build()` ever constructs a record, is what keeps them apart.
+        detail = (result.stderr or "").strip().splitlines()
+        raise VidError(
+            f"Shot detection failed for {video!r} (ffmpeg exited {result.returncode}): "
+            f"{detail[-1] if detail else 'ffmpeg gave no reason'}.\n"
+            "Refusing to fall back to a single shot spanning the whole video -- that would be "
+            "indistinguishable from a real one-shot result. Verify the file with `ffprobe`, or try `vid check`."
+        )
     times = [0.0]
     for line in result.stderr.splitlines():
         if "pts_time:" in line:
@@ -133,6 +175,7 @@ def detect_shots(video: str, threshold: float = SCENE_THRESHOLD) -> list[Shot]:
 
 
 def _duration(video: str) -> float:
+    _require_ffmpeg_tools()
     out = subprocess.run(
         [
             "ffprobe",
@@ -184,6 +227,12 @@ def describe(video: str, record: dict, intelligence) -> dict:
     Descriptions live ON the shots, beside time ranges ffmpeg already produced.
     A model never supplies a time -- that is the whole point of describing frames
     rather than asking when something happened.
+
+    EVERY PENDING SHOT OR THE RECORD IS UNCHANGED. `describe_shots` already
+    refuses to return a partial set, but that guarantee is enforced here too,
+    explicitly, rather than trusted implicitly -- a record this function writes
+    must never leave a shot that WAS attempted looking identical to one that
+    was not.
     """
     from vid.vision import describe_shots
 
@@ -194,6 +243,12 @@ def describe(video: str, record: dict, intelligence) -> dict:
 
     described = describe_shots(video, pending, intelligence)
     by_id = {item.shot_id: item.description for item in described}
+    missing = [shot["id"] for shot in pending if shot["id"] not in by_id]
+    if missing:
+        raise VidError(
+            f"{len(missing)} of {len(pending)} pending shot(s) came back with no description: "
+            f"{', '.join(missing)}. Refusing to record a partial result -- re-run `vid index --vision`."
+        )
     for shot in shots:
         if shot["id"] in by_id:
             shot["description"] = by_id[shot["id"]]

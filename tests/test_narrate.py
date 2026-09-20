@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures import have_ffmpeg
 from vid.narrate import MAX_RATE, MIN_SLOT, REWRITE_ATTEMPTS, Line, Script, fit, slots_from
 from vid.schemas import VidError
 
@@ -199,6 +200,27 @@ def test_a_video_with_no_shots_becomes_one_slot():
 def test_a_video_too_short_to_narrate_says_so():
     with pytest.raises(VidError, match="too short to narrate"):
         slots_from({"duration": 1.0, "shots": []})
+
+
+@pytest.mark.skipif(not have_ffmpeg(), reason="assemble shells out to real ffmpeg")
+def test_assemble_failure_names_the_remedy_not_just_the_raw_stderr(tmp_path):
+    """A real ffmpeg failure -- an audio file that does not exist -- must come
+    back with something a caller can act on, matching the convention every
+    other ffmpeg failure in this tool already uses."""
+    script = Script(
+        source="x.mp4",
+        prompt="p",
+        lines=[Line(index=0, start=0.0, budget=5.0, text="hello", audio=tmp_path / "missing.wav")],
+    )
+
+    from vid.narrate import assemble
+
+    with pytest.raises(VidError) as failure:
+        assemble(script, tmp_path / "out.wav", total=5.0)
+
+    message = str(failure.value)
+    assert "Could not assemble the narration" in message
+    assert "vid check" in message, "the failure must name a remedy, not only report the raw stderr"
 
 
 def test_the_report_shows_the_measurement_beside_the_budget():

@@ -11,82 +11,16 @@ to one at the right level. Only measuring tells them apart.
 
 from __future__ import annotations
 
-import math
-import struct
 import subprocess
 
 import pytest
 
-from tests.fixtures import ensure_clips, have_ffmpeg
+from tests.fixtures import ensure_clips, has_audio_stream, have_ffmpeg, tone_strength
 from vid.compile import compile_plan
 from vid.plan import AudioMix, AudioRemove, AudioReplace, Plan
 from vid.schemas import VidError
 
 pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these render real audio")
-
-
-def tone_strength(path: str, hz: int, at: float = 0.5, window: float = 0.3) -> float:
-    """How strongly `hz` is present, relative to the loudest thing there.
-
-    Goertzel: one bin of a DFT, computed directly. Cheaper than an FFT and it is
-    the only bin we care about.
-    """
-    raw = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-ss",
-            str(at),
-            "-t",
-            str(window),
-            "-i",
-            path,
-            "-ac",
-            "1",
-            "-ar",
-            "8000",
-            "-f",
-            "s16le",
-            "-",
-        ],
-        capture_output=True,
-    ).stdout
-    count = len(raw) // 2
-    if count < 256:
-        return 0.0
-    samples = struct.unpack(f"<{count}h", raw[: count * 2])
-
-    def power(freq: int) -> float:
-        k = 2 * math.cos(2 * math.pi * freq / 8000)
-        s1 = s2 = 0.0
-        for sample in samples:
-            s0 = sample + k * s1 - s2
-            s2, s1 = s1, s0
-        return math.sqrt(abs(s1 * s1 + s2 * s2 - k * s1 * s2)) / count
-
-    strongest = max(power(f) for f in (440, 660, 880)) or 1.0
-    return power(hz) / strongest
-
-
-def has_audio_stream(path: str) -> bool:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=codec_type",
-            "-of",
-            "csv=p=0",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    return "audio" in out
 
 
 def render(plan: Plan, out: str, durations: dict[str, float]) -> str:

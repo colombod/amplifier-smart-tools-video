@@ -288,5 +288,9 @@ def assemble(script: Script, out: Path | str, total: float) -> Path:
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         detail = (result.stderr or "").strip().splitlines()
-        raise VidError(f"Could not assemble the narration: {detail[-1] if detail else '?'}")
+        raise VidError(
+            f"Could not assemble the narration: {detail[-1] if detail else '?'}\n"
+            "Check that every spoken line's audio file is readable, or run `vid check` "
+            "to confirm ffmpeg is working."
+        )
     return Path(out)

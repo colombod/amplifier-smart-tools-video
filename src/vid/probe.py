@@ -40,7 +40,11 @@ def duration(path: str) -> float:
         text=True,
     )
     if result.returncode != 0:
-        raise VidError(f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}")
+        raise VidError(
+            f"ffprobe could not read {path!r}: {result.stderr.strip() or 'no reason given'}\n"
+            "Verify the path is a video file ffprobe can open (try `ffprobe` on it directly), "
+            "or run `vid check`."
+        )
     try:
         return float(json.loads(result.stdout)["format"]["duration"])
     except (KeyError, ValueError, json.JSONDecodeError) as exc:

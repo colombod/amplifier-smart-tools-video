@@ -53,9 +53,18 @@ def _representative_moment(start: float, end: float) -> float:
 
 
 def extract_frames(video: str, shots: list[dict], into: Path) -> list[tuple[str, Path]]:
-    """One frame per shot, written where an agent can read them."""
+    """One frame per shot, written where an agent can read them.
+
+    EVERY REQUESTED SHOT OR NONE. A frame that failed to extract used to be
+    silently dropped, and the caller had no way to tell a shot that was never
+    attempted from one ffmpeg genuinely could not read -- both looked exactly
+    like "not in the result". Refusing the whole batch when even one shot
+    fails means a caller always gets either a complete set of frames or a
+    named list of what went wrong; there is no third, ambiguous outcome.
+    """
     into.mkdir(parents=True, exist_ok=True)
     written: list[tuple[str, Path]] = []
+    failed: list[str] = []
     for position, shot in enumerate(shots):
         at = _representative_moment(shot["start"], shot["end"])
         out = into / f"shot{position:03d}.png"
@@ -80,6 +89,16 @@ def extract_frames(video: str, shots: list[dict], into: Path) -> list[tuple[str,
         )
         if result.returncode == 0 and out.is_file():
             written.append((shot["id"], out))
+        else:
+            reason = (result.stderr or "").strip().splitlines()
+            failed.append(f"{shot['id']} (at {at:.2f}s): {reason[-1] if reason else 'ffmpeg gave no reason'}")
+    if failed:
+        raise VidError(
+            f"Could not extract a frame for {len(failed)} of {len(shots)} shot(s) from {video!r}:\n  "
+            + "\n  ".join(failed)
+            + "\nDescribing needs a frame from every shot asked about, so none were applied. "
+            "Verify the file with `ffprobe`, or try `vid check`."
+        )
     if not written:
         raise VidError(
             f"Could not extract a single frame from {video!r}. "
@@ -129,13 +148,29 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
 
         by_name = {path.name: shot_id for shot_id, path in frames}
         described: list[Described] = []
+        seen_ids: set[str] = set()
         for raw in (result.text or "").splitlines():
             name, _, text = raw.partition(":")
             name = name.strip().strip("`*-. ")
             shot_id = by_name.get(name)
             if shot_id and text.strip():
                 described.append(Described(shot_id=shot_id, description=text.strip()))
+                seen_ids.add(shot_id)
 
         if not described:
             raise _VidError(f"The model returned no usable descriptions. It said: {(result.text or '')[:200]!r}")
+
+        # EVERY FRAME OR NONE APPLIED. Accepting whatever nonempty subset came
+        # back left a shot the model skipped indistinguishable from one nobody
+        # ever asked about -- both had no "description" key. Refusing the
+        # whole batch instead means a caller only ever sees a fully described
+        # set, and a partial reply is a named failure rather than a silent gap.
+        missing = [shot_id for shot_id, _ in frames if shot_id not in seen_ids]
+        if missing:
+            raise _VidError(
+                f"The model described {len(described)} of {len(frames)} frame(s) but said nothing "
+                f"usable about: {', '.join(missing)}.\n"
+                f"Its reply:\n{(result.text or '')[:500]!r}\n"
+                "None were applied -- re-run `vid index --vision` to try again."
+            )
         return described

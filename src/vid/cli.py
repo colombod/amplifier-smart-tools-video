@@ -1,8 +1,9 @@
 """Command line entry point for Vid.
 
-THIN BY CONSTRUCTION. Every command here parses arguments, calls the library, and
-writes a plan. No decision about video lives in this file -- if it did, a caller
-using `vid` as a Python library would not get it.
+THIN BY CONSTRUCTION. Every command here parses arguments, reads the plan (or
+transport input) that command needs, calls exactly one `vid.lib` function, and
+writes what comes back. No decision about video lives in this file -- if it
+did, a caller using `vid` as a Python library would not get it.
 
 TWO HELPS PER VERB. `-h` is the terse summary Typer generates, for a person who
 wants to remember a flag name. `--help` is the verb's own document, for an agent
@@ -16,9 +17,8 @@ from typing import Annotated
 import typer
 
 from vid import lib
-from vid.plan import Caption, Cut, Plan, RampPoint, Retime, Stitch, Trim, Zoom, read_plan, write_plan
+from vid.plan import read_plan, write_plan
 from vid.schemas import VidError
-from vid.timecode import parse_speed, parse_timecode
 from vid.verbdoc import verb_doc
 
 app = typer.Typer(
@@ -95,8 +95,7 @@ def trim(
     help: _doc("trim") = False,
 ) -> None:
     """Keep a time range, discard the rest."""
-    plan = read_plan(source)
-    write_plan(plan.with_operation(Trim(start=parse_timecode(start), end=parse_timecode(end) if end else None)))
+    write_plan(lib.trim(read_plan(source), start, end))
 
 
 @app.command()
@@ -107,8 +106,7 @@ def cut(
     help: _doc("cut") = False,
 ) -> None:
     """Remove a time range, keeping what surrounds it."""
-    plan = read_plan(source)
-    write_plan(plan.with_operation(Cut(start=parse_timecode(start), end=parse_timecode(end))))
+    write_plan(lib.cut(read_plan(source), start, end))
 
 
 @app.command()
@@ -119,19 +117,7 @@ def retime(
     help: _doc("retime") = False,
 ) -> None:
     """Change speed, constantly or along a curve."""
-    if (speed is None) == (ramp is None):
-        raise VidError("Give exactly one of --speed (a constant) or --ramp (a curve).")
-    plan = read_plan(source)
-    if speed is not None:
-        write_plan(plan.with_operation(Retime(speed=parse_speed(speed))))
-        return
-    points = []
-    for token in ramp.split():
-        value, _, at = token.partition("@")
-        if not at:
-            raise VidError(f"{token!r} is not a ramp point. Write `speed@time`, as in `0.25x@1:05`.")
-        points.append(RampPoint(at=parse_timecode(at), speed=parse_speed(value)))
-    write_plan(plan.with_operation(Retime(ramp=points)))
+    write_plan(lib.retime(read_plan(source), speed, ramp))
 
 
 @app.command()
@@ -143,8 +129,7 @@ def zoom(
     help: _doc("zoom") = False,
 ) -> None:
     """Animated zoom (Ken Burns), with the jitter fix applied."""
-    plan = read_plan(source)
-    write_plan(plan.with_operation(Zoom(to=to, at=parse_timecode(at) if at else None, duration=duration)))
+    write_plan(lib.zoom(read_plan(source), to, at, duration))
 
 
 @app.command()
@@ -158,37 +143,10 @@ def stitch(
 ) -> None:
     """Join clips, with or without a transition."""
     if "-" in sources:
-        plan = read_plan(None)
-        rest = [s for s in sources if s != "-"]
+        plan, rest = read_plan(None), [s for s in sources if s != "-"]
     else:
-        plan = Plan(source=sources[0])
-        rest = sources[1:]
-    if not rest:
-        raise VidError("stitch needs at least one clip to join on. Name another file.")
-
-    preset, requested, rationale, expression = (None, None, None, None)
-    if transition is not None:
-        # The clips are handed over so a GENERATED transition can be proven
-        # against the pair it will actually join. Tier 1 and tier 2 ignore them.
-        first = plan.source if plan.source else (rest[0] if rest else None)
-        second = rest[0] if rest else None
-        preset, requested, rationale, expression = lib.resolve_transition(transition, first, second, duration)
-
-    write_plan(
-        plan.with_operation(
-            Stitch(
-                sources=rest,
-                transition=preset,
-                transition_duration=duration,
-                transition_requested=requested,
-                transition_rationale=rationale,
-                transition_expr=expression,
-                # True only on the tier-3 path, where `probe` actually rendered
-                # and measured it. A preset needs no proving; it is ffmpeg's.
-                transition_verified=expression is not None,
-            )
-        )
-    )
+        plan, rest = None, sources
+    write_plan(lib.stitch(plan, rest, transition=transition, duration=duration))
 
 
 @app.command()
@@ -199,14 +157,13 @@ def caption(
     help: _doc("caption") = False,
 ) -> None:
     """Burn subtitles into the picture."""
-    plan = read_plan(source)
-    write_plan(plan.with_operation(Caption(subtitles=subtitles, style=style)))
+    write_plan(lib.caption(read_plan(source), subtitles, style))
 
 
 @app.command(name="plan")
 def show_plan(help: _doc("plan") = False) -> None:
     """Show the edit, without performing it."""
-    write_plan(read_plan(None))
+    write_plan(lib.show(read_plan(None)))
 
 
 @app.command()
@@ -268,24 +225,20 @@ def _audio_group(help: _doc("audio") = False) -> None:
 @audio_app.command("remove")
 def audio_remove(
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
-    help: _doc("audio") = False,
+    help: _doc("audio_remove") = False,
 ) -> None:
     """Drop the audio. The result is a silent video."""
-    from vid.plan import AudioRemove
-
-    write_plan(read_plan(video).with_operation(AudioRemove()))
+    write_plan(lib.audio_remove(read_plan(video)))
 
 
 @audio_app.command("replace")
 def audio_replace(
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
     with_: Annotated[str, typer.Option("--with", help="The audio file to use instead.")] = ...,
-    help: _doc("audio") = False,
+    help: _doc("audio_replace") = False,
 ) -> None:
     """Swap the audio track for another file's. Result is always the video's length."""
-    from vid.plan import AudioReplace
-
-    write_plan(read_plan(video).with_operation(AudioReplace(track=with_)))
+    write_plan(lib.audio_replace(read_plan(video), with_))
 
 
 @audio_app.command("mix")
@@ -295,19 +248,17 @@ def audio_mix(
     level: Annotated[
         float, typer.Option("--level", help="dB applied to the incoming track. Negative puts it under.")
     ] = -18.0,
-    help: _doc("audio") = False,
+    help: _doc("audio_mix") = False,
 ) -> None:
     """Lay another track under the existing audio, keeping both."""
-    from vid.plan import AudioMix
-
-    write_plan(read_plan(video).with_operation(AudioMix(track=with_, level=level)))
+    write_plan(lib.audio_mix(read_plan(video), with_, level))
 
 
 @audio_app.command("extract")
 def audio_extract(
     video: Annotated[str, typer.Argument(help="The video to take audio from.")],
     output: Annotated[str, typer.Argument(help="Where to write it, e.g. out.wav.")],
-    help: _doc("audio") = False,
+    help: _doc("audio_extract") = False,
 ) -> None:
     """Pull the audio out to a file. Ends a chain rather than continuing one."""
     typer.echo(lib.audio_extract(video, output))
@@ -341,9 +292,7 @@ def recolor(
     help: _doc("recolor") = False,
 ) -> None:
     """Map the video's colour onto a reference image's. No model, no network."""
-    plan = read_plan(video)
-    source = plan.source if plan.source else video
-    write_plan(plan.with_operation(lib.recolor_op(source, like, strength)))
+    write_plan(lib.recolor(read_plan(video), like, strength))
 
 
 @app.command()
@@ -353,12 +302,10 @@ def vignette(
         float,
         typer.Option("--strength", help="0 is nothing, 1 is theatrical. Default reads without announcing itself."),
     ] = 0.35,
-    help: _doc("look") = False,
+    help: _doc("vignette") = False,
 ) -> None:
     """Darken the edges, to pull an eye to the middle."""
-    from vid.plan import Vignette
-
-    write_plan(read_plan(video).with_operation(Vignette(strength=strength)))
+    write_plan(lib.vignette(read_plan(video), strength))
 
 
 @app.command()
@@ -366,31 +313,24 @@ def grade(
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
     look: Annotated[str | None, typer.Option("--look", help="warm, cool, punchy, flat, noir, soft, bright.")] = None,
     show: Annotated[bool, typer.Option("--list", help="Show the looks and what each is for.")] = False,
-    help: _doc("look") = False,
+    help: _doc("grade") = False,
 ) -> None:
     """Apply a named look to the whole clip."""
-    from vid.looks import catalogue
-    from vid.plan import Grade
-    from vid.schemas import VidError
-
-    if show:
-        typer.echo(catalogue())
-        return
-    if not look:
-        raise VidError("Name a look with --look, or run `vid grade --list` to see them.")
-    write_plan(read_plan(video).with_operation(Grade(look=look)))
+    result = lib.grade(None if show else read_plan(video), look, show=show)
+    if isinstance(result, str):
+        typer.echo(result)
+    else:
+        write_plan(result)
 
 
 @app.command()
 def lut(
     table: Annotated[str, typer.Argument(help="A .cube lookup table.")],
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
-    help: _doc("look") = False,
+    help: _doc("lut") = False,
 ) -> None:
     """Apply a .cube lookup table you already have."""
-    from vid.plan import Lut
-
-    write_plan(read_plan(video).with_operation(Lut(path=table)))
+    write_plan(lib.lut(read_plan(video), table))
 
 
 @app.command()
@@ -435,16 +375,7 @@ def transitions(
     help: _doc("transitions") = False,
 ) -> None:
     """Every transition this tool can use, and what each looks like."""
-    from vid.transitions import FEEL, PRESETS
-
-    if describe:
-        width = max(len(name) for name in PRESETS)
-        for name in PRESETS:
-            typer.echo(f"  {name:<{width}}  {FEEL.get(name, '')}")
-        typer.echo("")
-        typer.echo('  Or describe what you want -- `--transition "soft and dreamy"` -- and a model picks.')
-    else:
-        typer.echo(" ".join(PRESETS))
+    typer.echo(lib.transitions(describe=describe))
 
 
 @app.command()

@@ -46,6 +46,17 @@ vid trim --from 0:05 < plan.json               # continue one
 Timecodes are written the way people write them: `90`, `1:30`, `1:02:03`,
 `0:10.5`. Omit `--to` to run to the end.
 
+**Arguments.**
+- `source` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--from` (optional, default `0`) -- where to start keeping.
+- `--to` (optional, default none) -- where to stop. Omit to run to the end.
+
+**Result.** A plan with one more operation, `trim`, written to stdout.
+
+**Failures.** A `--from`/`--to` that is not a timecode (not `90`, `1:30`,
+`1:02:03` or `0:10.5`, and not negative): refused, naming what was found.
+Neither a file argument nor a plan on stdin: refused, naming the fix.
+
 **What it costs.** Nothing here. At `render` time a trim is the cheapest
 operation there is -- and when the cut lands on a keyframe it can be a stream
 copy with no re-encode at all. Cuts between keyframes cost one GOP.
@@ -60,6 +71,17 @@ vid cut talk.mp4 --from 1:12 --to 1:40         # drop the tangent
 
 Both ends are required -- an open-ended cut is a trim, and this tool would
 rather you say which you meant.
+
+**Arguments.**
+- `source` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--from` (required) -- where the removed range begins.
+- `--to` (required) -- where it ends.
+
+**Result.** A plan with one more operation, `cut`, written to stdout.
+
+**Failures.** `--from` or `--to` omitted: Typer refuses before this tool sees
+the call (exit 2). Either one not a timecode: refused, naming what was found.
+Neither a file argument nor a plan on stdin: refused, naming the fix.
 
 **What it costs.** The rejoin is a concat inside the same filter graph, so it is
 still one encode at `render`. It is not a stream copy: the seam has to be built.
@@ -82,6 +104,20 @@ what the plan holds.
 Audio follows video. Beyond 2x or below 0.5x, `atempo` is chained in stages --
 each stage resamples, so extreme speeds cost a little quality.
 
+**Arguments.**
+- `source` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--speed` (optional, default none) -- a constant speed: `2x`, `0.5x`. Exactly
+  one of `--speed`/`--ramp` is required.
+- `--ramp` (optional, default none) -- a curve: `"1x@0 0.25x@1:05 1x@1:12"`,
+  each point written `speed@time`.
+
+**Result.** A plan with one more operation, `retime`, written to stdout.
+
+**Failures.** Neither or both of `--speed`/`--ramp` given: refused, naming the
+fix. A `--speed` that is not a positive number (`2x`, `0.5x`, or bare): refused.
+A `--ramp` token with no `@`: refused, naming the token. A ramp of fewer than
+two points is accepted here and refused later, at `render`.
+
 **What it costs.** Nothing here. At render, a ramp becomes several trims and
 several atempo chains in one graph -- larger than a constant speed, still one
 encode.
@@ -100,6 +136,17 @@ alternates 1,1,2,1,1,2 -- visible stutter. The fix is to upscale before zooming
 so each rounding error is a fraction of an output pixel. This verb does that for
 you; it is the reason a hand-written `zoompan` usually judders and this one does
 not.
+
+**Arguments.**
+- `source` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--to` (optional, default `1.3`) -- final zoom factor. `1.4` is a noticeable push.
+- `--at` (optional, default none) -- centre the zoom on this moment.
+- `--duration` (optional, default `3.0`) -- seconds the zoom takes.
+
+**Result.** A plan with one more operation, `zoom`, written to stdout.
+
+**Failures.** `--at` that is not a timecode: refused, naming what was found.
+Neither a file argument nor a plan on stdin: refused, naming the fix.
 
 **What it costs.** Nothing here. At render it is genuinely expensive -- the
 upscale is real work -- so keep `--duration` to the seconds that need it.
@@ -154,6 +201,21 @@ Two things a caller usually finds out the hard way, which this verb handles:
 - **A transition SHORTENS the result.** The clips overlap by `--duration`, so
   three 3-second clips joined with a 0.8s dissolve give 7.4 seconds, not 9.
 
+**Arguments.**
+- `sources` (required, one or more) -- clips in order. `-` stands for the plan
+  arriving on stdin.
+- `--transition` (optional, default none) -- an xfade preset name, a
+  description for a model to match to one, or a description nothing here
+  matches.
+- `--duration` (optional, default `0.5`) -- seconds the transition takes.
+  Ignored when `--transition` is omitted.
+
+**Result.** A plan with one more operation, `stitch`, written to stdout.
+
+**Failures.** No clips named: refused, naming the fix. A `--transition` name
+that matches none of the 58 presets, and that a model also cannot resolve or
+prove: refused, with the expression it tried if it got that far.
+
 **What it costs.** Joining without a transition can be a stream copy when the
 inputs agree on codec and geometry. A transition cannot -- blending means
 decoding both sides.
@@ -171,52 +233,140 @@ and it is irreversible, which is the tradeoff.
 
 `--style` takes libass `force_style` syntax.
 
+**Arguments.**
+- `source` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--subtitles` (required) -- an `.srt` or `.ass` file.
+- `--style` (optional, default none) -- libass `force_style` syntax, e.g.
+  `FontSize=28,PrimaryColour=&H00FFFFFF`.
+
+**Result.** A plan with one more operation, `caption`, written to stdout.
+
+**Failures.** `--subtitles` omitted: Typer refuses before this tool sees the
+call (exit 2). Neither a file argument nor a plan on stdin: refused, naming the
+fix. A subtitles file that does not exist: accepted here, refused later at
+`render`.
+
 **What it costs.** Nothing here. At render the `subtitles` filter forces a
 re-encode of the picture -- there is no way to burn text in without redrawing
 frames.
 """,
-    "audio": """# vid audio -- the one place that touches sound on its own
+    "audio": """# vid audio -- four ways to touch sound on its own
 
 ```bash
 vid audio remove  talk.mp4                              a silent video
 vid audio replace talk.mp4 --with narration.wav         swap the track
 vid audio mix     talk.mp4 --with music.mp3             lay a bed underneath
-vid audio mix     talk.mp4 --with music.mp3 --level -12 louder bed
 vid audio extract talk.mp4 out.wav                      pull the track out
 ```
 
 **Everything else already carries audio for you.** `trim`, `cut`, `retime` and
 `stitch` move the sound with the picture automatically -- a crossfade really does
-run `acrossfade` under the blend, and a cut keeps both streams locked. These
-verbs are for the cases where you want to change the sound *itself*.
+run `acrossfade` under the blend, and a cut keeps both streams locked. These four
+are for the cases where you want to change the sound *itself*.
 
-## The length question, answered rather than inherited
+Each has its own arguments, result and failures --
+`vid audio remove --help`, `vid audio replace --help`, `vid audio mix --help`,
+`vid audio extract --help`.
 
-For `replace` and `mix`, **the result is always the length of the video.** A
-shorter track is padded with silence; a longer one is truncated. A long music
-file cannot quietly extend your video.
+**Arguments.** None of its own -- `audio` is a group, not a verb. Each
+subcommand has its own arguments; see the four `--help`s above.
 
-## mix keeps your original audio where it is
+**Result.** None of its own -- see each subcommand.
 
-`--level` applies to the **incoming** track only, in dB, and is negative in
-normal use. Your existing audio is untouched, so you adjust one thing rather than
-balancing two. The default `-18` puts music clearly under speech.
-
-There is **no automatic ducking.** A flat level is predictable and easy to
-explain; ducking is a real feature with its own decisions and should be asked for
-on purpose rather than happening to you.
-
-## The rest
-
-`remove` on a video that has no audio is a no-op, not an error.
-
-`mix` after `remove` in the same chain is refused -- there is nothing left to mix
-into, and `replace` is what you want.
-
-`extract` writes an audio file and does **not** produce a plan, so it ends a
-chain rather than continuing one.
+**Failures.** None of its own -- see each subcommand.
 
 **What it costs.** $0.00, no provider, no network. All of this is ffmpeg.
+""",
+    "audio_remove": """# vid audio remove -- drop the audio track
+
+```bash
+vid audio remove talk.mp4          # a silent video, starting a chain
+vid audio remove < plan.json       # continue a piped plan
+```
+
+**Arguments.** `video` (optional) -- a file to start a chain, or omit to
+continue a piped plan.
+
+**Result.** A plan with one more operation, `audio_remove`, written to stdout.
+
+On a video that already has no audio, this is a **no-op, not an error** -- the
+operation still lands in the plan, and the render is silent either way.
+
+**Failures.** Neither a file argument nor a plan on stdin: refused, naming the
+fix. What arrives on stdin that is not JSON, or is a plan format this tool does
+not speak: refused, naming what was found.
+
+**What it costs.** Nothing here. `render` compiles this like any other
+operation -- no separate decode.
+""",
+    "audio_replace": """# vid audio replace -- swap the audio track for another file's
+
+```bash
+vid audio replace talk.mp4 --with narration.wav
+vid audio replace --with music.mp3 < plan.json     # continue a piped plan
+```
+
+**Arguments.**
+- `video` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--with` (required) -- the audio file to use instead.
+
+**Result.** A plan with one more operation, `audio_replace`, written to stdout.
+
+**The length question, answered rather than inherited.** The result is always
+the length of the video: a shorter `--with` track is padded with silence, a
+longer one is truncated. A long music file cannot quietly extend your video.
+
+**Failures.** `--with` omitted: Typer refuses before this tool sees the call
+(exit 2). Neither a file argument nor a plan on stdin: refused, naming the fix.
+
+**What it costs.** Nothing here. `render` compiles this like any other
+operation -- no separate decode.
+""",
+    "audio_mix": """# vid audio mix -- lay another track UNDER the existing audio
+
+```bash
+vid audio mix talk.mp4 --with music.mp3
+vid audio mix talk.mp4 --with music.mp3 --level -12    # louder bed
+```
+
+**Arguments.**
+- `video` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--with` (required) -- the track to lay underneath.
+- `--level` (default `-18.0`) -- dB applied to the **incoming** track only, and
+  negative in normal use. Your existing audio is untouched, so you adjust one
+  thing rather than balancing two. There is **no automatic ducking**: a flat
+  level is predictable and easy to explain; ducking is a real feature with its
+  own decisions and should be asked for on purpose.
+
+**Result.** A plan with one more operation, `audio_mix`, written to stdout. Its
+length is always the video's -- a shorter `--with` track is padded with
+silence, a longer one is truncated.
+
+**Failures.** `--with` omitted: Typer refuses before this tool sees the call
+(exit 2). `mix` after `remove` earlier in the same chain: refused **at
+`render`**, not here -- there is nothing left to mix into, and `audio replace`
+is what you want.
+
+**What it costs.** Nothing here. `render` compiles this like any other
+operation -- no separate decode.
+""",
+    "audio_extract": """# vid audio extract -- pull the audio out to a file
+
+```bash
+vid audio extract talk.mp4 out.wav
+```
+
+**Arguments.** `video` (required) and `output` (required, e.g. `out.wav`) --
+neither is optional. This is the one audio subcommand that does not start or
+continue a piped plan.
+
+**Result.** Writes `output` and prints `wrote <output>`. It writes an audio
+file, **not** a plan, so it ends a chain rather than continuing one.
+
+**Failures.** ffmpeg not on PATH: refused, naming the fix (`vid check`).
+ffmpeg's own failure: refused, showing its last line of output.
+
+**What it costs.** One decode, no provider, no network.
 """,
     "narrate": """# vid narrate -- write a narration and make it FIT
 
@@ -228,6 +378,33 @@ vid narrate talk.mp4 "explain this to a new customer" --out narrated.mp4
 
 Writes a narration for a video, speaks it, and lays it on the clip so each line
 lands on the moment it describes.
+
+**This verb does not touch the edit-plan pipe.** `video` is always a required
+argument, never a piped continuation, and the result is a human-readable report
+(or a rendered file when `--out` is given) -- never JSON.
+
+**Arguments.**
+- `video` (required) -- the video to narrate. Index it first.
+- `prompt` (required) -- what the narration is for, in your words.
+- `--out` (optional, default none) -- render here. Omit to get the track and
+  the command to lay it on yourself.
+- `--script-only` (optional, default `False`) -- print the script as JSON;
+  synthesise nothing.
+- `--voice` (optional, default none) -- voice model name. Omit for the default
+  voice.
+- `--mix` / `--replace` (optional, default none) -- force laying the narration
+  over the original audio, or in place of it. Omit to decide from whether the
+  video already has speech.
+
+**Result.** With `--script-only`, the script as JSON. With `--out`, the
+rendered video at that path. Otherwise, a human-readable report naming the
+narration track and the command to lay it on.
+
+**Failures.** The video has not been indexed yet: refused, naming the fix
+(`vid index`). No provider configured: refused, naming the fix (`vid check`).
+No speech synthesiser installed (unless `--script-only`): refused, naming the
+install command. A line that still does not fit after two rewrites and a
+speed-up: reported by name in the result, not silently dropped.
 
 ## Why it does not just write a script and read it
 
@@ -302,6 +479,18 @@ look ridiculous, so this is a dial rather than a clamp you cannot see. `0.6` is 
 good starting point when the reference is only loosely related to your footage.
 `0` leaves the video alone.
 
+**Arguments.**
+- `video` (optional) -- the video, or omit to continue a piped plan.
+- `--like` (required) -- a reference image to take the palette from.
+- `--strength` (optional, default `1.0`) -- `0` leaves it alone, `1` is the
+  full transfer.
+
+**Result.** A plan with one more operation, `recolor`, written to stdout.
+
+**Failures.** `--like` omitted: Typer refuses before this tool sees the call
+(exit 2). `--like` naming a file that does not exist: refused, naming it.
+Neither a file argument nor a plan on stdin: refused, naming the fix.
+
 ## What it costs
 
 **$0.00. No provider, no network, nothing uploaded.** This is arithmetic from end
@@ -322,53 +511,119 @@ The check is arithmetic too: the output's colour statistics should sit measurabl
 **closer to the reference's** than the source's did. That turns "did the grade
 work" from an opinion into a number.
 """,
-    "look": """# vid vignette / grade / lut -- how the picture LOOKS
+    "vignette": """# vid vignette -- darken the edges
 
 ```bash
-vid grade talk.mp4 --look warm | vid render out.mp4
 vid vignette talk.mp4 | vid render out.mp4
-vid lut mylook.cube talk.mp4 | vid render out.mp4
-vid grade --list                      # the looks, and what each is for
+vid vignette talk.mp4 --strength 0.6 | vid render out.mp4
 ```
 
-Everything else here changes WHICH frames you see and WHEN. These three change
-how they look -- which for a recording going in front of an audience is not
-decoration. A raw screen capture is rarely the thing you want to show.
+Darkens the edges to pull an eye to the middle. One of three ways this tool
+changes how a picture LOOKS rather than which frames you see or when -- see
+`vid grade --help` and `vid lut --help` for the other two. For a recording
+going in front of an audience this is not decoration: a raw screen capture is
+rarely the thing you want to show.
 
 ## ORDER MATTERS, and it is yours
 
-A vignette applied **before** a zoom gets zoomed INTO -- its dark corners are
-magnified away. Applied **after**, it frames the zoomed result:
+Applied **before** a zoom, the dark corners get zoomed INTO and vanish. Applied
+**after**, it frames the zoomed result:
 
 ```bash
 vid zoom talk.mp4 --to 1.5 | vid vignette | vid render out.mp4   # frames the zoom
 vid vignette talk.mp4 | vid zoom --to 1.5 | vid render out.mp4   # zooms into the vignette
 ```
 
-Same for `stitch`: grade **before** it and only the first clip is graded; grade
-**after** and the whole joined result is. The plan is an ordered list and does
-exactly what you wrote, which is why these are operations in a chain rather than
-flags on `render`.
+The plan is an ordered list and does exactly what you wrote, which is why this
+is an operation in a chain rather than a flag on `render`.
 
-## The looks
+**Arguments.**
+- `video` (optional) -- a file to start a chain, or omit to continue a piped plan.
+- `--strength` (optional, default `0.35`) -- `0` is nothing, `1` is theatrical.
+  The default reads without announcing itself.
 
-Named, not parameterised, on purpose. `--look warm` is one decision you can make
-in a second. `--warmth 0.3 --contrast 1.1 --saturation 1.2` is four decisions you
-have no basis for.
+**Result.** A plan with one more operation, `vignette`, written to stdout.
+
+**Failures.** Neither a file argument nor a plan on stdin: refused, naming the
+fix. A `--strength` outside `0`..`1`: accepted here, refused at `render`.
+
+**What it costs.** $0.00. No provider, no network, no model. Compiles into the
+same single pass as `trim`, `zoom` and the rest at `render`.
+""",
+    "grade": """# vid grade -- apply a named look
+
+```bash
+vid grade talk.mp4 --look warm | vid render out.mp4
+vid grade --list                      # the looks, and what each is for
+```
+
+Named, not parameterised, on purpose. `--look warm` is one decision you can
+make in a second. `--warmth 0.3 --contrast 1.1 --saturation 1.2` -- four
+decisions you would have no basis for -- is not something this verb offers.
 
 Run `vid grade --list` for the current set with a line on what each is FOR.
 
 ## When a name is not enough
 
-- **`vid recolor --like photo.jpg`** matches a reference picture. A picture is a
-  far better statement of intent than any number.
+- **`vid recolor --like photo.jpg`** matches a reference picture. A picture is
+  a far better statement of intent than any number.
 - **`vid lut mylook.cube`** applies a table you already have.
 
-## What these cost
+## ORDER MATTERS, and it is yours
 
-**$0.00 each. No provider, no network, no model.** They are ffmpeg filters, and
-they compile into the same single pass as `trim`, `zoom` and the rest -- so
-`trim | grade | vignette | render` is still **one decode and one encode**.
+Grade **before** `stitch` and only the first clip is graded; grade **after**
+and the whole joined result is. The plan is an ordered list and does exactly
+what you wrote, which is why this is an operation in a chain rather than a flag
+on `render`.
+
+**Arguments.**
+- `video` (optional) -- a file to start a chain, or omit to continue a piped
+  plan. Ignored when `--list` is given.
+- `--look` (optional, default none) -- `warm`, `cool`, `punchy`, `flat`,
+  `noir`, `soft`, `bright`. Required unless `--list` is given.
+- `--list` (optional, default `False`) -- print the catalogue of looks and
+  what each is for. Reads no video and no piped plan, and writes no plan.
+
+**Result.** With `--look`, a plan with one more operation, `grade`, written to
+stdout. With `--list`, the catalogue as text.
+
+**Failures.** `--look` omitted without `--list`: refused, naming the fix
+(`vid grade --list`). A `--look` name not in the catalogue: accepted here,
+refused at `render`, naming the valid names. Neither a file argument nor a plan
+on stdin (unless `--list`): refused, naming the fix.
+
+**What it costs.** $0.00. No provider, no network, no model. Compiles into the
+same single pass as `trim`, `vignette` and the rest at `render`.
+""",
+    "lut": """# vid lut -- apply a lookup table you already have
+
+```bash
+vid lut mylook.cube talk.mp4 | vid render out.mp4
+```
+
+Applies a `.cube` lookup table -- the same file a color grading tool would
+export -- as a filter in the same single pass as everything else.
+
+## ORDER MATTERS, and it is yours
+
+Same as `vignette` and `grade`: applied before a zoom it gets zoomed into;
+applied after, it frames the result. The plan is an ordered list and does
+exactly what you wrote, which is why this is an operation in a chain rather
+than a flag on `render`.
+
+**Arguments.**
+- `table` (required) -- a `.cube` lookup table.
+- `video` (optional) -- the video, or omit to continue a piped plan.
+
+**Result.** A plan with one more operation, `lut`, written to stdout.
+
+**Failures.** `table` omitted: Typer refuses before this tool sees the call
+(exit 2). A `table` path that does not exist: accepted here, refused at
+`render`, naming the path. Neither a file argument nor a plan on stdin:
+refused, naming the fix.
+
+**What it costs.** $0.00. No provider, no network, no model. Compiles into the
+same single pass as `trim`, `vignette` and the rest at `render`.
 """,
     "verify": """# vid verify -- check a rendered video against what you expected
 
@@ -400,6 +655,28 @@ vid trim in.mp4 --to 0:05 | vid render out.mp4 && vid verify out.mp4 --expect-du
 - `--expect-transition-at T` -- a real blend, not a hard cut
 - `--expect-no-black-frames` with optional `--longest-black`
 
+**Arguments.**
+- `video` (required) -- the rendered file to check.
+- `--expect-duration` (optional, default none) -- seconds the result should be.
+- `--tolerance` (optional, default `0.15`) -- how far off `--expect-duration`
+  may be, in seconds.
+- `--expect-resolution` (optional, default none) -- e.g. `1920x1080`.
+- `--expect-audio` (optional, default `False`) -- audio present, and not silent.
+- `--expect-transition-at` (optional, default none) -- a real blend, not a hard
+  cut, at this second.
+- `--expect-no-black-frames` (optional, default `False`) -- no long black
+  stretches.
+- `--longest-black` (optional, default `0.5`) -- seconds of black that is still
+  acceptable. Ignored unless `--expect-no-black-frames` is given.
+
+**Result.** A text report, one line per property checked, each showing the
+measured value beside the expected one.
+
+**Failures.** No `--expect-*` flag given at all: refused, naming the fix (name
+at least one). ffmpeg missing: refused, naming the fix (`vid check`). Any
+checked property violated: reported in the text, and the exit code is
+non-zero.
+
 ## How the transition check works, since it is the interesting one
 
 It samples three frames -- before, at, and after -- and asks whether the middle
@@ -420,9 +697,14 @@ ffmpeg, because it is reading actual frames.
     "index": """# vid index -- build a time-coded account of what is in a video
 
 ```bash
-vid index talk.mp4                 # shots and speech
-vid index talk.mp4 --no-speech     # shots only: free, no backend needed
+vid index talk.mp4                        # shots and speech
+vid index talk.mp4 --no-speech            # shots only: free, no backend needed
+vid index talk.mp4 --model small          # a bigger, slower, more accurate transcriber
 ```
+
+**This verb does not touch the edit-plan pipe.** It always takes a video file as
+its argument, never reads a plan from stdin, and prints a text report -- not
+JSON -- so it neither continues nor starts a chain.
 
 Produces two things and stores them where they persist:
 
@@ -430,6 +712,13 @@ Produces two things and stores them where they persist:
   provider. This is the cheapest useful work in the tool: it takes the visual
   problem from eighteen thousand frames down to a few dozen, one per shot.
 - **speech** -- a transcript in time-coded passages, produced locally.
+
+## `--model`
+
+`--model tiny|base|small|medium` picks the faster-whisper model size. Default is
+`base`: a reasonable middle ground. `tiny` is fastest and least accurate;
+`medium` is the slowest and most accurate this tool exposes. Ignored when
+`--no-speech` is given, since nothing is transcribed.
 
 **The index is the expensive artifact, so it is built once and reused.** Ten
 questions about one video cost one transcription. It is keyed by the video's
@@ -460,6 +749,25 @@ billed by surprise.
 **No timestamp ever comes from a model.** The shot boundaries are ffmpeg's; a
 model only says what a frame shows. A time is a lookup, never a guess.
 
+**Arguments.**
+- `video` (required) -- the video to index. Always a file, never a piped plan.
+- `--speech` / `--no-speech` (optional, default `--speech`) -- transcribe the
+  audio.
+- `--model` (optional, default `base`) -- Whisper size: `tiny`, `base`,
+  `small`, `medium`. Ignored when `--no-speech` is given.
+- `--vision` (optional, default `False`) -- also describe what is SHOWN, one
+  frame per shot.
+- `--yes` (optional, default `False`) -- do not ask before spending on
+  descriptions.
+
+**Result.** A text report: duration, fingerprint, shot count, speech passage
+count, and where the index is stored.
+
+**Failures.** ffmpeg or ffprobe missing: refused before any work starts,
+naming the fix (`vid check`). `--vision` with no provider configured: refused,
+naming the fix. `--vision` without `--yes` and not attached to a terminal:
+refused, telling you to pass `--yes`.
+
 **What it costs.** Shots are free. Speech needs a backend:
 
 ```bash
@@ -479,6 +787,10 @@ vid find "pricing" talk.mp4 | vid render clip.mp4  # cut straight to it
 Searches the index and returns a **time range grounded in the transcript**, with
 the passage that produced it. By default it writes a plan trimmed to that range,
 so it composes with everything else.
+
+**This verb never reads a plan from stdin** -- `video` is always a required
+argument, never a piped continuation. With `--show` it prints hits and evidence
+instead, and writes no plan at all.
 
 ## Two tiers, same as the rest of the tool
 
@@ -504,6 +816,20 @@ one until somebody watches the video, which is exactly why it is never asked for
 
 **Every hit carries its evidence.** A range with no text beside it is a claim you
 cannot check.
+
+**Arguments.**
+- `query` (required) -- what to look for, in words.
+- `video` (required) -- the video to search. Always a file, never a piped plan.
+- `--show` (optional, default `False`) -- print the hits and their evidence
+  instead of writing a plan.
+
+**Result.** Without `--show`, a plan trimmed to the best hit, written to
+stdout. With `--show`, the hits and their evidence as text; no plan is
+written.
+
+**Failures.** The video has not been indexed yet: refused, naming the fix
+(`vid index`). Nothing matches, in either tier: refused, naming the query and
+the video.
 """,
     "render": """# vid render -- compile the plan and encode, once
 
@@ -522,6 +848,18 @@ runs nothing. Use it to check what an edit will actually do, to learn the ffmpeg
 behind a verb, or to hand the command to something else entirely. A tool you
 cannot see through is a tool you cannot debug.
 
+**Arguments.**
+- `output` (required) -- where to write the finished video.
+- `--print-command` (optional, default `False`) -- print the ffmpeg
+  invocation and stop; runs nothing.
+
+**Result.** With `--print-command`, the ffmpeg command line, printed, and
+nothing run. Otherwise, `output` is written and its path is printed.
+
+**Failures.** No plan on stdin: refused, naming the fix. ffmpeg missing from
+PATH (unless `--print-command`): refused, naming the fix (`vid check`).
+ffmpeg's own failure: refused, showing its last lines of output.
+
 **What it needs.** ffmpeg on PATH -- and only here. Every other verb runs
 without it. `--print-command` needs nothing at all.
 """,
@@ -536,6 +874,13 @@ vid plan < edit.json | vid render out.mp4            # replay it
 A plan is JSON. It can be saved, diffed, reviewed, hand-edited and replayed --
 which is what makes an edit proposed by a model as inspectable as one typed by a
 person. The model writes a plan; you read it before a frame is touched.
+
+**Arguments.** None -- always reads the plan from stdin.
+
+**Result.** The plan, unchanged, written to stdout as JSON.
+
+**Failures.** Nothing on stdin, or stdin that is not a plan this tool speaks:
+refused, naming the fix.
 
 **What it costs.** Nothing, and it needs nothing.
 """,
@@ -562,6 +907,15 @@ A name that is not on this list is refused rather than approximated.
 `vid stitch --help` explains the tiers in full, including what happens when a
 generated transition fails its check.
 
+**Arguments.**
+- `--describe` (optional, default `False`) -- show what each one looks like,
+  not just its name.
+
+**Result.** Without `--describe`, the preset names, space separated, one
+line. With `--describe`, each name with what it looks like.
+
+**Failures.** None -- this reads a fixed list; it does not touch ffmpeg.
+
 **What it costs.** $0.00. This reads a list in the tool; it does not even touch
 ffmpeg.
 """,
@@ -578,10 +932,9 @@ deciding whether this tool is worth calling -- not primarily for a person.
 
 ## What you will find in it
 
-**`capabilities`** -- every verb, with whether it is model-backed. Note that
-`find` is *not* marked model-backed: its literal search answers most queries with
-no provider at all, and marking it otherwise would tell you that you need
-credentials you do not need.
+**`use_cases`** -- the situations this tool is for, in plain language.
+
+**`platforms`** -- which operating systems this tool runs on.
 
 **`requires`** -- the dependencies, with `optional` stating whether the tool
 works without each one:
@@ -590,10 +943,26 @@ works without each one:
 |---|---|
 | `ffmpeg` | **required.** `render`, `verify` and `index` cannot work without it. Everything that only builds a plan works fine. |
 | `faster-whisper` | optional. Transcription for `index` and `find`. Runs locally; nothing is uploaded. |
+| `piper-tts` | optional. Speech synthesis for `narrate`. Runs locally; nothing is uploaded. |
 | `gh` + Copilot | optional. Only for *describing* a transition or a moment in words instead of naming it. |
+
+**`body`** -- the Markdown `vid --help` renders: what the tool is for, how to
+chain verbs, and where to read more.
+
+There is no `capabilities` field here. Which verbs are model-backed is a skill
+concern, not a manifest one -- see `vid --help`, which lists every verb with
+that flag and points at `vid <verb> --help` for the full contract.
 
 **For what is actually installed on THIS machine right now, run `vid check`.**
 The manifest says what the tool can need; `check` says what you have.
+
+**Arguments.** None.
+
+**Result.** The manifest, as JSON, to stdout.
+
+**Failures.** None in a normal install -- this only happens if the package's
+own `SMART_TOOL.md` is missing or malformed, which is not a normal outcome for
+an installed tool.
 
 **What it costs.** $0.00, no provider, no network, and it does not touch ffmpeg.
 """,
@@ -611,10 +980,41 @@ it.
 Some of it needs a speech backend; some needs a vision one. Rather than
 discovering that through a failure three verbs into a chain, ask.
 
+**Arguments.** None.
+
+**Result.** A text report on this machine: what is present, what is missing,
+and the install command for anything missing.
+
+**Failures.** None -- this only inspects your machine and cannot fail.
+
 **What it costs.** Nothing, and it needs nothing. It is a report on your machine,
 not a request to anyone.
 """,
 }
+
+
+#: Verbs that do not consume AND emit an edit plan. Each one either never reads
+#: a plan on stdin, never writes one, or both -- `render` compiles instead of
+#: continuing a chain, `check`/`manifest`/`transitions` report on the tool
+#: rather than the video, and `index`/`narrate`/`verify`/`find` always take a
+#: video argument and produce a text report (or, for `find`, a plan written but
+#: never a plan read). Appending the pipe rule to any of these would tell an
+#: agent the command reads stdin or costs nothing to chain when it does not.
+NOT_PIPE_PARTICIPANTS = frozenset(
+    {
+        "render",
+        "plan",
+        "check",
+        "manifest",
+        "verify",
+        "transitions",
+        "index",
+        "narrate",
+        "find",
+        "audio",  # the group overview spans three plan verbs and one non-plan verb; ambiguous, so excluded
+        "audio_extract",
+    }
+)
 
 
 def verb_doc(name: str) -> str:
@@ -622,7 +1022,7 @@ def verb_doc(name: str) -> str:
     body = _DOCS.get(name)
     if body is None:
         raise KeyError(name)
-    if name in {"render", "plan", "check"}:
+    if name in NOT_PIPE_PARTICIPANTS:
         return body.strip() + "\n"
     return body.strip() + "\n" + PIPE_RULE
 

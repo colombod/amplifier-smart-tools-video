@@ -78,6 +78,8 @@ class Segment:
 
 def _speak(text: str, wav: Path) -> None:
     binary = shutil.which("espeak-ng") or shutil.which("espeak")
+    if binary is None:
+        raise RuntimeError("espeak-ng (or espeak) must be on PATH to build speech fixtures")
     subprocess.run(
         # -s 150 is close to an unhurried speaking pace; the default gabbles and
         # transcribes worse, which would test the TTS rather than the tool.
@@ -256,6 +258,8 @@ class Turn:
 
 def _speak_as(voice: str, text: str, wav: Path) -> None:
     binary = shutil.which("espeak-ng") or shutil.which("espeak")
+    if binary is None:
+        raise RuntimeError("espeak-ng (or espeak) must be on PATH to build speech fixtures")
     subprocess.run(
         [binary, "-v", voice, "-s", "150", "-w", str(wav), text],
         check=True,
