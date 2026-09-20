@@ -1,0 +1,55 @@
+{
+  "key": "vid",
+  "name": "Vid",
+  "accent": "#356e63",
+  "promise": "Your footage. A sharper story.",
+  "description": "Find the moment, shape the sequence, and make the edit. Vid turns video work into a readable plan your agent can compose, inspect, and render in one pass.",
+  "image": "docs/assets/vid-preview.gif",
+  "alt": "Vid motion illustration showing footage arranged into an opening, a moment, and a close.",
+  "caption": "The original Vid motion preview, from this repository.",
+  "width": 960,
+  "height": 540,
+  "flow_title": "A whole edit. One render.",
+  "flow_intro": "Bring a video file and the result you want. Compose the edit before touching a frame.",
+  "steps": [
+    [
+      "Find your starting point.",
+      "Choose a local video, a timestamp, or a moment described by what was said or shown."
+    ],
+    [
+      "Shape the sequence.",
+      "Chain trims, speed changes, zooms, transitions, captions, and audio into an inspectable edit plan."
+    ],
+    [
+      "Render it together.",
+      "Review the plan or print the FFmpeg command, then render the edit in one pass."
+    ]
+  ],
+  "detail_title": "Editing expertise, ready to call.",
+  "details": [
+    [
+      "Find the right moment.",
+      "Index speech and visual events, then search for the passage or on-screen moment that matters."
+    ],
+    [
+      "Make it feel finished.",
+      "Match color to a reference, mix a music bed, add captions, or fit narration to the video's timing."
+    ],
+    [
+      "Keep the edit readable.",
+      "Save, diff, and replay the JSON plan. Use the same capabilities from a shell pipeline or the Python library."
+    ]
+  ],
+  "prompt": "Use Vid to edit my local video. Read vid --help and the relevant command help. Help me select the moments to keep, compose the changes as one edit plan, and show me the plan before rendering.",
+  "install": "uv tool install git+https://github.com/colombod/amplifier-smart-tools-video\nvid --help",
+  "prerequisites": "Python 3.13+, uv, and FFmpeg. The setup guide covers speech transcription, narration voices, and caption support.",
+  "model_note": "Model-backed capabilities use GitHub Copilot through your signed-in GitHub CLI account. Editing plans and rendering run locally.",
+  "guide": "src/vid/SMART_TOOL.md",
+  "related": [
+    "outtake",
+    "unfold",
+    "showrun"
+  ],
+  "kind": "tool",
+  "title": "Vid | Amplifier Smart Tools"
+}

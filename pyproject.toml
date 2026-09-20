@@ -76,6 +76,8 @@ dev = [
 ]
 
 [tool.ruff]
+# Keep the shared, vendored website theme unchanged.
+extend-exclude = ["site/theme", "_site"]
 line-length = 120
 target-version = "py313"
 
@@ -146,3 +148,6 @@ include = ["src/vid/cli.py"]
 [tool.ty.overrides.rules]
 invalid-type-form = "ignore"
 invalid-parameter-default = "ignore"
+
+[tool.ty.src]
+exclude = ["site/theme", "_site"]
