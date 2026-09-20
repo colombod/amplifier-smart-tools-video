@@ -130,12 +130,14 @@ vid zoom --to 1.4 --at 0:45 --duration 3
 
 Zooms to `--to` over `--duration` seconds, centred on `--at`.
 
-**The expertise this verb holds.** `zoompan` crops to whole source pixels, so a
-slow zoom moves the crop by a fraction of a pixel per frame and the rounding
-alternates 1,1,2,1,1,2 -- visible stutter. The fix is to upscale before zooming
-so each rounding error is a fraction of an output pixel. This verb does that for
-you; it is the reason a hand-written `zoompan` usually judders and this one does
-not.
+**The expertise this verb holds.** `zoompan`'s own `d` option is output frames
+PER INPUT FRAME CONSUMED, not the effect's length, and with no explicit `s=` its
+output silently defaults to `hd720` regardless of the source. Get either wrong
+and the render either runs to some multiple of the source's length or comes out
+the wrong size. This verb pins both -- `d=1` and the source's own dimensions --
+and gates the zoom expression to the `--at`/`--duration` window itself, which is
+the reason a hand-written `zoompan` call usually needs both bugs found the hard
+way and this one does not.
 
 **Arguments.**
 - `source` (optional) -- a file to start a chain, or omit to continue a piped plan.

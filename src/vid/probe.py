@@ -109,6 +109,45 @@ def has_subtitles_filter() -> bool:
     return any(line.split()[1] == "subtitles" for line in result.stdout.splitlines() if len(line.split()) > 1)
 
 
+def dimensions(path: str) -> tuple[int, int] | None:
+    """The video's (width, height), or None when it cannot be read.
+
+    Needed because `zoom` pins `zoompan`'s `s=` to the source's own size --
+    with no explicit size that option silently defaults to `hd720`
+    regardless of the source, which turned a 640x360 clip into 320x180
+    once a trailing `scale` compounded it. It must be the SOURCE's own
+    dimensions, not a guess: hardcoding one would silently resize footage
+    while appearing to fix a bug.
+    """
+    if not have_ffprobe():
+        return None
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    try:
+        width_str, _, height_str = raw.partition(",")
+        width, height = int(width_str), int(height_str)
+    except ValueError:
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+
 def frame_rate(path: str) -> float | None:
     """The video's nominal frame rate, or None when it cannot be read.
 

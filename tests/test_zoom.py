@@ -24,7 +24,16 @@ pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="these render real fra
 
 
 def render(plan: Plan, out: str) -> str:
-    subprocess.run(compile_plan(plan, out), check=True, capture_output=True)
+    """Compile and run, probing frame rate and dimensions the same way `lib.render`
+    does. `zoom` compiles to `zoompan`, which needs both to pin its output -- so
+    calling `compile_plan` with neither, as these tests did before that filter was
+    load-bearing, is no longer a realistic exercise of the render path.
+    """
+    from vid.probe import dimensions, frame_rate
+
+    fr = frame_rate(plan.source) if plan.source else None
+    dims = dimensions(plan.source) if plan.source else None
+    subprocess.run(compile_plan(plan, out, frame_rate=fr, dimensions=dims), check=True, capture_output=True)
     return out
 
 

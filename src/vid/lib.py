@@ -52,9 +52,9 @@ def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     import subprocess
 
     from vid.compile import compile_plan
-    from vid.plan import AudioMix, AudioReplace, Stitch
+    from vid.plan import AudioMix, AudioReplace, Stitch, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import duration, frame_rate, has_audio, have_ffmpeg
+    from vid.probe import dimensions, duration, frame_rate, has_audio, have_ffmpeg
 
     # Retime needs the source duration too: without it the audio cannot be
     # bounded to the length the edit means, and atempo's rounding decides the
@@ -78,14 +78,23 @@ def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     source_has_audio = has_audio(plan.source) if plan.source else True
     from vid.plan import Retime
 
-    rate = frame_rate(plan.source) if plan.source and any(isinstance(op, Retime) for op in plan.operations) else None
+    # Retime needs the source's frame rate to put retimed frames back on a
+    # uniform grid; zoom needs it too, as `zoompan`'s own per-frame clock
+    # (see `Compiler.zoom`) -- and zoom additionally needs the source's own
+    # dimensions, to pin `zoompan`'s output size rather than let it default
+    # to `hd720` regardless of what was actually decoded.
+    needs_frame_rate = any(isinstance(op, (Retime, Zoom)) for op in plan.operations)
+    rate = frame_rate(plan.source) if plan.source and needs_frame_rate else None
+    dims = dimensions(plan.source) if plan.source and any(isinstance(op, Zoom) for op in plan.operations) else None
 
     # RESOLVED BEFORE IT IS USED, not after. A caller who wrote `out.mp4` from
     # one working directory and reads the report from another cannot resolve a
     # bare relative path -- the same reason `index` and narration's default
     # track already report an absolute path.
     resolved_output = str(Path(output).resolve())
-    command = compile_plan(plan, resolved_output, durations=durations, has_audio=source_has_audio, frame_rate=rate)
+    command = compile_plan(
+        plan, resolved_output, durations=durations, has_audio=source_has_audio, frame_rate=rate, dimensions=dims
+    )
 
     if print_command:
         import shlex

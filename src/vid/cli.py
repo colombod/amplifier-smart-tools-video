@@ -128,7 +128,7 @@ def zoom(
     duration: Annotated[float, typer.Option("--duration", help="Seconds the zoom takes.")] = 3.0,
     help: _doc("zoom") = False,
 ) -> None:
-    """Animated zoom (Ken Burns), with the jitter fix applied."""
+    """Animated zoom (Ken Burns), with `zoompan`'s duration and size bugs fixed."""
     write_plan(lib.zoom(read_plan(source), to, at, duration))
 
 

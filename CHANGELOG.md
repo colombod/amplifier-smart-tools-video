@@ -9,6 +9,27 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
+## 0.3.3
+
+0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables
+could not parse in the complex segmented graph), while the upstream build tolerated it. Replaced
+rather than patched.
+
+The zoom ramp is now compiled to ONE `zoompan` filter node instead of a 52-node graph with
+trim, split, crop, scale2ref, nullsink, setsar, and concat. `zoompan` recomputes its `zoom`
+expression every input frame, so there is no ramp to segment and nothing to reconcile across
+clips of different sizes. The problems 0.3.2 tried to solve were not defects in the workaround's
+approach — they were misunderstandings of how `zoompan` worked: its `d` is output **frames
+per input frame** (not duration), and without an explicit `s=` it silently defaults to
+`hd720` regardless of the source. Both are parameters, not workarounds. A 640x360 clip now
+stays 640x360; an 8-second clip now renders as 8 seconds, not 400.
+
+### Fixed
+
+- **`zoom`'s filter graph shape incompatible with stable ffmpeg 6.1.1.** Rewritten to use
+  `zoompan` single-node directly, eliminating the concat of scaled segments that refused
+  to parse.
+
 ## 0.3.2
 
 Spec compliance and three rendering bugs fixed. The tool was run through

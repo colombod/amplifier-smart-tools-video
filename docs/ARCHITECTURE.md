@@ -53,7 +53,7 @@ Deterministic. No model. No credentials.
 | `trim` | keep a time range | keyframe alignment; when a cut is free and when it costs a GOP re-encode |
 | `cut` | remove a time range | the same, inverted |
 | `retime` | constant speed, or a ramp | `setpts` for video, `atempo` for audio — and that `atempo` is scalar-only, so a ramp is segmented into constant regions and rejoined |
-| `zoom` | Ken Burns / animated zoom | `zoompan` quantises the crop to whole source pixels, so a slow zoom stutters; upscale first |
+| `zoom` | Ken Burns / animated zoom | `zoompan`'s `d` is output frames per input frame, not the effect's length, and its output size defaults to `hd720` unmarked; pin `d=1` and the source's own size |
 | `stitch` | concatenate | concat demuxer (lossless, identical params) vs concat filter (re-encodes); which applies |
 | `transition` | between two clips | `xfade` is video-only and always re-encodes; audio needs `acrossfade`; offsets are cumulative |
 | `caption` | burn in subtitles | the `subtitles` filter over an SRT the speech index already produces |

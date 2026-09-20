@@ -41,18 +41,10 @@ from vid.schemas import VidError
 #: `atempo` is documented as reliable in this range. Outside it, chain stages.
 ATEMPO_MIN, ATEMPO_MAX = 0.5, 2.0
 
-#: A crop landing on a fractional source pixel quantises to a whole pixel, which
-#: shows up as visible stutter across a slow zoom. Upscaling first makes each
-#: rounding error a fraction of an output pixel instead of a whole one. The
-#: factor is folklore, but the jitter is real and this is the accepted fix.
-ZOOM_UPSCALE = 4
-
-#: How finely a ramp between two control points is subdivided -- a retime speed
-#: curve, or a zoom's ramp from one level to another. Neither can be expressed
-#: as a single ffmpeg expression (`atempo` takes a scalar; a `crop` filter's
-#: width and height are fixed at graph setup, not re-evaluated per frame), so
-#: each is approximated as this many constant pieces. More pieces follow the
-#: curve more closely at the cost of a larger filter graph.
+#: How finely a retime ramp between two control points is subdivided.
+#: `atempo` takes a scalar, so a speed ramp cannot be expressed as a single
+#: ffmpeg expression -- it is approximated as this many constant pieces. More
+#: pieces follow the curve more closely at the cost of a larger filter graph.
 RAMP_STEPS = 8
 
 
@@ -135,51 +127,6 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
     return segments
 
 
-def zoom_segments(at: float, duration: float, to: float) -> list[tuple[float, float | None, float]]:
-    """A zoom ramp, decomposed into constant-zoom `(start, end, zoom)` pieces.
-
-    `zoompan` looks like the obvious filter for this and cannot give an exact
-    answer: its `d` option is OUTPUT FRAMES PER INPUT FRAME CONSUMED, not the
-    effect's length, and it always resamples to a literal output frame rate
-    this module has no way to know -- probing a source's rate is `render`'s
-    job precisely so every other verb, this one included, needs no ffmpeg to
-    compile. Get either wrong and the rendered clip runs at some multiple of
-    the source's length instead of matching it.
-
-    So the ramp is segmented instead, the same way `ramp_segments` segments a
-    retime curve: a hold at 1.0 before `at`, RAMP_STEPS pieces approximating
-    the curve from 1.0 to `to`, then a hold at `to` from `at + duration` to
-    the actual end of the clip -- `end=None` on that last piece, because the
-    total duration is never known here either; ffmpeg's own `trim` resolves
-    it. Each piece is a plain crop at a fixed level, which has no time
-    dependence and so leaves every frame's timestamp untouched.
-    """
-    pieces: list[tuple[float, float | None, float]] = []
-    if at > 0:
-        pieces.append((0.0, at, 1.0))
-    if duration > 0:
-        for index in range(RAMP_STEPS):
-            lo = at + duration * index / RAMP_STEPS
-            hi = at + duration * (index + 1) / RAMP_STEPS
-            position = (index + 0.5) / RAMP_STEPS
-            pieces.append((lo, hi, 1.0 + (to - 1.0) * position))
-    pieces.append((at + max(duration, 0.0), None, to))
-    return pieces
-
-
-def _substitute_zoom(expr: str, value: float) -> str:
-    """Bake one segment's fixed zoom level into an `x`/`y` positioning expression.
-
-    `op.x`/`op.y` default to `zoompan`'s own convention -- a bare `zoom` naming
-    the current zoom factor -- and a hand-written plan may follow the same
-    convention, since the contract only promises "an ffmpeg expression". Each
-    segment produced by `zoom_segments` has exactly one, constant, zoom level,
-    so the name is replaced with its value rather than carried into `crop`,
-    which has no such variable.
-    """
-    return re.sub(r"\bzoom\b", f"{value:.6f}", expr)
-
-
 class Compiler:
     """Turns a plan into inputs plus a filter graph."""
 
@@ -189,6 +136,7 @@ class Compiler:
         durations: dict[str, float] | None = None,
         has_audio: bool = True,
         frame_rate: float | None = None,
+        dimensions: tuple[int, int] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -206,9 +154,13 @@ class Compiler:
         # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
         self.audio = "0:a" if has_audio else None
         #: The source's own frame rate, used to put retimed frames back on a
-        #: uniform grid. None when it could not be read, in which case retime
-        #: behaves as it always did rather than guessing a rate.
+        #: uniform grid, and to give `zoompan` an accurate per-frame clock.
+        #: None when it could not be read, in which case retime behaves as
+        #: it always did rather than guessing a rate, and zoom refuses.
         self.frame_rate = frame_rate
+        #: The source's own (width, height), used to pin `zoompan`'s output
+        #: size to it. None when it could not be read.
+        self.dimensions = dimensions
         self._label = 0
 
     def _next(self, prefix: str) -> str:
@@ -353,63 +305,68 @@ class Compiler:
             self.audio = self._step(bound.lstrip(","), self.audio, "a")
 
     def zoom(self, op: Zoom) -> None:
-        """Ken Burns: crop-and-rescale, segmented into constant-zoom pieces.
+        """Ken Burns, as ffmpeg's own purpose-built filter -- ONE node.
 
-        See `zoom_segments` for why this is segmented rather than one
-        `zoompan` call. Each segment is rescaled against a REFERENCE copy of
-        its own untouched frames (`scale2ref`) rather than an expression
-        computed from the cropped size, because a crop that does not divide
-        the frame evenly leaves a one-pixel rounding difference between
-        segments -- and `concat` refuses to join clips of different sizes.
+        `zoompan` looked unusable for this at first, for two real reasons:
+        its `d` is OUTPUT FRAMES PER INPUT FRAME CONSUMED, not the effect's
+        length (an 8s/25fps source measured out at 400s when `d` was set to
+        `duration * fps`), and with no explicit `s=` its output silently
+        defaults to `hd720` regardless of the source (a 640x360 clip came
+        out 320x180, because a trailing `scale=iw/4:-2` made it worse).
+        Both are answers, not workarounds: `d=1` emits exactly one output
+        frame per input frame, so the frame count -- and hence the
+        duration, at the source's own `fps=` -- is untouched; `s=` pinned to
+        the source's own dimensions keeps the frame size untouched too.
+
+        That replaces a PREVIOUS fix that dodged both bugs by decomposing
+        the ramp into constant-zoom pieces -- trim, split, crop against a
+        scale2ref'd reference, nullsink, setsar, concat -- ten segments and
+        over fifty filter-graph entries for one zoom. `zoompan` recomputes
+        its `zoom` expression every INPUT frame, continuously, so there is
+        no ramp to decompose into pieces in the first place, and nothing
+        of different sizes or SARs for `concat` to reconcile. That
+        reconciliation is exactly the part a stable ffmpeg refused (`concat`
+        rejecting a SAR mismatch scale2ref did not promise not to
+        introduce) while a bleeding-edge build happened to tolerate it --
+        so this is not a fix for that tolerance gap, it removes the graph
+        shape that created it.
+
+        `time` gates the ramp to `[at, at + duration]`: it is `zoompan`'s
+        own per-output-frame clock, `frame_count / fps` -- and `fps` is set
+        to the source's actual rate, so it is seconds since this stage's
+        own PTS-zero, matching what `at`/`duration` mean elsewhere in this
+        module. `op.x`/`op.y` are passed through UNCHANGED: `zoompan` defines
+        `zoom` as the just-evaluated zoom level for the current frame, which
+        is exactly the variable the plan's default expressions already name
+        (see `Zoom` in plan.py) -- there is no substitution left to do.
+
+        Needs the source's frame rate and dimensions, which this compiler
+        does not have on its own; `render` probes them for exactly this
+        reason (see `needs_durations` in lib.py).
         """
-        at = op.at if op.at is not None else 0.0
-        segments = zoom_segments(at, op.duration, op.to)
-
-        # An explicit `split`, not `self.video` written as the input to each
-        # segment's trim filter in turn. Reusing a label as the input to
-        # several filters is NOT guaranteed to fan out like a genuine split --
-        # measured directly: two branches trimmed from the same already-
-        # trimmed pad and then concatenated ran to the length of the
-        # ORIGINAL, untrimmed source, not the trimmed one, because the second
-        # branch's `trim` was not bounded by the first's EOF.
-        if len(segments) == 1:
-            sources = [self.video]
-        else:
-            sources = [self._next("v") for _ in segments]
-            self.filters.append(f"[{self.video}]split={len(sources)}" + "".join(f"[{s}]" for s in sources))
-
-        labels: list[str] = []
-        for source, (start, stop, level) in zip(sources, segments, strict=True):
-            trim = f"trim=start={start}:end={stop}" if stop is not None else f"trim=start={start}"
-            ref, pre = self._next("v"), self._next("v")
-            self.filters.append(f"[{source}]{trim},setpts=PTS-STARTPTS,split=2[{ref}][{pre}]")
-
-            cropped = self._next("v")
-            x_expr = _substitute_zoom(op.x, level)
-            y_expr = _substitute_zoom(op.y, level)
-            self.filters.append(
-                f"[{pre}]scale=iw*{ZOOM_UPSCALE}:-2,"
-                f"crop=w='iw/{level:.6f}':h='ih/{level:.6f}':x='{x_expr}':y='{y_expr}'[{cropped}]"
+        if self.frame_rate is None or self.dimensions is None:
+            raise VidError(
+                "zoom needs to know the source's frame rate and dimensions to pin "
+                "`zoompan`'s output, and neither was supplied. Compile through `vid render`, "
+                "which probes them from the source file."
             )
-
-            scaled, ref_out = self._next("v"), self._next("v")
-            self.filters.append(f"[{cropped}][{ref}]scale2ref=w=rw:h=rh[{scaled}][{ref_out}]")
-            self.filters.append(f"[{ref_out}]nullsink")
-
-            segment_out = self._next("v")
-            # scale2ref does not guarantee SAR=1:1 across segments cropped at
-            # different levels; concat rejects a SAR mismatch just as it does
-            # a size mismatch, so it is reset uniformly before rejoining.
-            self.filters.append(f"[{scaled}]setsar=1[{segment_out}]")
-            labels.append(segment_out)
-
-        if len(labels) == 1:
-            self.video = labels[0]
-            return
-
-        out = self._next("v")
-        self.filters.append("".join(f"[{label}]" for label in labels) + f"concat=n={len(labels)}:v=1:a=0[{out}]")
-        self.video = out
+        at = op.at if op.at is not None else 0.0
+        duration = max(op.duration, 0.0)
+        to = op.to
+        if duration > 0:
+            zoom_expr = (
+                f"if(lt(time,{at:.6f}),1,"
+                f"if(lt(time,{at + duration:.6f}),1+({to:.6f}-1)*(time-{at:.6f})/{duration:.6f},{to:.6f}))"
+            )
+        else:
+            # No ramp to speak of -- an instant step at `at`, held either side.
+            zoom_expr = f"if(lt(time,{at:.6f}),1,{to:.6f})"
+        width, height = self.dimensions
+        self.video = self._step(
+            f"zoompan=z='{zoom_expr}':x='{op.x}':y='{op.y}':d=1:s={width}x{height}:fps={self.frame_rate:g}",
+            self.video,
+            "v",
+        )
 
     def stitch(self, op: Stitch) -> None:
         for source in op.sources:
@@ -690,9 +647,10 @@ def compile_plan(
     durations: dict[str, float] | None = None,
     has_audio: bool = True,
     frame_rate: float | None = None,
+    dimensions: tuple[int, int] | None = None,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
-    compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate)
+    compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate, dimensions=dimensions)
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
     # than its own concrete type, which is a real narrowing gap (13 diagnostics
