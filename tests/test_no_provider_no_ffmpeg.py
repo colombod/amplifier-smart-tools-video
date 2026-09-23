@@ -177,6 +177,25 @@ def test_a_description_without_a_provider_refuses_rather_than_guessing():
     assert "fade" not in message.split("presets")[0], "must not suggest a silent fallback"
 
 
+def test_narrate_script_only_refuses_honestly_with_nothing_installed():
+    """`narrate`, even `--script-only`, still needs a model -- that requirement
+    is unchanged by the pluggable speech backend and by `--script-only`
+    itself (`write_script` runs before the script/synthesis split). So this
+    is deliberately NOT added to the all-succeed parametrize list above:
+    doing so would assert a property that is false regardless of what speech
+    backend is configured, since nothing here provides a model either.
+
+    What IS true, and what this proves: with nothing installed, `narrate`
+    refuses CLEANLY -- a named remedy, not a crash -- the same property
+    `test_render_without_ffmpeg_refuses_and_names_the_remedy` and
+    `test_a_description_without_a_provider_refuses_rather_than_guessing`
+    already prove for the other verbs this suite cannot make fully succeed.
+    """
+    result = _run(["narrate", "no-such-video.mp4", "a prompt", "--script-only"])
+    assert result.returncode != 0
+    assert result.stderr.strip(), "a refusal with no message at all is worse than a crash"
+
+
 def test_the_provider_scrub_is_honest_about_what_it_does_not_scrub():
     """Guard the guard, second instance.
 

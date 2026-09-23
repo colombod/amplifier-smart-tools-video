@@ -51,10 +51,34 @@ requires:
   - name: piper-tts
     purpose: >-
       Speaks the narration `narrate` writes, locally. Nothing is uploaded, and the
-      voice model is fetched once, anonymously. Installed as an extra, not a separate
-      step: uv tool install 'vid[voice] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+      voice model is fetched once, anonymously. This is the DEFAULT of two
+      ALTERNATIVE speech backends for `narrate` -- see openai-tts below for the
+      other -- and nothing here ever falls back to the other automatically.
+      Installed as an extra, not a separate step:
+      uv tool install 'vid[voice] @ git+https://github.com/colombod/amplifier-smart-tools-video'
     optional: true
     install: https://github.com/colombod/amplifier-smart-tools-video#voice
+  - name: openai-tts
+    purpose: >-
+      An ALTERNATIVE to piper-tts for `narrate`'s speech synthesis, reached only
+      with `--voice openai:<voice>[@profile]`. Sends the narration TEXT (never
+      audio, never a key) to OpenAI's TTS API instead of speaking locally --
+      needs the `openai` package and an API key, named by `api_key_env` in
+      $XDG_CONFIG_HOME/vid/config.toml (or OPENAI_API_KEY with no config file
+      at all). NEVER used unless a caller writes the `openai:` prefix; piper
+      failing to load never falls back to it, because this one costs money.
+      Installed as an extra, not a separate step:
+      uv tool install 'vid[voice-openai] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+
+      FORMAT LIMITATION: `requires[]` is a flat list with no vocabulary for
+      "one of these two is enough" -- this entry and piper-tts are declared as
+      two independent optional requirements, when `narrate` in fact needs
+      exactly one of the two, not both. This is the most honest representation
+      the current manifest schema allows; a real either/or relation between
+      requirements is a gap in the Amplifier Smart Tool spec, not something
+      this file works around.
+    optional: true
+    install: https://github.com/colombod/amplifier-smart-tools-video#voice-openai
   - name: gh
     purpose: >-
       Generates the token that signs in to GitHub Copilot. Without it, the model-backed

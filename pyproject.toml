@@ -43,11 +43,20 @@ voice = [
     "piper-tts>=1.8,<2.0",
 ]
 
+# Cloud TTS, an ALTERNATIVE to `voice` for `narrate --voice openai:<voice>`.
+# Used ONLY when a caller writes that prefix explicitly -- piper being
+# unavailable never falls back to this, because it costs money and sends
+# narration text to a remote API.
+voice-openai = [
+    "openai>=3.18.0,<4.0.0",
+]
+
 # Everything. For a caller who would rather install once than discover a missing
 # tier mid-task.
 all = [
     "faster-whisper>=1.0,<2.0",
     "piper-tts>=1.8,<2.0",
+    "openai>=3.18.0,<4.0.0",
 ]
 
 [project.urls]
