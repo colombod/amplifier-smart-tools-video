@@ -331,13 +331,17 @@ def generate(description: str, intelligence) -> tuple[str, str]:
     rationale = lines[1] if len(lines) > 1 else ""
 
     if not expression or len(expression) > 2000:
-        raise VidError(f"The model did not return a usable expression for {description!r}.")
+        raise VidError(
+            f"The model did not return a usable expression for {description!r}. Retry, or "
+            "name one of the 58 presets instead (`vid transitions`)."
+        )
     # A refusal that reaches ffmpeg becomes an unreadable parse error; catching
     # the obvious shapes here keeps the message about what actually happened.
     if not any(token in expression for token in ("A", "B", "P")):
         raise VidError(
             f"The model answered {expression[:80]!r}, which references neither input "
-            "nor progress, so it is not a transition expression."
+            "nor progress, so it is not a transition expression. Retry, or name one of "
+            "the 58 presets instead (`vid transitions`)."
         )
     return expression, rationale
 

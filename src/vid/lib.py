@@ -458,6 +458,30 @@ def _confirm_before_spending(notice: str, yes: bool) -> bool:
     return sys.stdin.readline().strip().lower() in {"y", "yes"}
 
 
+def _no_match_message(video: str, query: str, *, spoke: bool, shown: bool, has_speech_index: bool) -> str:
+    """Say which side of the index a described-tier miss actually covered.
+
+    `vid.find.find` searches speech before vision, and hands the described
+    (model) tier speech chunks in preference to vision chunks whenever both
+    exist -- see its docstring. So a miss with a speech transcript but no
+    vision descriptions means vision was never asked about at all, and the
+    reverse means speech never was. Naming which one is missing gives a
+    remedy that is actually true for this video's index, not a canned line.
+    """
+    base = f"Nothing in {video!r} matches {query!r}."
+    if spoke and not shown:
+        return (
+            f"{base} The search covered what was SAID, not what was SHOWN -- "
+            f"`vid index {video} --vision` describes the shots so it can be searched too."
+        )
+    if shown and not has_speech_index:
+        return (
+            f"{base} The search covered what was SHOWN, not what was SAID -- "
+            f"`vid index {video}` adds a speech transcript so it can be searched too."
+        )
+    return f"{base} Try words closer to what was actually said or shown."
+
+
 def find(query: str, video: str, *, show: bool = False) -> None:
     """Locate a moment, and either describe it or emit a plan trimmed to it."""
     import sys
@@ -484,9 +508,19 @@ def find(query: str, video: str, *, show: bool = False) -> None:
 
     from vid.find import visual_chunks
 
-    hits = search(chunks_of(record), query, intelligence, seen=visual_chunks(record))
+    speech_chunks = chunks_of(record)
+    seen_chunks = visual_chunks(record)
+    hits = search(speech_chunks, query, intelligence, seen=seen_chunks)
     if not hits:
-        raise VidError(f"Nothing in {video!r} matches {query!r}.")
+        raise VidError(
+            _no_match_message(
+                video,
+                query,
+                spoke=bool(speech_chunks),
+                shown=bool(seen_chunks),
+                has_speech_index="speech" in record,
+            )
+        )
 
     if show:
         for hit in hits:
@@ -707,7 +741,9 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
     from vid.plan import Recolor
 
     if not Path(reference).is_file():
-        raise VidError(f"No such reference image: {reference!r}")
+        raise VidError(
+            f"No such reference image: {reference!r}. Check the path is correct and relative to the current directory."
+        )
 
     source = measure_video(video)
     target = measure_image(reference)

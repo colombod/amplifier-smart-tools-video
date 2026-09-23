@@ -222,7 +222,10 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
     known = {chunk.id: chunk for chunk in chunks}
     wanted = re.findall(r"\bc\d+\b", first)
     if not wanted:
-        raise VidError(f"The model answered {first!r}, which contains no passage ids. Expected ids like `c3 c4`.")
+        raise VidError(
+            f"The model answered {first!r}, which contains no passage ids. Expected ids like "
+            "`c3 c4`. Retry the search, possibly with a more specific description."
+        )
 
     unknown = [i for i in wanted if i not in known]
     if unknown:
@@ -231,7 +234,7 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
         raise VidError(
             f"The model named passages that are not in this video's index: {', '.join(unknown)}. "
             f"The index has {len(known)} passages, c0 to c{len(known) - 1}. "
-            "Refusing rather than guessing what it meant."
+            "Refusing rather than guessing what it meant -- retry the search."
         )
     return [_merge([known[i] for i in wanted], how="described", rationale=rationale)]
 

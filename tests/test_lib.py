@@ -496,3 +496,68 @@ def test_narration_dir_resolves_a_relative_override_to_an_absolute_path(monkeypa
 
     assert resolved.is_absolute()
     assert resolved == (workdir / "relative-narration-store").resolve()
+
+
+# ---------------------------------------------------------------------------
+# Deviation "failure-names-remedy": a described-tier miss used to say only
+# "Nothing in <video> matches <query>." with no next action. `find` searches
+# speech before vision, and the described (model) tier is handed speech
+# chunks in preference to vision chunks whenever both exist -- see
+# `vid.find.find`'s docstring -- so the remedy must name which side was
+# actually searched, not a canned line.
+# ---------------------------------------------------------------------------
+
+
+class _NoneIntelligence:
+    """Replies NONE to every described-tier request -- a real miss, not an error."""
+
+    def preflight(self) -> None:
+        return None
+
+    def run(self, request):
+        from vid.intelligence.schemas import AgentResult
+
+        return AgentResult(text="NONE\nnothing here matches that", error=None)
+
+
+def test_find_with_speech_but_no_vision_says_search_covered_said_not_shown(monkeypatch):
+    monkeypatch.setattr(
+        "vid.index.load",
+        lambda video: {
+            "video": video,
+            "duration": 10.0,
+            "speech": [{"id": "c0", "start": 0.0, "end": 5.0, "text": "hello world this is a test"}],
+            "shots": [],
+        },
+    )
+    monkeypatch.setattr("vid.intelligence.interface.default_intelligence", lambda: _NoneIntelligence())
+
+    with pytest.raises(VidError) as failure:
+        lib.find("pricing plan", "video.mp4")
+
+    message = str(failure.value)
+    assert "SAID" in message
+    assert "SHOWN" in message
+    assert "--vision" in message, f"no remedy pointing at vision indexing:\n{message}"
+
+
+def test_find_with_vision_but_no_speech_index_says_search_covered_shown_not_said(monkeypatch):
+    monkeypatch.setattr(
+        "vid.index.load",
+        lambda video: {
+            "video": video,
+            "duration": 10.0,
+            "shots": [{"id": "s0", "start": 0.0, "end": 5.0, "description": "a cat sitting on a mat"}],
+            # no "speech" key at all: this video was never indexed for speech.
+        },
+    )
+    monkeypatch.setattr("vid.intelligence.interface.default_intelligence", lambda: _NoneIntelligence())
+
+    with pytest.raises(VidError) as failure:
+        lib.find("pricing plan", "video.mp4")
+
+    message = str(failure.value)
+    assert "SHOWN" in message
+    assert "SAID" in message
+    assert "`vid index video.mp4`" in message, f"no remedy pointing at speech indexing:\n{message}"
+    assert "--vision" not in message, f"told the caller to index vision, which this video already has:\n{message}"

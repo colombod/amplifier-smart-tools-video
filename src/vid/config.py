@@ -58,7 +58,11 @@ def _load_raw(path: Path) -> dict:
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
-        raise VidError(f"Could not parse {path}: {error}") from error
+        raise VidError(
+            f"Could not parse {path}: {error}\n"
+            "Fix the TOML syntax at that location, or remove the file to fall back to "
+            "implicit defaults."
+        ) from error
 
     offenders = _raw_api_key_paths(raw.get("providers", {}), "providers")
     if offenders:
@@ -96,7 +100,8 @@ def provider_profile(provider: str, profile: str, default_env_var: str | None = 
         defined = sorted(provider_block) or ["(none)"]
         raise VidError(
             f"{path} does not define [providers.{provider}.{profile}]. Defined profiles for "
-            f"{provider!r}: {', '.join(defined)}"
+            f"{provider!r}: {', '.join(defined)}. Use one of those, or add a "
+            f"[providers.{provider}.{profile}] section to define this one."
         )
 
     section = provider_block[profile]

@@ -71,7 +71,8 @@ class OpenAIBackend:
         if not api_key:
             raise VidError(
                 f"--voice 'openai:{voice}@{profile}' needs {self._env_var} set (profile "
-                f"{profile!r} reads it), and it is not."
+                f"{profile!r} reads it), and it is not. Export it, or point profile "
+                f"{profile!r} at a different api_key_env in your vid config."
             )
         self._api_key = api_key
 

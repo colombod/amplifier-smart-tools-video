@@ -410,14 +410,18 @@ class Compiler:
             if not op.transition_expr:
                 raise VidError(
                     "A custom transition needs an expression, and this plan carries none. "
-                    "Custom transitions are generated and verified when the plan is built."
+                    "Custom transitions are generated and verified when the plan is built -- "
+                    "rebuild it through `vid stitch --transition <description>` rather than "
+                    "hand-editing the plan JSON."
                 )
             if not op.transition_verified:
                 raise VidError(
                     "This plan carries an UNVERIFIED custom transition. A generated "
                     "expression reaches a plan only after being proven to blend against "
                     "the clips it will be used on -- refusing rather than rendering "
-                    "something whose behaviour nobody checked."
+                    "something whose behaviour nobody checked. Rebuild it through "
+                    "`vid stitch --transition <description>`, which generates and verifies "
+                    "before writing it into a plan."
                 )
             expr = f":expr='{op.transition_expr}'"
         self.filters.append(
@@ -503,7 +507,9 @@ class Compiler:
 
     def lut(self, op: Lut) -> None:
         if not Path(op.path).is_file():
-            raise VidError(f"No such lookup table: {op.path!r}")
+            raise VidError(
+                f"No such lookup table: {op.path!r}. Check the path is correct and relative to the current directory."
+            )
         # A Windows drive-letter colon reads as an argument separator to the
         # filter parser, exactly as it does for subtitle paths.
         path = op.path.replace("\\", "/").replace(":", r"\:")
@@ -685,7 +691,11 @@ def compile_plan(
             case AudioMix():
                 compiler.audio_mix(operation)
             case _:
-                raise VidError(f"This version of vid cannot compile a {operation.op!r} operation.")
+                raise VidError(
+                    f"This version of vid cannot compile a {operation.op!r} operation. "
+                    "The plan may have been written by a newer version -- upgrade vid, or "
+                    "rebuild the plan with this version's verbs."
+                )
 
     _seal_dangling_outputs(compiler)
 

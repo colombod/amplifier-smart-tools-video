@@ -141,7 +141,10 @@ def _stats_from_pixels(raw: bytes) -> ColorStats:
     """Lab mean and standard deviation over raw rgb24 bytes."""
     count = len(raw) // 3
     if count == 0:
-        raise VidError("No pixels to measure.")
+        raise VidError(
+            "No pixels to measure -- ffmpeg produced fewer than three bytes, not enough for "
+            "one pixel. Verify the file with `ffprobe`, or try `vid check`."
+        )
 
     # Every 7th pixel: colour statistics converge long before every pixel has
     # been visited, and Lab conversion is the expensive part of this loop.
@@ -207,7 +210,10 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
         try:
             duration = float(probe.stdout.strip())
         except ValueError as exc:
-            raise VidError(f"{path!r} has no readable duration.") from exc
+            raise VidError(
+                f"{path!r} has no readable duration. Verify it is a video file ffprobe can "
+                "open (try `ffprobe` on it directly), or run `vid check`."
+            ) from exc
 
     collected = bytearray()
     failed: list[str] = []
@@ -245,7 +251,7 @@ def measure_video(path: str, duration: float | None = None) -> ColorStats:
             "was skipped, so none of it was used. Verify the file with `ffprobe`, or try `vid check`."
         )
     if not collected:
-        raise VidError(f"Could not sample any frame from {path!r}.")
+        raise VidError(f"Could not sample any frame from {path!r}. Verify the file with `ffprobe`, or try `vid check`.")
     return _stats_from_pixels(bytes(collected))
 
 

@@ -48,7 +48,10 @@ def duration(path: str) -> float:
     try:
         return float(json.loads(result.stdout)["format"]["duration"])
     except (KeyError, ValueError, json.JSONDecodeError) as exc:
-        raise VidError(f"{path!r} has no readable duration -- is it a video file?") from exc
+        raise VidError(
+            f"{path!r} has no readable duration. Verify it is a video file ffprobe can open "
+            "(try `ffprobe` on it directly), or run `vid check`."
+        ) from exc
 
 
 def has_audio(path: str) -> bool:
