@@ -184,7 +184,10 @@ def write_script(record: dict, prompt: str, intelligence) -> Script:
             written[int(head.strip())] = tail.strip()
 
     if not written:
-        raise VidError(f"The model did not return any numbered narration lines. It said: {reply[:160]!r}")
+        raise VidError(
+            f"The model did not return any numbered narration lines. It said: {reply[:160]!r} "
+            "Retry, or narrow the prompt so it is unambiguous that a numbered line per segment is wanted."
+        )
 
     for i, (start, length) in enumerate(slots):
         text = written.get(i, "").strip()
@@ -270,7 +273,11 @@ def assemble(script: Script, out: Path | str, total: float) -> Path:
 
     spoken = [line for line in script.lines if line.audio and line.text]
     if not spoken:
-        raise VidError("There is nothing to assemble -- no line produced any audio.")
+        raise VidError(
+            "There is nothing to assemble -- no line produced any audio. Every slot was written "
+            "silent, or `fit` was never run on this script. Run `vid check` to confirm the "
+            "speech synthesiser is working."
+        )
 
     inputs: list[str] = []
     parts: list[str] = []

@@ -37,6 +37,10 @@ def test_ask_names_a_remedy_when_the_provider_errors():
     assert "vid check" in message
 
 
-def test_ask_refuses_an_empty_answer():
-    with pytest.raises(VidError, match="empty answer"):
+def test_ask_refuses_an_empty_answer_and_names_a_remedy():
+    with pytest.raises(VidError, match="empty answer") as failure:
         ask(_EmptyIntelligence(), "a prompt")
+
+    message = str(failure.value)
+    assert "retry" in message.lower(), f"no remedy telling the caller to retry:\n{message}"
+    assert "vid check" in message, f"no remedy pointing at `vid check`:\n{message}"

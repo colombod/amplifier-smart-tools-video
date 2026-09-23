@@ -84,7 +84,7 @@ def fingerprint(video: str) -> str:
     """
     path = Path(video)
     if not path.is_file():
-        raise VidError(f"No such video: {video!r}")
+        raise VidError(f"No such video: {video!r}. Check the path is correct and relative to the current directory.")
     size = path.stat().st_size
     digest = hashlib.sha256(str(size).encode())
     with path.open("rb") as handle:
@@ -193,7 +193,10 @@ def _duration(video: str) -> float:
     try:
         return float(out.stdout.strip())
     except ValueError as exc:
-        raise VidError(f"{video!r} has no readable duration -- is it a video file?") from exc
+        raise VidError(
+            f"{video!r} has no readable duration. Verify it is a video file ffprobe can open "
+            "(try `ffprobe` on it directly), or run `vid check`."
+        ) from exc
 
 
 def transcribe(video: str, model_size: str = "base") -> list[Chunk]:

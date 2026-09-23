@@ -107,7 +107,8 @@ def ensure_voice(name: str = DEFAULT_VOICE) -> Path:
         raise VidError(
             f"Could not download the voice {name!r}: "
             f"{detail[-1] if detail else 'no reason given'}\n"
-            f"Voices are fetched anonymously from a public repository; this is usually a network problem."
+            "Voices are fetched anonymously from a public repository; this is usually a network "
+            "problem. Check connectivity and retry."
         )
     return model
 

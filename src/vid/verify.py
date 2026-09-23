@@ -55,7 +55,10 @@ def _ffprobe(path: str, *args: str) -> dict:
     try:
         return json.loads(result.stdout or "{}")
     except json.JSONDecodeError as exc:
-        raise VidError(f"ffprobe returned something that is not JSON for {path!r}: {exc}") from exc
+        raise VidError(
+            f"ffprobe returned something that is not JSON for {path!r}: {exc}\n"
+            "Run `vid check` to confirm ffprobe is working, or try `ffprobe` on the file directly."
+        ) from exc
 
 
 def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
@@ -88,7 +91,10 @@ def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
     )
     pixel = result.stdout[:3]
     if len(pixel) < 3:
-        raise VidError(f"There is no frame at {at}s in {path!r} -- is the video shorter than that?")
+        raise VidError(
+            f"There is no frame at {at}s in {path!r}. Check the video's actual duration "
+            "with `vid verify --expect-duration`, or pick a smaller offset."
+        )
     return (pixel[0], pixel[1], pixel[2])
 
 
@@ -101,7 +107,10 @@ def duration(path: str) -> float:
     try:
         return float(data["format"]["duration"])
     except (KeyError, ValueError) as exc:
-        raise VidError(f"{path!r} has no readable duration -- is it a video file?") from exc
+        raise VidError(
+            f"{path!r} has no readable duration. Verify it is a video file ffprobe can open "
+            "(try `ffprobe` on it directly), or run `vid check`."
+        ) from exc
 
 
 def check_duration(path: str, expected: float, tolerance: float = 0.15) -> Check:

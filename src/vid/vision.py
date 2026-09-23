@@ -144,7 +144,11 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
             )
         )
         if getattr(result, "error", None):
-            raise _VidError(f"The model could not describe the frames: {result.error}")
+            raise _VidError(
+                f"The model could not describe the frames: {result.error}\n"
+                "Check that `gh auth login` is signed in with an account that has a Copilot "
+                "subscription, or run `vid check` to see what this machine has configured."
+            )
 
         by_name = {path.name: shot_id for shot_id, path in frames}
         described: list[Described] = []
@@ -158,7 +162,10 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
                 seen_ids.add(shot_id)
 
         if not described:
-            raise _VidError(f"The model returned no usable descriptions. It said: {(result.text or '')[:200]!r}")
+            raise _VidError(
+                f"The model returned no usable descriptions. It said: {(result.text or '')[:200]!r} "
+                "Retry, or re-run `vid index --vision`."
+            )
 
         # EVERY FRAME OR NONE APPLIED. Accepting whatever nonempty subset came
         # back left a shot the model skipped indistinguishable from one nobody

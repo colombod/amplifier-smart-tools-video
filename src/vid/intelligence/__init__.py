@@ -30,5 +30,8 @@ def ask(intelligence, prompt: str, *, timeout_seconds: int = 60) -> str:
         )
     text = (getattr(result, "text", "") or "").strip()
     if not text:
-        raise VidError("The model returned an empty answer.")
+        raise VidError(
+            "The model returned an empty answer. Retry the request, or run `vid check` "
+            "to confirm the configured provider is actually answering."
+        )
     return text
