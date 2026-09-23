@@ -24,6 +24,8 @@ import json
 import os
 from pathlib import Path
 
+from vid.speech.openai_tts import DEFAULT_OPENAI_MODEL
+
 FIXTURE_DIR = Path(__file__).parents[1] / "tests" / "fixtures" / "openai_tts"
 DEFAULT_TEXT = "This is a recorded fixture for vid's OpenAI speech backend."
 
@@ -31,7 +33,7 @@ DEFAULT_TEXT = "This is a recorded fixture for vid's OpenAI speech backend."
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--voice", default="alloy")
-    parser.add_argument("--model", default="tts-1")
+    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--env-var", default="OPENAI_API_KEY", help="Env var to read the API key from.")

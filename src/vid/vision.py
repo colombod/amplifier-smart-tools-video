@@ -29,7 +29,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: Frames are described at this width. A description does not get better from
 #: more pixels than a person would need, and every extra pixel is paid for.
@@ -107,7 +107,13 @@ def extract_frames(video: str, shots: list[dict], into: Path) -> list[tuple[str,
     return written
 
 
-def describe_shots(video: str, shots: list[dict], intelligence) -> list[Described]:
+def describe_shots(
+    video: str,
+    shots: list[dict],
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> list[Described]:
     """Describe one frame per shot, in a single pass.
 
     One call for the whole set rather than one per frame: the agent reads the
@@ -115,7 +121,6 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
     to a round trip per shot.
     """
     from vid.intelligence.schemas import AgentRequest, HostWorkspace
-    from vid.schemas import DEFAULT_INTELLIGENCE_MODEL
     from vid.schemas import VidError as _VidError
 
     with tempfile.TemporaryDirectory(prefix="vid-vision-") as work:
@@ -138,7 +143,8 @@ def describe_shots(video: str, shots: list[dict], intelligence) -> list[Describe
                     "and do not invent detail that is not in the picture.\n"
                     "Nothing but those lines."
                 ),
-                model=DEFAULT_INTELLIGENCE_MODEL,
+                model=model,
+                reasoning_effort=reasoning_effort,
                 workspace=HostWorkspace(path=workspace),
                 timeout_seconds=90 + 15 * len(frames),
             )

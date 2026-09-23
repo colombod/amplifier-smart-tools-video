@@ -67,6 +67,10 @@ Then `--voice openai:alloy@work`. With no config file at all, `OPENAI_API_KEY`
 is used. The file never holds a key itself, only the name of the variable to
 read, so it stays safe to share or commit.
 
+OpenAI speech defaults to `gpt-4o-mini-tts`; an explicit `model` in that profile
+overrides it. This is separate from narration's script model, selected with
+`--intelligence-model` and `--reasoning-effort`. Piper remains the local default.
+
 To use it as a library:
 
 ```bash

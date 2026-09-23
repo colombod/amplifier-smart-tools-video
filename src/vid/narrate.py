@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: How many times a model may rewrite one overrunning line before the tool stops
 #: asking. Two is enough to catch "that was a bit long"; beyond it the model is
@@ -148,7 +148,13 @@ def _context_for(record: dict, start: float, length: float) -> str:
     return "\n".join(parts) if parts else "(nothing is known about this stretch)"
 
 
-def write_script(record: dict, prompt: str, intelligence) -> Script:
+def write_script(
+    record: dict,
+    prompt: str,
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> Script:
     """Ask a model for one line per slot, each with its duration budget stated."""
     from vid.intelligence import ask
 
@@ -175,6 +181,8 @@ def write_script(record: dict, prompt: str, intelligence) -> Script:
             "Nothing but the numbered lines."
         ),
         timeout_seconds=120,
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
 
     written: dict[int, str] = {}
@@ -195,7 +203,12 @@ def write_script(record: dict, prompt: str, intelligence) -> Script:
     return script
 
 
-def _shorten(line: Line, intelligence) -> str:
+def _shorten(
+    line: Line,
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> str:
     from vid.intelligence import ask
 
     return (
@@ -210,6 +223,8 @@ def _shorten(line: Line, intelligence) -> str:
                 "explanation, no quotes, no label."
             ),
             timeout_seconds=60,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         .splitlines()[0]
         .strip()
@@ -217,7 +232,14 @@ def _shorten(line: Line, intelligence) -> str:
     )
 
 
-def fit(script: Script, speaker, workdir: Path, intelligence=None) -> Script:
+def fit(
+    script: Script,
+    speaker,
+    workdir: Path,
+    intelligence=None,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> Script:
     """Speak every line and make each one fit, or say which did not.
 
     THE LOOP THAT IS THE FEATURE. Speak, measure, and on an overrun: ask for a
@@ -240,7 +262,7 @@ def fit(script: Script, speaker, workdir: Path, intelligence=None) -> Script:
         while line.overrun > 0 and line.attempts < REWRITE_ATTEMPTS and intelligence is not None:
             line.attempts += 1
             try:
-                shorter = _shorten(line, intelligence)
+                shorter = _shorten(line, intelligence, model=model, reasoning_effort=reasoning_effort)
             except VidError:
                 break
             if not shorter or shorter == line.text:

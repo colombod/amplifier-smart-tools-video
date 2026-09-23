@@ -13,6 +13,7 @@ where ffmpeg is present anyway, and the answer is handed to the compiler.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 
@@ -52,6 +53,107 @@ def duration(path: str) -> float:
             f"{path!r} has no readable duration. Verify it is a video file ffprobe can open "
             "(try `ffprobe` on it directly), or run `vid check`."
         ) from exc
+
+
+def picture_presentation_bounds(path: str) -> tuple[float, float]:
+    """Decoded picture's first PTS and final presentation end, including the last frame."""
+    if not have_ffprobe():
+        raise VidError("Picture timing needs ffprobe. Run `vid check`.")
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_frames",
+            "-show_entries",
+            "frame=best_effort_timestamp_time,duration_time,pkt_duration_time",
+            "-of",
+            "json",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        frames = json.loads(result.stdout)["frames"]
+        timed = sorted(frames, key=lambda frame: float(frame["best_effort_timestamp_time"]))
+        first = float(timed[0]["best_effort_timestamp_time"])
+        last = timed[-1]
+        frame_duration = float(last.get("duration_time", last.get("pkt_duration_time", "nan")))
+        end = float(last["best_effort_timestamp_time"]) + frame_duration
+        valid = (
+            result.returncode == 0
+            and not result.stderr.strip()
+            and math.isfinite(first)
+            and math.isfinite(end)
+            and frame_duration > 0
+            and end > first
+        )
+    except (KeyError, IndexError, ValueError, TypeError):
+        valid, first, end = False, 0.0, 0.0
+    if not valid:
+        raise VidError(
+            f"Could not measure final picture presentation time for {path!r}. Run `vid check`.\n{result.stderr}"
+        )
+    return first, end
+
+
+def video_duration(path: str) -> float:
+    """Picture duration, never the duration of a longer audio stream."""
+    if not have_ffprobe():
+        raise VidError("Picture timing needs ffprobe. Run `vid check`.")
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "json", path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise VidError(f"ffprobe could not read picture timing for {path!r}. Run `vid check`.\n{result.stderr}")
+    try:
+        total = float(json.loads(result.stdout)["streams"][0]["duration"])
+        if math.isfinite(total) and total > 0:
+            return total
+    except (KeyError, IndexError, ValueError, TypeError):
+        pass
+    first, end = picture_presentation_bounds(path)
+    return end - first
+
+
+def copy_video_duration(path: str) -> float:
+    """Copy cannot retime packets: require a zero-based, measured picture stream."""
+    if not have_ffprobe():
+        raise VidError("Picture stream-copy needs ffprobe. Run `vid check`.")
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v",
+            "-show_entries",
+            "stream=start_time,duration",
+            "-of",
+            "json",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        streams = json.loads(result.stdout)["streams"]
+        stream = streams[0]
+        start, total = float(stream["start_time"]), float(stream["duration"])
+        valid = result.returncode == 0 and len(streams) == 1 and math.isfinite(total) and total > 0 and start == 0
+    except (KeyError, IndexError, ValueError, TypeError):
+        valid, total = False, 0.0
+    if not valid:
+        raise VidError(
+            "Picture stream-copy requires exactly one video stream starting at zero with a known positive duration. "
+            "Use libx264 for this source. " + result.stderr.strip()
+        )
+    return total
 
 
 def has_audio(path: str) -> bool:

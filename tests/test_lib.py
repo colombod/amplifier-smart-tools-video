@@ -345,7 +345,7 @@ def _patch_narrate_prerequisites(monkeypatch, *, piper_available: bool) -> None:
 def test_narrate_checks_piper_before_the_first_model_call(monkeypatch):
     _patch_narrate_prerequisites(monkeypatch, piper_available=False)
     calls = []
-    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence: calls.append(1))
+    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence, **kwargs: calls.append(1))
 
     with pytest.raises(VidError) as failure:
         lib.narrate("video.mp4", "a prompt")
@@ -357,7 +357,7 @@ def test_narrate_checks_piper_before_the_first_model_call(monkeypatch):
 def test_narrate_script_only_never_needs_piper(monkeypatch):
     _patch_narrate_prerequisites(monkeypatch, piper_available=False)
     fake_script = SimpleNamespace(to_json=lambda: '{"lines": []}')
-    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence: fake_script)
+    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence, **kwargs: fake_script)
 
     result = lib.narrate("video.mp4", "a prompt", script_only=True)
 
@@ -378,11 +378,11 @@ def test_narrate_cleans_up_intermediates_and_persists_only_the_track(monkeypatch
     monkeypatch.setattr("vid.voice.Speaker", lambda name: object())
 
     fake_script = SimpleNamespace(lines=[], unfitted=list)
-    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence: fake_script)
+    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence, **kwargs: fake_script)
 
     seen_workdir: dict[str, Path] = {}
 
-    def fake_fit(script, speaker, workdir, intelligence):
+    def fake_fit(script, speaker, workdir, intelligence, **kwargs):
         seen_workdir["path"] = Path(workdir)
         assert seen_workdir["path"].is_dir(), "fit must receive a real, existing scoped directory"
         return script
@@ -455,8 +455,8 @@ def test_narrate_with_a_relative_out_path_returns_an_absolute_one_that_was_actua
     monkeypatch.setattr("vid.voice.Speaker", lambda name: object())
 
     fake_script = SimpleNamespace(lines=[], unfitted=list)
-    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence: fake_script)
-    monkeypatch.setattr("vid.narrate.fit", lambda script, speaker, workdir, intelligence: script)
+    monkeypatch.setattr("vid.narrate.write_script", lambda record, prompt, intelligence, **kwargs: fake_script)
+    monkeypatch.setattr("vid.narrate.fit", lambda script, speaker, workdir, intelligence, **kwargs: script)
 
     def fake_assemble(script, out, total):
         # A REAL, decodable silent bed -- built with ffmpeg, not hand-rolled

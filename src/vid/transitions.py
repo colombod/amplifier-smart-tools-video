@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import difflib
 
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: ffmpeg's xfade vocabulary. Checked against `ffmpeg -h filter=xfade`; a build
 #: without one of these fails at render with ffmpeg's own message, which is
@@ -181,7 +181,12 @@ def catalogue() -> str:
     return "\n".join(f"{name}: {FEEL.get(name, 'no description recorded')}" for name in PRESETS)
 
 
-def resolve(text: str, intelligence=None) -> tuple[str, str | None, str | None]:
+def resolve(
+    text: str,
+    intelligence=None,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> tuple[str, str | None, str | None]:
     """A caller's `--transition` value, resolved to a preset.
 
     Returns `(preset, requested, rationale)`. `requested` and `rationale` are None
@@ -210,10 +215,17 @@ def resolve(text: str, intelligence=None) -> tuple[str, str | None, str | None]:
             f"(`vid transitions` lists them), or configure a provider -- `vid check` says how."
         )
 
-    return _select(text, intelligence)
+    return _select(text, intelligence, model=model, reasoning_effort=reasoning_effort)
 
 
-def _select(description: str, intelligence, *, allow_none: bool = False):
+def _select(
+    description: str,
+    intelligence,
+    *,
+    allow_none: bool = False,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+):
     """Ask a model to pick, and refuse anything that is not on the list.
 
     With `allow_none`, the model may report that nothing in the 58 fits -- which
@@ -240,6 +252,8 @@ def _select(description: str, intelligence, *, allow_none: bool = False):
                 else ""
             )
         ),
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
@@ -303,7 +317,12 @@ they CHOOSE between A and B rather than scaling either:
 """
 
 
-def generate(description: str, intelligence) -> tuple[str, str]:
+def generate(
+    description: str,
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> tuple[str, str]:
     """Ask a model to WRITE a transition. Returns `(expression, rationale)`.
 
     Unbounded output, unlike tier 2 -- which is exactly why nothing here trusts
@@ -322,6 +341,8 @@ def generate(description: str, intelligence) -> tuple[str, str]:
             "reasoning on the second line. Nothing else."
         ),
         timeout_seconds=90,
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
@@ -438,6 +459,8 @@ def resolve_with_clips(
     second: str | None,
     duration: float,
     intelligence=None,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
 ) -> tuple[str, str | None, str | None, str | None]:
     """The full ladder. Returns `(preset, requested, rationale, expression)`.
 
@@ -467,7 +490,9 @@ def resolve_with_clips(
             f"(`vid transitions` lists them), or configure a provider -- `vid check` says how."
         )
 
-    choice, requested, rationale = _select(text, intelligence, allow_none=True)
+    choice, requested, rationale = _select(
+        text, intelligence, allow_none=True, model=model, reasoning_effort=reasoning_effort
+    )
     if choice is not None:
         return choice, requested, rationale, None
 
@@ -493,7 +518,7 @@ def resolve_with_clips(
             "-- see `vid check` for the command for your system."
         )
 
-    expression, why = generate(text, intelligence)
+    expression, why = generate(text, intelligence, model=model, reasoning_effort=reasoning_effort)
     passed, detail = probe(expression, first, second, duration)
     if not passed:
         raise VidError(

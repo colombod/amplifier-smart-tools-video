@@ -18,7 +18,7 @@ from pathlib import Path
 from vid.schemas import VidError
 
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OPENAI_MODEL = "tts-1"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 
 #: Which environment variable the implicit "default" profile reads when no
 #: config file exists at all. See `vid.config.provider_profile`.
