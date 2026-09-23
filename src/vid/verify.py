@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import subprocess
 
 from vid.schemas import VidError
@@ -90,6 +91,8 @@ def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
         capture_output=True,
     )
     pixel = result.stdout[:3]
+    if result.returncode != 0:
+        raise VidError(f"ffmpeg frame analysis failed for {path!r}: {result.stderr.decode(errors='replace')}")
     if len(pixel) < 3:
         raise VidError(
             f"There is no frame at {at}s in {path!r}. Check the video's actual duration "
@@ -149,6 +152,8 @@ def check_audio(path: str) -> Check:
         text=True,
     )
     mean = None
+    if result.returncode != 0:
+        raise VidError(f"ffmpeg audio analysis failed for {path!r}: {result.stderr.strip()}")
     for line in result.stderr.splitlines():
         if "mean_volume:" in line:
             mean = float(line.split("mean_volume:")[1].strip().split()[0])
@@ -197,24 +202,75 @@ def check_transition_at(path: str, at: float, window: float = 0.5) -> Check:
     )
 
 
-def check_no_black_frames(path: str, longest: float = 0.5) -> Check:
+def check_no_black_frames(
+    path: str, longest: float = 0.5, pixel_threshold: float = 0.1, frame_threshold: float = 0.98
+) -> Check:
     """Black is how a mis-timed edit usually shows itself."""
+    for name, value in (("pixel_threshold", pixel_threshold), ("frame_threshold", frame_threshold)):
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise VidError(f"{name} must be a finite fraction from 0 to 1.")
+    if not math.isfinite(longest) or longest < 0:
+        raise VidError("longest_black must be finite, nonnegative seconds.")
     result = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", path, "-vf", "blackdetect=d=0.1:pic_th=0.98", "-f", "null", "-"],
+        [
+            "ffmpeg",
+            "-v",
+            "info",
+            "-xerror",
+            "-copyts",
+            "-i",
+            path,
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            f"blackdetect=d=0:pix_th={pixel_threshold}:pic_th={frame_threshold},metadata=print:file=-",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-f",
+            "null",
+            "-",
+        ],
         capture_output=True,
         text=True,
     )
+    frames = [
+        int(line.split("=", 1)[1])
+        for line in result.stdout.splitlines()
+        if line.startswith("frame=") and line.split("=", 1)[1].strip().isdigit()
+    ]
+    if result.returncode != 0 or not frames or max(frames) == 0:
+        raise VidError(
+            f"ffmpeg black-frame analysis failed for {path!r}; no complete measurement. "
+            f"Check the input and run `vid check`.\n{result.stderr.strip()}"
+        )
     worst = 0.0
     for line in result.stderr.splitlines():
         if "black_duration" in line:
             for token in line.split():
                 if token.startswith("black_duration:"):
                     worst = max(worst, float(token.split(":")[1]))
+    # blackdetect logs an open EOF run only through the last frame's PTS,
+    # not its presentation end. Metadata emits black_end only on a real
+    # nonblack frame, so an unmatched start identifies exactly the EOF case.
+    terminal_start = None
+    for line in result.stdout.splitlines():
+        if line.startswith("lavfi.black_start="):
+            terminal_start = float(line.split("=", 1)[1])
+        elif line.startswith("lavfi.black_end="):
+            terminal_start = None
+    if terminal_start is not None:
+        from vid.probe import picture_presentation_bounds
+
+        _, end = picture_presentation_bounds(path)
+        worst = max(worst, end - terminal_start)
     return Check(
         "no-black-frames",
-        worst <= longest,
+        worst <= longest + 1e-9,
         f"none longer than {longest}s",
         f"longest {worst:.2f}s" if worst else "none found",
+        f"pix_th={pixel_threshold:g}, pic_th={frame_threshold:g}, longest_black={longest:g}s",
     )
 
 

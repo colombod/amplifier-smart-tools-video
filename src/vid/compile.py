@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import math
 from pathlib import Path
 import re
 
@@ -429,6 +430,14 @@ class Compiler:
             f"xfade=transition={op.transition}:duration={op.transition_duration}:offset={offset}"
             f"{expr}[{out_v}]"
         )
+        # AAC decode padding is not a transition handle. Bound both sides to
+        # their picture timing before acrossfade, or each join drifts later.
+        self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
+        other_a = self._step(
+            "aresample=async=1:first_pts=0" + self._bound_audio(self.durations.get(self.inputs[-1])),
+            other_a,
+            "a",
+        )
         self.filters.append(f"[{self.audio}][{other_a}]acrossfade=d={op.transition_duration}[{out_a}]")
         self.video, self.audio = out_v, out_a
 
@@ -542,9 +551,18 @@ class Compiler:
         # apad then atrim: pad with silence if the track is short, cut it if
         # long. The result always matches the video, which is the answer every
         # caller wants and the one ffmpeg would otherwise decide by accident.
-        total = self.elapsed or None
-        chain = "apad" + (f",atrim=end={total},asetpts=PTS-STARTPTS" if total else "")
+        chain = self._placed_audio(op.start)
         self.audio = self._step(chain, incoming, "a")
+
+    def _placed_audio(self, start: float) -> str:
+        if not math.isfinite(start) or start < 0:
+            raise VidError("Audio start must be finite, nonnegative seconds.")
+        if not math.isfinite(self.elapsed) or self.elapsed <= 0:
+            raise VidError("Supplied audio needs a known positive video duration. Compile through `vid render`.")
+        return (
+            f"asetpts=PTS-STARTPTS,adelay={min(start, self.elapsed) * 1000:.6f}:all=1"
+            f",apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS"
+        )
 
     def audio_mix(self, op: AudioMix) -> None:
         if self.audio is None:
@@ -553,12 +571,14 @@ class Compiler:
                 "chain took it away. Use `audio replace` to put a track on a silent video."
             )
         incoming = self._extra_audio(op.track)
-        total = self.elapsed or None
         bed = self._step(
-            f"volume={op.level}dB,apad" + (f",atrim=end={total},asetpts=PTS-STARTPTS" if total else ""),
+            f"volume={op.level}dB," + self._placed_audio(op.start),
             incoming,
             "a",
         )
+        # Preserve a delayed source track on the picture timeline. Resetting
+        # STARTPTS here advances its first sample instead of filling the gap.
+        self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
         out = self._next("a")
         # duration=first keeps the result the length of the ORIGINAL audio, so a
         # long music file cannot quietly extend the video.
@@ -654,8 +674,14 @@ def compile_plan(
     has_audio: bool = True,
     frame_rate: float | None = None,
     dimensions: tuple[int, int] | None = None,
+    video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
+    validate_video_codec(plan, output, video_codec)
+    if video_codec == "copy":
+        total = (durations or {}).get(plan.source or "", 0.0)
+        if not math.isfinite(total) or total <= 0:
+            raise VidError("Picture stream-copy needs a known positive video duration. Compile through `vid render`.")
     compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate, dimensions=dimensions)
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
@@ -706,10 +732,13 @@ def compile_plan(
         command += ["-i", source]
     if compiler.filters:
         command += ["-filter_complex", ";".join(compiler.filters)]
+    if compiler.filters or video_codec == "copy":
         command += ["-map", _as_map_target(compiler.video)]
         if compiler.audio is not None:
             command += ["-map", _as_map_target(compiler.audio)]
-    command += ["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    command += ["-c:v", video_codec]
+    if video_codec != "copy":
+        command += ["-preset", "medium", "-pix_fmt", "yuv420p"]
     if compiler.audio is not None:
         command += ["-c:a", "aac"]
         # NO -shortest HERE, and that was learned the hard way. It looked like
@@ -727,3 +756,19 @@ def compile_plan(
         command.append("-an")
     command.append(output)
     return command
+
+
+def validate_video_codec(plan: Plan, output: str, video_codec: str) -> None:
+    """Refuse copy rather than silently discarding a picture edit."""
+    if video_codec not in {"libx264", "copy"}:
+        raise VidError("video_codec must be 'libx264' or 'copy'.")
+    if video_codec != "copy":
+        return
+    if any(not isinstance(op, (AudioRemove, AudioReplace, AudioMix)) for op in plan.operations):
+        raise VidError("Picture stream-copy only supports audio-only plans. Use libx264 for picture or timing edits.")
+    source_suffix = Path(plan.source or "").suffix.lower()
+    if source_suffix not in {".mp4", ".mov"} or Path(output).suffix.lower() != source_suffix:
+        raise VidError(
+            "Picture stream-copy requires the same MP4 or MOV container extension as the source. "
+            "Other containers or conversions are not qualified for packet preservation; use libx264."
+        )

@@ -18,8 +18,13 @@ import typer
 
 from vid import lib
 from vid.plan import read_plan, write_plan
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 from vid.verbdoc import verb_doc
+
+ModelOption = Annotated[str, typer.Option("--model", "--intelligence-model", help="Model for model-backed work.")]
+EffortOption = Annotated[
+    ReasoningEffort, typer.Option("--reasoning-effort", help="Reasoning effort for model-backed work.")
+]
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -140,13 +145,17 @@ def stitch(
     ] = None,
     duration: Annotated[float, typer.Option("--duration", help="Seconds the transition takes.")] = 0.5,
     help: _doc("stitch") = False,
+    model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: EffortOption = "low",
 ) -> None:
     """Join clips, with or without a transition."""
     if "-" in sources:
         plan, rest = read_plan(None), [s for s in sources if s != "-"]
     else:
         plan, rest = None, sources
-    write_plan(lib.stitch(plan, rest, transition=transition, duration=duration))
+    write_plan(
+        lib.stitch(plan, rest, transition=transition, duration=duration, model=model, reasoning_effort=reasoning_effort)
+    )
 
 
 @app.command()
@@ -173,9 +182,12 @@ def render(
         bool, typer.Option("--print-command", help="Print the ffmpeg it would run, and stop.")
     ] = False,
     help: _doc("render") = False,
+    video_codec: Annotated[
+        str, typer.Option("--video-codec", help="libx264 (default), or guarded picture copy.")
+    ] = "libx264",
 ) -> None:
     """Compile the plan and encode, once."""
-    result = lib.render(read_plan(None), output, print_command=print_command)
+    result = lib.render(read_plan(None), output, print_command=print_command, video_codec=video_codec)
     typer.echo(result)
 
 
@@ -187,9 +199,23 @@ def build_index(
     vision: Annotated[bool, typer.Option("--vision", help="Also describe what is SHOWN, one frame per shot.")] = False,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before spending on descriptions.")] = False,
     help: _doc("index") = False,
+    model: Annotated[
+        str, typer.Option("--intelligence-model", help="Model for vision descriptions, NOT Whisper size.")
+    ] = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: EffortOption = "low",
 ) -> None:
     """Build a time-coded account of what is in a video. Reused by every later question."""
-    typer.echo(lib.index(video, speech=speech, model_size=model_size, vision=vision, yes=yes))
+    typer.echo(
+        lib.index(
+            video,
+            speech=speech,
+            model_size=model_size,
+            vision=vision,
+            yes=yes,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+    )
 
 
 @app.command()
@@ -198,9 +224,11 @@ def find(
     video: Annotated[str, typer.Argument(help="The video to search.")],
     show: Annotated[bool, typer.Option("--show", help="Print the hits and their evidence instead of a plan.")] = False,
     help: _doc("find") = False,
+    model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: EffortOption = "low",
 ) -> None:
     """Locate a moment by what was said. Writes a plan trimmed to it."""
-    lib.find(query, video, show=show)
+    lib.find(query, video, show=show, model=model, reasoning_effort=reasoning_effort)
 
 
 audio_app = typer.Typer(
@@ -236,9 +264,12 @@ def audio_replace(
     video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
     with_: Annotated[str, typer.Option("--with", help="The audio file to use instead.")] = ...,
     help: _doc("audio_replace") = False,
+    start: Annotated[
+        float, typer.Option("--start", help="Place the supplied track at this second in the current edit.")
+    ] = 0.0,
 ) -> None:
     """Swap the audio track for another file's. Result is always the video's length."""
-    write_plan(lib.audio_replace(read_plan(video), with_))
+    write_plan(lib.audio_replace(read_plan(video), with_, start=start))
 
 
 @audio_app.command("mix")
@@ -249,9 +280,12 @@ def audio_mix(
         float, typer.Option("--level", help="dB applied to the incoming track. Negative puts it under.")
     ] = -18.0,
     help: _doc("audio_mix") = False,
+    start: Annotated[
+        float, typer.Option("--start", help="Place the supplied track at this second in the current edit.")
+    ] = 0.0,
 ) -> None:
     """Lay another track under the existing audio, keeping both."""
-    write_plan(lib.audio_mix(read_plan(video), with_, level))
+    write_plan(lib.audio_mix(read_plan(video), with_, level, start=start))
 
 
 @audio_app.command("extract")
@@ -289,9 +323,22 @@ def narrate(
         bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")
     ] = None,
     help: _doc("narrate") = False,
+    model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: EffortOption = "low",
 ) -> None:
     """Write a narration, fit it to the timing of the video, and lay it on."""
-    typer.echo(lib.narrate(video, prompt, out=out, script_only=script_only, voice=voice, mix=mix))
+    typer.echo(
+        lib.narrate(
+            video,
+            prompt,
+            out=out,
+            script_only=script_only,
+            voice=voice,
+            mix=mix,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+    )
 
 
 @app.command()
@@ -362,6 +409,10 @@ def verify(
         float, typer.Option("--longest-black", help="Seconds of black that is still acceptable.")
     ] = 0.5,
     help: _doc("verify") = False,
+    pixel_threshold: Annotated[float, typer.Option("--pixel-threshold", help="Black pixel luma fraction, 0..1.")] = 0.1,
+    frame_threshold: Annotated[
+        float, typer.Option("--frame-threshold", help="Fraction of black pixels required, 0..1.")
+    ] = 0.98,
 ) -> None:
     """Check a rendered video against what you expected. No model involved."""
     passed, text = lib.verify(
@@ -373,6 +424,8 @@ def verify(
         expect_transition_at=expect_transition_at,
         expect_no_black_frames=expect_no_black_frames,
         longest_black=longest_black,
+        pixel_threshold=pixel_threshold,
+        frame_threshold=frame_threshold,
     )
     typer.echo(text)
     if not passed:

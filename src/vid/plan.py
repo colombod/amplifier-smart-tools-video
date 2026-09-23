@@ -127,6 +127,7 @@ class AudioReplace(BaseModel):
 
     op: Literal["audio_replace"] = "audio_replace"
     track: str
+    start: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class AudioMix(BaseModel):
@@ -143,6 +144,7 @@ class AudioMix(BaseModel):
     op: Literal["audio_mix"] = "audio_mix"
     track: str
     level: float = -18.0
+    start: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class Recolor(BaseModel):

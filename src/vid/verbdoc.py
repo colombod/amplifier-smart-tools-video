@@ -57,9 +57,8 @@ Timecodes are written the way people write them: `90`, `1:30`, `1:02:03`,
 `1:02:03` or `0:10.5`, and not negative): refused, naming what was found.
 Neither a file argument nor a plan on stdin: refused, naming the fix.
 
-**What it costs.** Nothing here. At `render` time a trim is the cheapest
-operation there is -- and when the cut lands on a keyframe it can be a stream
-copy with no re-encode at all. Cuts between keyframes cost one GOP.
+**What it costs.** Nothing here. At `render` time a trim re-encodes the picture.
+Picture stream-copy is only supported for audio-only plans, not trims.
 """,
     "cut": """# vid cut -- remove a time range
 
@@ -202,6 +201,13 @@ Two things a caller usually finds out the hard way, which this verb handles:
   it and the picture blends over an audio track that hard-cuts.
 - **A transition SHORTENS the result.** The clips overlap by `--duration`, so
   three 3-second clips joined with a 0.8s dissolve give 7.4 seconds, not 9.
+- **Reserve handles on BOTH sides.** The outgoing clip's last `--duration`
+  seconds and the incoming clip's first `--duration` seconds are blended,
+  including their sound. Keep narration outside those handles. For a 0.8s
+  dissolve, place incoming narration with `audio replace --start 0.8` before
+  stitching, and end outgoing speech at least 0.8s before its clip ends.
+  Or stitch picture first, then lay narration on the final timeline; audio
+  added after stitching is not crossfaded.
 
 **Arguments.**
 - `sources` (required, one or more) -- clips in order. `-` stands for the plan
@@ -211,6 +217,9 @@ Two things a caller usually finds out the hard way, which this verb handles:
   matches.
 - `--duration` (optional, default `0.5`) -- seconds the transition takes.
   Ignored when `--transition` is omitted.
+- `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
+  selection AND generation. Named presets do not call it.
+- `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
 
 **Result.** A plan with one more operation, `stitch`, written to stdout.
 
@@ -218,9 +227,8 @@ Two things a caller usually finds out the hard way, which this verb handles:
 that matches none of the 58 presets, and that a model also cannot resolve or
 prove: refused, with the expression it tried if it got that far.
 
-**What it costs.** Joining without a transition can be a stream copy when the
-inputs agree on codec and geometry. A transition cannot -- blending means
-decoding both sides.
+**What it costs.** Stitching re-encodes the picture, with or without a transition.
+Picture stream-copy is reserved for audio-only plans.
 """,
     "caption": """# vid caption -- burn subtitles into the picture
 
@@ -311,12 +319,17 @@ vid audio replace --with music.mp3 < plan.json     # continue a piped plan
 **Arguments.**
 - `video` (optional) -- a file to start a chain, or omit to continue a piped plan.
 - `--with` (required) -- the audio file to use instead.
+- `--start` (default `0.0`) -- finite, nonnegative seconds into the current
+  edit to start the supplied track, not a seek into the track. Silence before
+  it; an offset at or beyond the end produces silence.
 
 **Result.** A plan with one more operation, `audio_replace`, written to stdout.
 
 **The length question, answered rather than inherited.** The result is always
 the length of the video: a shorter `--with` track is padded with silence, a
 longer one is truncated. A long music file cannot quietly extend your video.
+Later trims, retimes and stitches move this audio with the picture.
+For incoming and outgoing transition handles, see `vid stitch --help`.
 
 **Failures.** `--with` omitted: Typer refuses before this tool sees the call
 (exit 2). Neither a file argument nor a plan on stdin: refused, naming the fix.
@@ -334,6 +347,9 @@ vid audio mix talk.mp4 --with music.mp3 --level -12    # louder bed
 **Arguments.**
 - `video` (optional) -- a file to start a chain, or omit to continue a piped plan.
 - `--with` (required) -- the track to lay underneath.
+- `--start` (default `0.0`) -- finite, nonnegative seconds into the current
+  edit to start the supplied track, not a seek into it. The original audio
+  continues before this time. At or beyond the end, the supplied track is inaudible.
 - `--level` (default `-18.0`) -- dB applied to the **incoming** track only, and
   negative in normal use. Your existing audio is untouched, so you adjust one
   thing rather than balancing two. There is **no automatic ducking**: a flat
@@ -343,6 +359,8 @@ vid audio mix talk.mp4 --with music.mp3 --level -12    # louder bed
 **Result.** A plan with one more operation, `audio_mix`, written to stdout. Its
 length is always the video's -- a shorter `--with` track is padded with
 silence, a longer one is truncated.
+Later edits move it with the picture. To avoid fading narration in a transition,
+reserve incoming AND outgoing handles (see `vid stitch --help`), or mix after stitching.
 
 **Failures.** `--with` omitted: Typer refuses before this tool sees the call
 (exit 2). `mix` after `remove` earlier in the same chain: refused **at
@@ -400,6 +418,13 @@ argument, never a piped continuation, and the result is a human-readable report
 - `--mix` / `--replace` (optional, default none) -- force laying the narration
   over the original audio, or in place of it. Omit to decide from whether the
   video already has speech.
+- `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
+  script writing and every shortening retry, not the speech synthesiser.
+- `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
+
+OpenAI speech, only when explicitly selected, defaults to `gpt-4o-mini-tts`.
+A profile's explicit `model` still wins. Piper remains the local default;
+missing Piper never triggers a paid fallback.
 
 **Result.** With `--script-only`, the script as JSON. With `--out`, the
 rendered video at that path. Otherwise, a human-readable report naming the
@@ -676,6 +701,11 @@ vid trim in.mp4 --to 0:05 | vid render out.mp4 && vid verify out.mp4 --expect-du
   stretches.
 - `--longest-black` (optional, default `0.5`) -- seconds of black that is still
   acceptable. Ignored unless `--expect-no-black-frames` is given.
+- `--pixel-threshold` (default `0.1`) -- black pixel luma threshold as a
+  fraction `0..1` of the pixel range (ffmpeg `pix_th`).
+- `--frame-threshold` (default `0.98`) -- fraction `0..1` of pixels that must
+  be black to classify a frame (ffmpeg `pic_th`). Both thresholds are ignored
+  without `--expect-no-black-frames` and included in its measurement report.
 
 **Result.** A text report, one line per property checked, each showing the
 measured value beside the expected one.
@@ -684,6 +714,9 @@ measured value beside the expected one.
 at least one). ffmpeg missing: refused, naming the fix (`vid check`). Any
 checked property violated: reported in the text, and the exit code is
 non-zero.
+Failed analysis, decode errors, or no decoded video frames are errors, never
+"none found". Dark slides can be intentional: lower the pixel threshold or
+raise the required coverage explicitly; this is detection, not a content judgment.
 
 ## How the transition check works, since it is the interesting one
 
@@ -767,6 +800,10 @@ model only says what a frame shows. A time is a lookup, never a guess.
   frame per shot.
 - `--yes` (optional, default `False`) -- do not ask before spending on
   descriptions.
+- `--intelligence-model` (default `gpt-6-astra`) -- vision description model.
+  This does NOT change `--model`, which remains Whisper size.
+- `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`,
+  for vision descriptions only. Existing descriptions are reused, not regenerated.
 
 **Result.** A text report: duration, fingerprint, shot count, speech passage
 count, and where the index is stored.
@@ -792,8 +829,8 @@ vid find "pricing" talk.mp4 --show                 # the hits, with their eviden
 vid find "pricing" talk.mp4 | vid render clip.mp4  # cut straight to it
 ```
 
-Searches the index and returns a **time range grounded in the transcript**, with
-the passage that produced it. By default it writes a plan trimmed to that range,
+Searches the index and returns a **time range grounded in indexed evidence**, with
+the passage or shot description that produced it. By default it writes a plan trimmed to that range,
 so it composes with everything else.
 
 **This verb never reads a plan from stdin** -- `video` is always a required
@@ -805,6 +842,11 @@ instead, and writes no plan at all.
 - **literal** -- the words appear in the transcript. No model, no provider,
   $0.00. Tried first, so a caller who knows what was said never pays for a model.
 - **described** -- a phrase a model matches to passages. Needs a provider.
+
+Literal speech is tried first, then literal shot descriptions from `index --vision`
+(labelled `seen`). Semantic matching uses speech when available, otherwise shot
+descriptions; it does not search both semantically or inspect new frames. Speech
+ids (`c0`) and shot ids (`s0`) are checked against the supplied index.
 
 A literal hit must carry **at least half** your query's meaningful words. Below
 that it escalates rather than answering: matching one incidental word and
@@ -830,6 +872,9 @@ cannot check.
 - `video` (required) -- the video to search. Always a file, never a piped plan.
 - `--show` (optional, default `False`) -- print the hits and their evidence
   instead of writing a plan.
+- `--model` / `--intelligence-model` (default `gpt-6-astra`) -- semantic
+  matching model. Literal speech and vision-description hits do not call it.
+- `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
 
 **Result.** Without `--show`, a plan trimmed to the best hit, written to
 stdout. With `--show`, the hits and their evidence as text; no plan is
@@ -852,24 +897,32 @@ operations costs one decode and one encode -- not five of each, which is what
 naively shelling out per operation would cost.
 
 **`--print-command` is the honest window.** It prints the exact invocation and
-runs nothing. Use it to check what an edit will actually do, to learn the ffmpeg
+does not render (it may probe inputs). Use it to check what an edit will actually do, to learn the ffmpeg
 behind a verb, or to hand the command to something else entirely. A tool you
 cannot see through is a tool you cannot debug.
 
 **Arguments.**
 - `output` (required) -- where to write the finished video.
 - `--print-command` (optional, default `False`) -- print the ffmpeg
-  invocation and stop; runs nothing.
+  invocation and stop; does not render, but may probe inputs.
+- `--video-codec` (default `libx264`) -- `libx264` re-encodes; `copy` preserves
+  picture packets for audio-only plans (remove, replace, mix, or no operations).
+  Copy rejects ALL picture/timing operations, even a no-op trim. Copy requires
+  exactly one zero-start picture stream with a known positive duration and the same MP4
+  or MOV extension on input and output. Other containers are not qualified.
+  Supplied audio is encoded to AAC and padded/trimmed to the picture duration; no
+  shortest-stream truncation. The output container may differ slightly in
+  duration due to AAC framing; picture packets and their duration are not cut.
 
 **Result.** With `--print-command`, the ffmpeg command line, printed, and
-nothing run. Otherwise, `output` is written and its path is printed.
+no render performed. Otherwise, `output` is written and its path is printed.
 
 **Failures.** No plan on stdin: refused, naming the fix. ffmpeg missing from
 PATH (unless `--print-command`): refused, naming the fix (`vid check`).
 ffmpeg's own failure: refused, showing its last lines of output.
 
-**What it needs.** ffmpeg on PATH -- and only here. Every other verb runs
-without it. `--print-command` needs nothing at all.
+**What it needs.** ffmpeg on PATH to render, ffprobe when input timing or
+geometry is needed (including picture copy and supplied audio).
 """,
     "plan": """# vid plan -- show the edit, without performing it
 

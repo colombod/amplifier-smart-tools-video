@@ -9,12 +9,13 @@ writing the result back out; a Python caller does the same work by building or
 receiving a `Plan` directly and calling these functions with no CLI involved.
 """
 
+import math
 from pathlib import Path
 
 from vid.core import manifest
 from vid.core import skill as skill_module
 from vid.plan import Plan
-from vid.schemas import Manifest, VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, Manifest, ReasoningEffort, VidError
 
 
 def load_manifest() -> Manifest:
@@ -42,7 +43,7 @@ def repository_url() -> str | None:
     return skill_module.repository_url()
 
 
-def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
+def render(plan: Plan, output: str, *, print_command: bool = False, video_codec: str = "libx264") -> str:
     """Compile a plan and run it, or show what would run.
 
     Probing happens here rather than in the compiler: durations are a property of
@@ -51,10 +52,12 @@ def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     """
     import subprocess
 
-    from vid.compile import compile_plan
+    from vid.compile import compile_plan, validate_video_codec
     from vid.plan import AudioMix, AudioReplace, Stitch, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import dimensions, duration, frame_rate, has_audio, have_ffmpeg
+    from vid.probe import dimensions, frame_rate, has_audio, have_ffmpeg, video_duration
+
+    validate_video_codec(plan, output, video_codec)
 
     # Retime needs the source duration too: without it the audio cannot be
     # bounded to the length the edit means, and atempo's rounding decides the
@@ -70,7 +73,11 @@ def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     durations: dict[str, float] = {}
     if needs_durations:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
-        durations = {path: duration(path) for path in dict.fromkeys(p for p in paths if p and p != "-")}
+        durations = {path: video_duration(path) for path in dict.fromkeys(p for p in paths if p and p != "-")}
+    if video_codec == "copy" and plan.source:
+        from vid.probe import copy_video_duration
+
+        durations[plan.source] = copy_video_duration(plan.source)
 
     # Probed here beside the durations, and for the same reason: whether a file
     # has sound is a property of the FILE, not of the plan, and keeping that out
@@ -93,7 +100,13 @@ def render(plan: Plan, output: str, *, print_command: bool = False) -> str:
     # track already report an absolute path.
     resolved_output = str(Path(output).resolve())
     command = compile_plan(
-        plan, resolved_output, durations=durations, has_audio=source_has_audio, frame_rate=rate, dimensions=dims
+        plan,
+        resolved_output,
+        durations=durations,
+        has_audio=source_has_audio,
+        frame_rate=rate,
+        dimensions=dims,
+        video_codec=video_codec,
     )
 
     if print_command:
@@ -277,6 +290,8 @@ def resolve_transition(
     first: str | None = None,
     second: str | None = None,
     duration: float = 0.5,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
 ) -> tuple[str, str | None, str | None, str | None]:
     """A `--transition` value, resolved to something ffmpeg can actually run.
 
@@ -301,7 +316,9 @@ def resolve_transition(
             # Left as None so the resolver can explain the situation properly --
             # it knows whether a model was needed, and this does not.
             intelligence = None
-    return resolve_with_clips(text, first, second, duration, intelligence)
+    return resolve_with_clips(
+        text, first, second, duration, intelligence, model=model, reasoning_effort=reasoning_effort
+    )
 
 
 def verify(
@@ -314,6 +331,8 @@ def verify(
     expect_transition_at: float | None = None,
     expect_no_black_frames: bool = False,
     longest_black: float = 0.5,
+    pixel_threshold: float = 0.1,
+    frame_threshold: float = 0.98,
 ) -> tuple[bool, str]:
     """Check a rendered video against named properties. Returns `(passed, report)`.
 
@@ -340,7 +359,7 @@ def verify(
     if expect_transition_at is not None:
         results.append(checks.check_transition_at(video, expect_transition_at))
     if expect_no_black_frames:
-        results.append(checks.check_no_black_frames(video, longest_black))
+        results.append(checks.check_no_black_frames(video, longest_black, pixel_threshold, frame_threshold))
 
     text, passed = checks.report(results)
     return passed, text
@@ -353,6 +372,8 @@ def index(
     model_size: str = "base",
     vision: bool = False,
     yes: bool = False,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Build (or extend) a video's index and report what it holds."""
     import json
@@ -414,7 +435,7 @@ def index(
         if not _confirm_before_spending(notice, yes):
             return "Nothing described. The index is unchanged."
 
-        record = describe(video, record, intelligence)
+        record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
         index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
 
     return _index_report(video, record)
@@ -482,7 +503,14 @@ def _no_match_message(video: str, query: str, *, spoke: bool, shown: bool, has_s
     return f"{base} Try words closer to what was actually said or shown."
 
 
-def find(query: str, video: str, *, show: bool = False) -> None:
+def find(
+    query: str,
+    video: str,
+    *,
+    show: bool = False,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> None:
     """Locate a moment, and either describe it or emit a plan trimmed to it."""
     import sys
 
@@ -510,7 +538,7 @@ def find(query: str, video: str, *, show: bool = False) -> None:
 
     speech_chunks = chunks_of(record)
     seen_chunks = visual_chunks(record)
-    hits = search(speech_chunks, query, intelligence, seen=seen_chunks)
+    hits = search(speech_chunks, query, intelligence, seen=seen_chunks, model=model, reasoning_effort=reasoning_effort)
     if not hits:
         raise VidError(
             _no_match_message(
@@ -575,18 +603,25 @@ def audio_remove(plan: Plan) -> Plan:
     return plan.with_operation(AudioRemove())
 
 
-def audio_replace(plan: Plan, track: str) -> Plan:
+def audio_replace(plan: Plan, track: str, start: float = 0.0) -> Plan:
     """Swap the audio track for another file's. Result is always the video's length."""
     from vid.plan import AudioReplace
 
-    return plan.with_operation(AudioReplace(track=track))
+    _validate_audio_start(start)
+    return plan.with_operation(AudioReplace(track=track, start=start))
 
 
-def audio_mix(plan: Plan, track: str, level: float = -18.0) -> Plan:
+def audio_mix(plan: Plan, track: str, level: float = -18.0, start: float = 0.0) -> Plan:
     """Lay another track under the existing audio, keeping both."""
     from vid.plan import AudioMix
 
-    return plan.with_operation(AudioMix(track=track, level=level))
+    _validate_audio_start(start)
+    return plan.with_operation(AudioMix(track=track, level=level, start=start))
+
+
+def _validate_audio_start(start: float) -> None:
+    if not math.isfinite(start) or start < 0:
+        raise VidError("Audio start must be finite, nonnegative seconds.")
 
 
 def narrate(
@@ -597,6 +632,8 @@ def narrate(
     script_only: bool = False,
     voice: str | None = None,
     mix: bool | None = None,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Write a narration for a video, fit it to the timing, and lay it on.
 
@@ -657,7 +694,7 @@ def narrate(
     if intelligence is None:
         raise VidError("Writing a narration needs a model, and none is configured. `vid check` says how.")
 
-    script = write_script(record, prompt, intelligence)
+    script = write_script(record, prompt, intelligence, model=model, reasoning_effort=reasoning_effort)
     if script_only:
         return script.to_json()
 
@@ -670,7 +707,7 @@ def narrate(
     # `tempfile.mkdtemp` would.
     with tempfile.TemporaryDirectory(prefix="vid-narrate-") as work:
         workdir = Path(work)
-        fit(script, speaker, workdir, intelligence)
+        fit(script, speaker, workdir, intelligence, model=model, reasoning_effort=reasoning_effort)
         temp_track = assemble(script, workdir / "narration.wav", total)
 
         report = [f"narration for {video}", ""]
@@ -836,7 +873,15 @@ def zoom(plan: Plan, to: float = 1.3, at: str | None = None, duration: float = 3
     return plan.with_operation(Zoom(to=to, at=parse_timecode(at) if at else None, duration=duration))
 
 
-def stitch(plan: Plan | None, sources: list[str], *, transition: str | None = None, duration: float = 0.5) -> Plan:
+def stitch(
+    plan: Plan | None,
+    sources: list[str],
+    *,
+    transition: str | None = None,
+    duration: float = 0.5,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> Plan:
     """Join clips onto `plan`, with or without a transition.
 
     Pass an existing `Plan` (continuing a pipe, or one built by another call
@@ -860,7 +905,9 @@ def stitch(plan: Plan | None, sources: list[str], *, transition: str | None = No
         # against the pair it will actually join. Tier 1 and tier 2 ignore them.
         first = plan.source if plan.source else (rest[0] if rest else None)
         second = rest[0] if rest else None
-        preset, requested, rationale, expression = resolve_transition(transition, first, second, duration)
+        preset, requested, rationale, expression = resolve_transition(
+            transition, first, second, duration, model=model, reasoning_effort=reasoning_effort
+        )
 
     return plan.with_operation(
         Stitch(

@@ -292,6 +292,38 @@ def test_openai_backend_clamps_an_out_of_range_rate_rather_than_erroring(monkeyp
     assert seen_speed["value"] == OPENAI_SPEED_RANGE[1]
 
 
+@pytest.mark.parametrize("explicit_model", [None, "my-explicit-speech-model"])
+def test_openai_tts_default_and_explicit_profile_reach_transport(monkeypatch, tmp_path, explicit_model):
+    pytest.importorskip("openai")
+    import types
+
+    from vid.speech.openai_tts import OpenAIBackend
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[providers.openai.default]\napi_key_env = "VID_TEST_KEY"\n'
+        + (f'model = "{explicit_model}"\n' if explicit_model else ""),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VID_CONFIG", str(config))
+    monkeypatch.setenv("VID_TEST_KEY", "never-sent")
+    seen = {}
+
+    def create(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("transport boundary; no network")
+
+    backend = OpenAIBackend("alloy", "default")
+    monkeypatch.setattr(
+        backend,
+        "_client",
+        lambda: types.SimpleNamespace(audio=types.SimpleNamespace(speech=types.SimpleNamespace(create=create))),
+    )
+    with pytest.raises(RuntimeError, match="transport boundary"):
+        backend.say("supplied words", tmp_path / "out.wav")
+    assert seen["model"] == (explicit_model or "gpt-4o-mini-tts")
+
+
 # ---------------------------------------------------------------------------
 # 7 & 8. Replay harness against a committed, recorded fixture -- and a
 # staleness check that is inert until one exists.

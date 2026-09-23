@@ -23,7 +23,7 @@ from pathlib import Path
 import subprocess
 
 from vid.probe import have_ffmpeg, have_ffprobe
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 INDEX_FORMAT = 1
 
@@ -224,7 +224,13 @@ def transcribe(video: str, model_size: str = "base") -> list[Chunk]:
     ]
 
 
-def describe(video: str, record: dict, intelligence) -> dict:
+def describe(
+    video: str,
+    record: dict,
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> dict:
     """Add a description to every shot that does not have one.
 
     Descriptions live ON the shots, beside time ranges ffmpeg already produced.
@@ -244,7 +250,7 @@ def describe(video: str, record: dict, intelligence) -> dict:
     if not pending:
         return record
 
-    described = describe_shots(video, pending, intelligence)
+    described = describe_shots(video, pending, intelligence, model=model, reasoning_effort=reasoning_effort)
     by_id = {item.shot_id: item.description for item in described}
     missing = [shot["id"] for shot in pending if shot["id"] not in by_id]
     if missing:

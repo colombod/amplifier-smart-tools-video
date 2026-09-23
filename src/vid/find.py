@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import re
 
 from vid.index import Chunk
-from vid.schemas import VidError
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: Words too common to carry meaning in a search. Kept small on purpose -- an
 #: aggressive stop list silently drops the one word that mattered.
@@ -190,7 +190,13 @@ def _merge(chunks: list[Chunk], *, how: str, rationale: str | None = None) -> Hi
     )
 
 
-def find_described(chunks: list[Chunk], description: str, intelligence) -> list[Hit]:
+def find_described(
+    chunks: list[Chunk],
+    description: str,
+    intelligence,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> list[Hit]:
     """Ask a model WHICH CHUNKS, never WHEN.
 
     The reply is a list of ids. Any id not in the index is refused rather than
@@ -203,7 +209,7 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
     reply = ask(
         intelligence,
         (
-            "Below are numbered passages from a video's transcript. Identify which "
+            "Below are indexed transcript passages or shot descriptions from a video. Identify which "
             "passages match the request.\n\n"
             f"REQUEST: {description}\n\n"
             f"PASSAGES:\n{listing}\n\n"
@@ -211,6 +217,8 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
             "one short sentence of reasoning on the second. Nothing else. Use only "
             "ids from the list above. If nothing matches, reply NONE."
         ),
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
 
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
@@ -220,11 +228,11 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
         return []
 
     known = {chunk.id: chunk for chunk in chunks}
-    wanted = re.findall(r"\bc\d+\b", first)
+    wanted = re.findall(r"\b[cs]\d+\b", first)
     if not wanted:
         raise VidError(
             f"The model answered {first!r}, which contains no passage ids. Expected ids like "
-            "`c3 c4`. Retry the search, possibly with a more specific description."
+            "`c3 c4` for speech or `s3 s4` for shots. Retry the search."
         )
 
     unknown = [i for i in wanted if i not in known]
@@ -233,13 +241,20 @@ def find_described(chunks: list[Chunk], description: str, intelligence) -> list[
         # than silently becoming a time.
         raise VidError(
             f"The model named passages that are not in this video's index: {', '.join(unknown)}. "
-            f"The index has {len(known)} passages, c0 to c{len(known) - 1}. "
+            f"The supplied ids are: {', '.join(known)}. "
             "Refusing rather than guessing what it meant -- retry the search."
         )
     return [_merge([known[i] for i in wanted], how="described", rationale=rationale)]
 
 
-def find(chunks: list[Chunk], query: str, intelligence=None, seen: list[Chunk] | None = None) -> list[Hit]:
+def find(
+    chunks: list[Chunk],
+    query: str,
+    intelligence=None,
+    seen: list[Chunk] | None = None,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> list[Hit]:
     """Literal first, then what was seen, then a model if one is available.
 
     SPEECH BEFORE VISION, on purpose. A transcript says what was actually meant;
@@ -283,4 +298,4 @@ def find(chunks: list[Chunk], query: str, intelligence=None, seen: list[Chunk] |
             "by meaning needs a model that is not configured. Either search for words the "
             "speaker actually used, or configure a provider -- `vid check` says how."
         )
-    return find_described(chunks or seen, query, intelligence)
+    return find_described(chunks or seen, query, intelligence, model=model, reasoning_effort=reasoning_effort)

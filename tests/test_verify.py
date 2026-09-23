@@ -162,3 +162,167 @@ def test_an_unreadable_path_names_the_remedy_not_just_the_raw_stderr(tmp_path):
     message = str(failure.value)
     assert "ffprobe could not read" in message
     assert "vid check" in message, "the failure must name a remedy, not only report the raw stderr"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["color=c=0x181818:s=160x90:d=1", "color=c=black:s=160x100:d=1,drawbox=x=0:y=0:w=16:h=100:color=white:t=fill"],
+)
+def test_black_thresholds_change_real_measurements_and_are_reported(source, tmp_path):
+    from vid import lib
+
+    path = str(tmp_path / "dark.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source, path], check=True, capture_output=True)
+    if "drawbox" in source:
+        assert checks.check_no_black_frames(path).held
+        options = {"frame_threshold": 0.85}
+        assert not checks.check_no_black_frames(path, **options).held
+    else:
+        assert not checks.check_no_black_frames(path).held
+        options = {"pixel_threshold": 0.02}
+        assert checks.check_no_black_frames(path, **options).held
+    _, report = lib.verify(
+        path,
+        expect_no_black_frames=True,
+        pixel_threshold=options.get("pixel_threshold", 0.1),
+        frame_threshold=options.get("frame_threshold", 0.98),
+    )
+    assert "pix_th=" in report
+    assert "pic_th=" in report
+    assert "longest_black=0.5s" in report
+
+
+def test_black_analysis_failure_never_passes_even_with_partial_measurements(monkeypatch):
+    for code, stdout in [(1, "frame=20\n"), (0, "frame=0\n"), (0, "")]:
+        monkeypatch.setattr(
+            checks.subprocess,
+            "run",
+            lambda *args, code=code, stdout=stdout, **kwargs: subprocess.CompletedProcess(
+                args[0], code, stdout=stdout, stderr="black_duration:0.0\nbad decode"
+            ),
+        )
+        with pytest.raises(VidError, match="analysis failed"):
+            checks.check_no_black_frames("damaged.mp4")
+
+
+@pytest.mark.parametrize("name", ["pixel_threshold", "frame_threshold", "longest"])
+@pytest.mark.parametrize("value", [-0.01, float("inf"), float("nan")])
+def test_black_thresholds_reject_invalid_numbers(name, value):
+    with pytest.raises(VidError, match="finite"):
+        checks.check_no_black_frames("unused.mp4", **{name: value})
+
+
+@pytest.mark.parametrize("name", ["pixel_threshold", "frame_threshold"])
+def test_black_thresholds_reject_fractions_above_one(name):
+    with pytest.raises(VidError, match="fraction"):
+        checks.check_no_black_frames("unused.mp4", **{name: 1.01})
+
+
+def test_missing_or_nonvideo_input_is_not_a_black_detection_pass(tmp_path):
+    for path in [tmp_path / "missing.mp4", REPO / "tests" / "fixtures" / "undecodable.mp4"]:
+        with pytest.raises(VidError, match="analysis failed"):
+            checks.check_no_black_frames(str(path))
+    audio = str(tmp_path / "audio.wav")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=duration=0.2", audio],
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(VidError, match="analysis failed"):
+        checks.check_no_black_frames(audio)
+
+
+def test_verify_cli_forwards_thresholds(monkeypatch):
+    from typer.testing import CliRunner
+
+    from vid import lib
+    from vid.cli import app
+
+    seen = {}
+
+    def verify(video, **kwargs):
+        seen.update(kwargs)
+        return False, "threshold measurement"
+
+    monkeypatch.setattr(lib, "verify", verify)
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "a.mp4",
+            "--expect-no-black-frames",
+            "--pixel-threshold",
+            "0.02",
+            "--frame-threshold",
+            "0.9",
+            "--longest-black",
+            "0.3",
+        ],
+    )
+    assert result.exit_code == 1
+    assert seen["pixel_threshold"] == 0.02
+    assert seen["frame_threshold"] == 0.9
+    assert seen["longest_black"] == 0.3
+
+
+@pytest.mark.parametrize("prefix", [0, 0.2])
+@pytest.mark.parametrize("black_length", [0.04, 0.12])
+def test_terminal_black_run_includes_last_frame_duration(tmp_path, prefix, black_length):
+    path = str(tmp_path / "terminal.mp4")
+    source = f"color=c=black:s=96x64:r=25:d={prefix + black_length}"
+    if prefix:
+        source += f",drawbox=color=white:t=fill:enable='lt(t,{prefix})'"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source, path],
+        check=True,
+        capture_output=True,
+    )
+    result = checks.check_no_black_frames(path, longest=0)
+    assert not result.held
+    assert result.measured == f"longest {black_length:.2f}s"
+    assert not checks.check_no_black_frames(path, longest=black_length - 0.01).held
+    assert checks.check_no_black_frames(path, longest=black_length + 0.001).held
+
+
+def test_closed_black_run_does_not_include_following_nonblack_frame(tmp_path):
+    path = str(tmp_path / "closed.mp4")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=96x64:r=25:d=0.12,drawbox=color=white:t=fill:enable='gte(t,0.04)'",
+            path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    result = checks.check_no_black_frames(path, longest=0.04)
+    assert result.held
+    assert result.measured == "longest 0.04s"
+
+
+def test_terminal_black_measurement_uses_same_timestamp_origin(tmp_path):
+    path = str(tmp_path / "shifted.mp4")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=96x64:r=25:d=0.04",
+            "-output_ts_offset",
+            "2",
+            path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    result = checks.check_no_black_frames(path, longest=0.05)
+    assert result.held
+    assert result.measured == "longest 0.04s"

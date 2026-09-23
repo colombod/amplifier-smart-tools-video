@@ -1,4 +1,14 @@
-def ask(intelligence, prompt: str, *, timeout_seconds: int = 60) -> str:
+from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
+
+
+def ask(
+    intelligence,
+    prompt: str,
+    *,
+    timeout_seconds: int = 60,
+    model: str = DEFAULT_INTELLIGENCE_MODEL,
+    reasoning_effort: ReasoningEffort = "low",
+) -> str:
     """Run one prompt and return the agent's text, or raise with the reason.
 
     THIS EXISTS BECAUSE THE CONTRACT WAS GUESSED AT TWICE. Both `find` and
@@ -13,12 +23,12 @@ def ask(intelligence, prompt: str, *, timeout_seconds: int = 60) -> str:
     the real SDK.
     """
     from vid.intelligence.schemas import AgentRequest
-    from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, VidError
 
     result = intelligence.run(
         AgentRequest(
             prompt=prompt,
-            model=DEFAULT_INTELLIGENCE_MODEL,
+            model=model,
+            reasoning_effort=reasoning_effort,
             timeout_seconds=timeout_seconds,
         )
     )
