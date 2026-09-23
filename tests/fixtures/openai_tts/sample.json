@@ -1,0 +1,8 @@
+{
+  "model": "tts-1",
+  "voice": "alloy",
+  "speed": 1.0,
+  "text": "This is a recorded fixture for vid's OpenAI speech backend.",
+  "openai_sdk_version": "3.18.0",
+  "recorded_at": "2026-09-23T01:24:50.038684+00:00"
+}

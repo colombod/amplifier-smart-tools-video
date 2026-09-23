@@ -16,6 +16,57 @@ Prerequisites:
 uv tool install git+https://github.com/colombod/amplifier-smart-tools-video
 ```
 
+With the optional extras:
+
+```bash
+uv tool install 'vid[all] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+```
+
+`all` is all three below. Run `vid check` to see which are present and
+configured on your machine.
+
+### speech
+
+Local transcription, so `index --speech` can build timed passages and `find`
+can search what was *said*. Runs on your machine; nothing is uploaded.
+
+```bash
+uv tool install 'vid[speech] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+```
+
+### voice
+
+Local speech for `narrate`, via piper. **This is the default**, it runs on your
+machine, and the voice model is fetched once, anonymously.
+
+```bash
+uv tool install 'vid[voice] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+```
+
+### voice-openai
+
+An **alternative** to `voice`: speaks `narrate` through OpenAI's TTS API. It
+**sends the narration text over the network and costs money**, so it is used
+only when you ask for it by name with `--voice openai:<voice>` — piper being
+missing never silently falls back to it.
+
+```bash
+uv tool install 'vid[voice-openai] @ git+https://github.com/colombod/amplifier-smart-tools-video'
+```
+
+It also needs an API key. Name the environment *variable* holding it, per
+profile, in `$XDG_CONFIG_HOME/vid/config.toml` — so several keys can coexist
+without renaming any of them:
+
+```toml
+[providers.openai.work]
+api_key_env = "WORK_OPENAI_KEY"
+```
+
+Then `--voice openai:alloy@work`. With no config file at all, `OPENAI_API_KEY`
+is used. The file never holds a key itself, only the name of the variable to
+read, so it stays safe to share or commit.
+
 To use it as a library:
 
 ```bash

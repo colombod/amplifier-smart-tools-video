@@ -195,6 +195,42 @@ def check() -> str:
             ),
         ]
 
+    # THE OPENAI SPEECH BACKEND, an ALTERNATIVE to piper for `narrate --voice
+    # openai:<voice>`. Reported the same way as the provider section below:
+    # whether the package is there, which profile would be used, which
+    # environment variable it reads, and whether that variable is set --
+    # never the key itself.
+    lines.append("")
+    if importlib.util.find_spec("openai") is not None:
+        lines.append("  [ok]      openai package  installed (unlocks --voice openai:<voice>)")
+    else:
+        lines += [
+            "  [missing] openai package",
+            "            Unlocks: --voice openai:<voice> -- narrate through OpenAI's TTS",
+            "            instead of piper. Used ONLY when named explicitly; piper being",
+            "            unavailable never falls back to it.",
+            (
+                "            uv tool install --force 'vid[voice-openai] @ "
+                "git+https://github.com/colombod/amplifier-smart-tools-video'"
+            ),
+        ]
+
+    from vid.config import provider_profile
+    from vid.speech.openai_tts import DEFAULT_API_KEY_ENV
+
+    try:
+        section = provider_profile("openai", "default", default_env_var=DEFAULT_API_KEY_ENV)
+    except VidError as error:
+        lines.append(f"  [warn]    openai config   {error}")
+    else:
+        import os
+
+        env_var = section["api_key_env"]
+        if os.environ.get(env_var):
+            lines.append(f"  [ok]      openai key      {env_var} is set (profile 'default')")
+        else:
+            lines.append(f"  [missing] openai key      {env_var} is not set (profile 'default')")
+
     # THE PROVIDER SECTION, which was missing and produced a dead pointer.
     # The tier-2 refusal tells a caller "configure a provider -- `vid check`
     # says how", and until a DTU run put a stranger in front of it, `check`
@@ -227,7 +263,12 @@ def check() -> str:
             "            then: gh auth login",
         ]
 
-    lines += ["", "  Nothing here is sent anywhere. This is a report on your machine."]
+    lines += [
+        "",
+        "  `vid check` itself sends nothing -- this is a report on your machine. Piper",
+        "  narration runs entirely locally. `--voice openai:<voice>` is the one exception:",
+        "  it sends the narration TEXT (never a key) to OpenAI over the network.",
+    ]
     return "\n".join(lines)
 
 
@@ -537,8 +578,7 @@ def narrate(
 
     from vid.index import fingerprint, load
     from vid.narrate import assemble, fit, write_script
-    from vid.voice import DEFAULT_VOICE, INSTALL_HINT, Speaker
-    from vid.voice import available as voice_available
+    from vid.speech.interface import resolve_speech, speech_preflight
 
     record = load(video)
     if record is None:
@@ -547,12 +587,13 @@ def narrate(
             f"actually in the video. Run `vid index {video}` first."
         )
 
-    # CHECK FIRST, WORK SECOND. Synthesis needs Piper, and this used to be
-    # discovered only after `write_script` had already spent a model call --
-    # the missing prerequisite was found on the far side of a bill. `--script-
-    # only` never touches Piper at all, so it is exempt from this preflight.
-    if not script_only and not voice_available():
-        raise VidError(INSTALL_HINT)
+    # CHECK FIRST, WORK SECOND. Synthesis needs a speech backend, and this
+    # used to be discovered only after `write_script` had already spent a
+    # model call -- the missing prerequisite was found on the far side of a
+    # bill. `--script-only` never touches a speech backend at all, so it is
+    # exempt from this preflight.
+    if not script_only:
+        speech_preflight(voice)
 
     intelligence = None
     try:
@@ -569,7 +610,7 @@ def narrate(
     if script_only:
         return script.to_json()
 
-    speaker = Speaker(voice or DEFAULT_VOICE)
+    speaker = resolve_speech(voice)
     total = record.get("duration", 0.0)
 
     # SCOPED, LIKE VISION'S FRAME EXTRACTION. Every intermediate WAV -- one per

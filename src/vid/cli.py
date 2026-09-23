@@ -274,7 +274,17 @@ def narrate(
     script_only: Annotated[
         bool, typer.Option("--script-only", help="Print the script as JSON; synthesise nothing.")
     ] = False,
-    voice: Annotated[str | None, typer.Option("--voice", help="Voice model name.")] = None,
+    voice: Annotated[
+        str | None,
+        typer.Option(
+            "--voice",
+            help=(
+                "A piper voice model name (default, local, free), or 'openai:<voice>[@profile]' "
+                "to use OpenAI's TTS instead -- needs a key configured and sends narration "
+                "text to OpenAI."
+            ),
+        ),
+    ] = None,
     mix: Annotated[
         bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")
     ] = None,

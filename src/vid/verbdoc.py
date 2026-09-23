@@ -392,8 +392,11 @@ argument, never a piped continuation, and the result is a human-readable report
   the command to lay it on yourself.
 - `--script-only` (optional, default `False`) -- print the script as JSON;
   synthesise nothing.
-- `--voice` (optional, default none) -- voice model name. Omit for the default
-  voice.
+- `--voice` (optional, default none) -- a piper voice model name (local, free),
+  or `openai:<voice>[@profile]` to speak through OpenAI's TTS instead. Omit
+  for the default piper voice. The `openai:` form needs an API key configured
+  and sends the narration TEXT to OpenAI over the network; piper is never
+  replaced with it unless you ask by name.
 - `--mix` / `--replace` (optional, default none) -- force laying the narration
   over the original audio, or in place of it. Omit to decide from whether the
   video already has speech.
@@ -444,8 +447,11 @@ cramming one in produces the rushed voiceover everybody recognises.
 
 - **an index** -- `vid index` first. The narration is written against what is
   actually in the video, not guessed from its filename.
-- **a speech synthesiser** -- `vid[voice]`, which runs locally. Nothing is
-  uploaded, and the voice model is fetched once, anonymously.
+- **a speech synthesiser** -- either one, and piper is the default:
+  `vid[voice]` runs **locally**, uploads nothing, and fetches its voice model
+  once, anonymously. `vid[voice-openai]` with `--voice openai:<voice>` speaks
+  through OpenAI's API instead, which **sends the narration text over the
+  network** and costs money; it is only ever used when asked for by name.
 - **a provider** -- writing the narration needs a model. `vid check` says how.
 
 Works far better on a video that has speech or a vision index. On a silent
