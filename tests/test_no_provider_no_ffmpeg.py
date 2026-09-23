@@ -27,6 +27,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 VID = REPO / ".venv" / "bin" / "vid"
+PYTHON = REPO / ".venv" / "bin" / "python"
 
 #: Anything that could hand a model to the tool behind our back.
 PROVIDER_VARS = (
@@ -208,3 +209,152 @@ def test_the_provider_scrub_is_honest_about_what_it_does_not_scrub():
     assert "HOME" in env, "several tools need HOME to run at all"
     for name in PROVIDER_VARS:
         assert name not in env
+
+
+#: Reused by the missing-preflight tests below: a script run under `PYTHON`
+#: with the scrubbed PATH, so a raised `VidError` is distinguishable on stdout
+#: from any other exception (including the bare `FileNotFoundError` these
+#: tests exist to rule out) without ever mocking `subprocess`.
+_PROBE_SCRIPT = """
+from vid.schemas import VidError
+try:
+    {call}
+except VidError as exc:
+    print("VIDERROR:" + str(exc))
+except Exception as exc:
+    print("OTHER:" + type(exc).__name__ + ":" + str(exc))
+else:
+    print("NOERROR")
+"""
+
+
+def _run_probe_script(call: str) -> subprocess.CompletedProcess[str]:
+    script = _PROBE_SCRIPT.format(call=call)
+    return subprocess.run(
+        [str(PYTHON), "-c", script],
+        capture_output=True,
+        text=True,
+        env=_bare_env(),
+        cwd=REPO,
+    )
+
+
+pytestmark_python = pytest.mark.skipif(not PYTHON.exists(), reason="run `uv sync` first: no .venv/bin/python")
+
+
+@pytestmark_python
+def test_transition_probe_without_ffmpeg_refuses_and_names_the_remedy():
+    """THE REPORTED DEFECT. `transitions.probe` shelled out to ffmpeg with no
+    preflight at all -- a missing binary escaped as a bare `FileNotFoundError`
+    rather than a `VidError` naming the prerequisite. Called directly (not
+    through the CLI) because `probe` needs no model and no clip pair beyond
+    two real fixture files, so this isolates the exact defect site.
+
+    PATH is emptied by `_bare_env`, not mocked -- `probe` genuinely cannot
+    find ffmpeg here, the same as the module docstring for this file requires.
+    """
+    call = (
+        "from vid.transitions import probe; "
+        'probe("A*(1-P)+B*P", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4", 0.5)'
+    )
+    result = _run_probe_script(call)
+
+    assert result.returncode == 0, f"the script itself must not crash: {result.stderr}"
+    assert "OTHER:FileNotFoundError" not in result.stdout, (
+        "a missing ffmpeg must never escape as a bare FileNotFoundError:\n" + result.stdout
+    )
+    assert result.stdout.startswith("VIDERROR:"), f"expected a VidError, got: {result.stdout!r}"
+    assert "ffmpeg" in result.stdout.lower()
+    assert "ffmpeg.org" in result.stdout or "vid check" in result.stdout, (
+        "a refusal that does not name the remedy is half a refusal"
+    )
+
+
+@pytestmark_python
+def test_transition_generation_without_ffmpeg_refuses_cleanly_with_no_provider_either():
+    """The same gap one call up: `resolve_with_clips` would write a new
+    expression with a model and only THEN discover ffmpeg was missing, at
+    `probe`. With intelligence=None this never reaches generation, so this
+    proves the narrower thing that IS testable with no provider configured:
+    the refusal is still a named `VidError`, not a crash, when both a model
+    and ffmpeg are absent together. The ffmpeg-before-model ordering itself is
+    proven end-to-end by the narrate test below.
+    """
+    call = (
+        "from vid.transitions import resolve_with_clips; "
+        'resolve_with_clips("slam in hard from the right", "tests/fixtures/alpha.mp4", '
+        '"tests/fixtures/bravo.mp4", 0.5, intelligence=None)'
+    )
+    result = _run_probe_script(call)
+
+    assert result.returncode == 0, f"the script itself must not crash: {result.stderr}"
+    assert result.stdout.startswith("VIDERROR:"), f"expected a VidError, got: {result.stdout!r}"
+
+
+@pytestmark_python
+def test_openai_tts_ffprobe_fallback_without_ffprobe_refuses_and_names_the_remedy():
+    """`speech.openai_tts._ffprobe_duration` is the fallback used when the
+    OpenAI TTS response cannot be parsed as plain PCM -- rare, but it shelled
+    out to ffprobe with no preflight of its own. Any file works here: the
+    function tries ffprobe unconditionally, regardless of content.
+    """
+    call = (
+        "from pathlib import Path; "
+        "from vid.speech.openai_tts import _ffprobe_duration; "
+        '_ffprobe_duration(Path("tests/fixtures/alpha.mp4"))'
+    )
+    result = _run_probe_script(call)
+
+    assert result.returncode == 0, f"the script itself must not crash: {result.stderr}"
+    assert "OTHER:FileNotFoundError" not in result.stdout, (
+        "a missing ffprobe must never escape as a bare FileNotFoundError:\n" + result.stdout
+    )
+    assert result.stdout.startswith("VIDERROR:"), f"expected a VidError, got: {result.stdout!r}"
+    assert "ffprobe" in result.stdout.lower() or "ffmpeg" in result.stdout.lower()
+
+
+@pytest.mark.skipif(not VID.exists(), reason="run `uv sync` first: no .venv/bin/vid")
+def test_narrate_without_ffmpeg_refuses_before_a_model_is_even_asked(tmp_path, monkeypatch):
+    """The second fixed site: `narrate` assembles synthesised lines onto a
+    silent bed with ffmpeg (`vid.narrate.assemble`) regardless of `--out`, and
+    that call had no preflight of its own either. The guard now lives in
+    `narrate` itself, checked ahead of the intelligence/model check -- so with
+    BOTH ffmpeg and every provider missing, the failure must still name
+    ffmpeg specifically, proving the model was never reached (and never paid
+    for).
+
+    The index is built in THIS process, on this machine's real ffmpeg --
+    indexing is not what is under test. Only the `narrate` invocation itself
+    runs with PATH emptied and every provider variable removed.
+    """
+    from vid.lib import index as build_index
+    from vid.probe import have_ffmpeg
+
+    if not have_ffmpeg():
+        pytest.skip("building the fixture index needs a real ffmpeg on this machine")
+
+    fixture = REPO / "tests" / "fixtures" / "alpha.mp4"
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    monkeypatch.setenv("VID_INDEX_DIR", str(index_dir))
+    build_index(str(fixture), speech=False)
+
+    env = _bare_env()
+    env["VID_INDEX_DIR"] = str(index_dir)
+    result = subprocess.run(
+        [str(VID), "narrate", str(fixture), "a narration for a test"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO,
+    )
+
+    assert result.returncode != 0
+    assert "ffmpeg" in result.stderr.lower(), f"expected the ffmpeg preflight to fire, got: {result.stderr}"
+    assert "vid check" in result.stderr
+    reason = (
+        "the ffmpeg preflight must fire before the model/provider check, or a missing binary "
+        f"is only found after paying for generation. stderr: {result.stderr}"
+    )
+    assert "model" not in result.stderr.lower(), reason
+    assert "provider" not in result.stderr.lower(), reason

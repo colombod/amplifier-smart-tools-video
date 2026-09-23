@@ -371,6 +371,21 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
     import tempfile
 
     from vid import verify as checks
+    from vid.core.manifest import manifest_install
+    from vid.probe import have_ffmpeg
+
+    # REFUSE LOUDLY, BEFORE THE GENERATED EXPRESSION IS EVEN TRIED. Without this,
+    # a missing binary escaped as a bare `FileNotFoundError` from inside
+    # `subprocess.run` -- and by the time execution reaches here, a model has
+    # already been paid for to write `expression` (see `resolve_with_clips`).
+    # The install reference comes from the manifest so it can never disagree
+    # with what `vid check` and `SMART_TOOL.md` already say.
+    if not have_ffmpeg():
+        raise VidError(
+            "Checking a generated transition renders it and measures the result, so it needs "
+            f"ffmpeg on PATH before that can happen. Install it ({manifest_install('ffmpeg')}) "
+            "-- see `vid check` for the command for your system."
+        )
 
     with tempfile.TemporaryDirectory(prefix="vid-probe-") as work:
         out = str(Path(work) / "probe.mp4")
@@ -462,6 +477,20 @@ def resolve_with_clips(
             f"No preset matches {text!r}, and writing a new transition requires the clips "
             "it will join, so the tool can prove the result actually blends. Name the clips "
             "in the same command rather than piping a plan in."
+        )
+
+    # CHECK FIRST, WORK SECOND -- same discipline as `narrate`'s speech
+    # preflight. `probe` (below) needs ffmpeg to render and measure whatever
+    # `generate` writes, and finding that out only after the model call would
+    # mean paying for generation and then refusing anyway.
+    from vid.core.manifest import manifest_install
+    from vid.probe import have_ffmpeg
+
+    if not have_ffmpeg():
+        raise VidError(
+            "Writing a new transition means rendering and measuring it before it can be "
+            f"trusted, so it needs ffmpeg on PATH first. Install it ({manifest_install('ffmpeg')}) "
+            "-- see `vid check` for the command for your system."
         )
 
     expression, why = generate(text, intelligence)

@@ -610,8 +610,10 @@ def narrate(
     import subprocess
     import tempfile
 
+    from vid.core.manifest import manifest_install
     from vid.index import fingerprint, load
     from vid.narrate import assemble, fit, write_script
+    from vid.probe import have_ffmpeg
     from vid.speech.interface import resolve_speech, speech_preflight
 
     record = load(video)
@@ -626,7 +628,22 @@ def narrate(
     # model call -- the missing prerequisite was found on the far side of a
     # bill. `--script-only` never touches a speech backend at all, so it is
     # exempt from this preflight.
+    #
+    # ffmpeg is checked here too, for the same reason: `assemble` (below) lays
+    # the synthesised lines onto a silent bed with ffmpeg regardless of
+    # `--out`, so finding a missing binary only after script writing AND
+    # synthesis had already run would be the exact bill this preflight exists
+    # to avoid paying.
+    #
+    # ffmpeg is checked BEFORE speech, so that missing binary is reported
+    # before the model write happens, regardless of which backend is chosen.
     if not script_only:
+        if not have_ffmpeg():
+            raise VidError(
+                "Assembling a narration lays every synthesised line onto a silent bed with "
+                f"ffmpeg, so it needs ffmpeg on PATH first. Install it ({manifest_install('ffmpeg')}) "
+                "-- see `vid check` for the command for your system."
+            )
         speech_preflight(voice)
 
     intelligence = None

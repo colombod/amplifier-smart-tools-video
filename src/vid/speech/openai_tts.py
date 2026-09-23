@@ -213,6 +213,17 @@ def _duration_from_data_bytes(path: Path) -> float | None:
 def _ffprobe_duration(path: Path) -> float:
     import subprocess
 
+    from vid.probe import have_ffprobe
+
+    # Reached only when `_duration_from_data_bytes` could not parse the
+    # response as PCM -- rare, but a missing binary must still refuse with a
+    # named remedy rather than a bare `FileNotFoundError` from `subprocess.run`.
+    if not have_ffprobe():
+        raise VidError(
+            f"Could not measure the OpenAI TTS output at {path}: it did not parse as plain PCM, "
+            "and ffprobe -- the fallback -- is not on PATH. Install ffmpeg (it ships ffprobe) "
+            "-- see `vid check` for the command for your system."
+        )
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
         capture_output=True,
