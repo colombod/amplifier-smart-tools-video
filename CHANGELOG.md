@@ -9,6 +9,25 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
+## Unreleased
+
+`stitch` no longer emits a broken audio branch. It interpolated the running audio label
+into its `concat` entry without the `is not None` guard the rest of the compiler applies,
+so a silent source or a prior `audio remove` put the literal text `None` into the filter
+graph and ffmpeg rejected the whole command. `cut` already guarded this; `stitch` and the
+transition path now do too.
+
+It also assumed every stitched clip carried sound. Audio presence was probed on the plan's
+source alone, so stitching a silent clip emitted a stream specifier matching nothing. The
+render path now probes each stitch source, and a join where exactly one side has sound is
+refused by name rather than failing as `Stream specifier ... matches no streams`.
+
+Deliberate silence is distinguished from incidental silence: after `audio remove` the
+caller has already said what to do with sound, so dropping an incoming clip's audio carries
+out that instruction and is not refused. `vid stitch --help` documents the new refusal.
+
+Both faults were silent until render -- the plan validated and the compile succeeded.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

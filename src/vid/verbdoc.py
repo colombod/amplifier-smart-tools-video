@@ -225,7 +225,12 @@ Two things a caller usually finds out the hard way, which this verb handles:
 
 **Failures.** No clips named: refused, naming the fix. A `--transition` name
 that matches none of the 58 presets, and that a model also cannot resolve or
-prove: refused, with the expression it tried if it got that far.
+prove: refused, with the expression it tried if it got that far. A clip whose
+sound does not match the running edit's -- one carries an audio stream and the
+other does not: refused at render, naming the file. Give the silent side a
+track with `audio replace`, or say the silence is deliberate with
+`audio remove` before stitching; after `audio remove` an incoming clip's sound
+is dropped without complaint, because you already said what to do with it.
 
 **What it costs.** Stitching re-encodes the picture, with or without a transition.
 Picture stream-copy is reserved for audio-only plans.
