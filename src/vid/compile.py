@@ -645,6 +645,25 @@ class Compiler:
 
         self._layer_audio(op, index)
 
+    def _regained_audio(self, label: str) -> None:
+        """The edit has sound again. Assign it AND clear `audio_removed`.
+
+        These two are one fact, so they are one call. `audio remove` sets that
+        flag to mean "the caller already said what to do with sound here", and
+        `_refuse_audio_mismatch` short-circuits on it. The moment any path puts
+        a track back, the flag is a lie -- and a stitch against a silent clip
+        then walks through the guard and emits a specifier for a stream that
+        does not exist.
+
+        A previous round fixed `audio_replace` alone. That was the instance,
+        not the invariant: `overlay --audio keep` and `--audio only` restore
+        sound through DIFFERENT lines, and a review found the same defect
+        waiting behind both. Routing every restoration through here is what
+        stops a fourth site appearing.
+        """
+        self.audio = label
+        self.audio_removed = False
+
     def _layer_audio(self, op: Overlay, index: int) -> None:
         """Fold the layer's own sound in, or leave it out.
 
@@ -705,7 +724,9 @@ class Compiler:
         layer = self._step(bound.lstrip(","), layer, "a")
 
         if policy.policy == "only" or self.audio is None:
-            self.audio = layer
+            # `self.audio is None` IS the post-`audio remove` case, which is
+            # exactly how the stale flag was reached.
+            self._regained_audio(layer)
             return
 
         base = self.audio
@@ -745,7 +766,7 @@ class Compiler:
 
         out = self._next("a")
         self.filters.append(f"[{base}][{layer}]amix=inputs=2:normalize=0:dropout_transition=0[{out}]")
-        self.audio = out
+        self._regained_audio(out)
 
     def _progress(self, motion: Motion) -> str:
         """0 before the move, 1 after it, and the eased fraction in between.
@@ -1070,19 +1091,7 @@ class Compiler:
         # long. The result always matches the video, which is the answer every
         # caller wants and the one ffmpeg would otherwise decide by accident.
         chain = self._placed_audio(op.start)
-        self.audio = self._step(chain, incoming, "a")
-        # THE EDIT HAS SOUND AGAIN, so the earlier `audio remove` no longer
-        # describes it. `_refuse_audio_mismatch` short-circuits on this flag,
-        # reading it as "the caller already said what to do with sound here" --
-        # true right after a remove, false once a track has been put back.
-        #
-        # Left stale, `audio remove -> audio replace -> stitch <silent>` walked
-        # straight through the guard and emitted a specifier for an audio stream
-        # the silent file does not have. Measured: inputs a.mp4, music.mp3,
-        # silent.mp4 with the graph referencing [2:a], which ffmpeg rejects as
-        # `Stream specifier ... matches no streams` -- exactly the error the
-        # guard exists to replace with a sentence naming the file.
-        self.audio_removed = False
+        self._regained_audio(self._step(chain, incoming, "a"))
 
     def _placed_audio(self, start: float) -> str:
         if not math.isfinite(start) or start < 0:

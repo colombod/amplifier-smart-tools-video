@@ -401,3 +401,63 @@ def test_a_direct_compile_without_probing_still_does_not_guess():
     plan = lib.stitch(plan, ["silent.mp4"])
 
     compile_plan(plan, "out.mp4", durations=_DURATIONS, has_audio=True, source_sizes=_SIZES)
+
+
+# ---------------------------------------------------------------------------
+# EVERY way an edit can regain sound after `audio remove`, not just the one a
+# review happened to report. A previous round fixed `audio_replace` alone and
+# called the guard repaired; `overlay --audio keep` and `--audio only` restore
+# sound through different lines and both still walked straight through it.
+# ---------------------------------------------------------------------------
+
+#: (label, how the edit regains its sound after `audio remove`)
+RESTORATIONS = [
+    ("audio replace", lambda plan: lib.audio_replace(plan, "music.mp3")),
+    ("overlay --audio keep", lambda plan: lib.overlay(plan, "a.mp4", 0, 0, 640, 360, audio="keep")),
+    ("overlay --audio only", lambda plan: lib.overlay(plan, "a.mp4", 0, 0, 640, 360, audio="only")),
+]
+
+_FULL_DURATIONS = {"base.mp4": 3.0, "a.mp4": 3.0, "silent.mp4": 2.0, "music.mp3": 5.0}
+_FULL_SIZES = {"base.mp4": (640, 360), "a.mp4": (640, 360), "silent.mp4": (640, 360)}
+_FULL_AUDIO = {"base.mp4": True, "a.mp4": True, "silent.mp4": False, "music.mp3": True}
+
+
+def _compile_full(plan):
+    from vid.compile import compile_plan
+
+    return compile_plan(
+        plan,
+        "out.mp4",
+        durations=_FULL_DURATIONS,
+        has_audio=True,
+        source_sizes=_FULL_SIZES,
+        source_audio=_FULL_AUDIO,
+    )
+
+
+@pytest.mark.parametrize(("label", "restore"), RESTORATIONS, ids=[case[0] for case in RESTORATIONS])
+def test_every_way_of_regaining_sound_restores_the_stitch_guard(label, restore):
+    """`audio remove` -> <regain sound> -> `stitch <silent>` must be refused.
+
+    The guard short-circuits on `audio_removed`, which means "the caller
+    already said what to do with sound here". True right after a remove; FALSE
+    the moment any path puts a track back. Left stale, the chain emits a
+    specifier for an audio stream the silent file does not have, and ffmpeg
+    rejects the whole command with `Stream specifier ... matches no streams` --
+    naming neither the file nor the reason.
+    """
+    from vid.schemas import VidError
+
+    plan = lib.stitch(restore(lib.audio_remove(Plan(source="base.mp4"))), ["silent.mp4"])
+
+    with pytest.raises(VidError) as refusal:
+        _compile_full(plan)
+
+    assert "silent.mp4" in str(refusal.value), f"after {label} the refusal does not name the file"
+
+
+def test_regaining_sound_does_not_break_an_ordinary_stitch():
+    """Guard against over-correcting in the other direction: an edit that never
+    lost its sound must still stitch a sounded clip without complaint."""
+    plan = lib.overlay(Plan(source="base.mp4"), "a.mp4", 0, 0, 640, 360, audio="keep")
+    _compile_full(lib.stitch(plan, ["a.mp4"]))  # must not raise
