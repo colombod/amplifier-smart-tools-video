@@ -695,6 +695,25 @@ class Compiler:
             return
 
         base = self.audio
+        # HOLD THE BASE FOR THE WHOLE EDIT before mixing.
+        #
+        # `amix` ends an input when that input's stream ends. The base is
+        # decoded from a file, and its audio stream can finish a few tens of
+        # milliseconds short of its video -- AAC frame granularity, not a bug in
+        # the file. With `dropout_transition=0` amix then simply drops it, and
+        # the last moments of the edit play the LAYER alone.
+        #
+        # Measured: the base's tone vanished around 2.54-2.58s of a 3s render on
+        # ffmpeg 6.1.1-3ubuntu5, while the same render on a newer nightly kept
+        # it. Duration was unchanged either way, so nothing that checked length
+        # noticed, and every level probe sampled the middle where both are
+        # present.
+        #
+        # `_placed_audio` has always conditioned SUPPLIED audio this way, for
+        # exactly this reason. The mix path simply never did the same for the
+        # base it already had.
+        if self.elapsed:
+            base = self._step(f"apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS", base, "a")
         if policy.base_gain_db:
             base = self._step(f"volume={policy.base_gain_db:g}dB", base, "a")
         if policy.duck:

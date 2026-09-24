@@ -14,7 +14,7 @@ Nothing asked for that. `test_keep_does_not_attenuate_the_base` is the guard.
 
 import pytest
 
-from tests.fixtures import ensure_clips, ensure_silent_clip, have_ffmpeg, probe_duration, tone_strength
+from tests.fixtures import ensure_clips, ensure_silent_clip, have_ffmpeg, probe_duration, tone_level, tone_strength
 from vid.lib import render
 from vid.plan import AudioRemove, LayerAudio, Overlay, Plan
 from vid.schemas import VidError
@@ -68,15 +68,24 @@ def test_keep_does_not_attenuate_the_base(clips, tmp_path):
     layer exists. Compared against a base-only render rather than an absolute
     threshold, so the test is about the CHANGE and not about a level that could
     drift for unrelated reasons.
+
+    MEASURED WITH `tone_level`, NOT `tone_strength`, and that distinction is
+    the whole test. `tone_strength` divides by the loudest of the fixtures'
+    three tones, so attenuating everything uniformly leaves its ratio
+    UNCHANGED BY CONSTRUCTION -- numerator and denominator scale together. An
+    independent review proved this test passed with roughly -6 dB injected:
+    a level question asked with a ratio metric, which is a boolean that
+    survives the defect it names. `tone_level` reports absolute strength, so a
+    uniform change is visible.
     """
     dropped = _with_audio(clips, tmp_path, "level_dropped")
     kept = _with_audio(clips, tmp_path, "level_kept", policy="keep")
 
-    without_layer = tone_strength(dropped, clips["alpha"].hz, at=1.0)
-    with_layer = tone_strength(kept, clips["alpha"].hz, at=1.0)
+    without_layer = tone_level(dropped, clips["alpha"].hz, at=1.0)
+    with_layer = tone_level(kept, clips["alpha"].hz, at=1.0)
 
-    assert with_layer == pytest.approx(without_layer, rel=0.25), (
-        f"adding a layer changed the base's own level: {without_layer:.4f} -> {with_layer:.4f}. "
+    assert with_layer == pytest.approx(without_layer, rel=0.15), (
+        f"adding a layer changed the base's own level: {without_layer:.1f} -> {with_layer:.1f}. "
         "That is amix normalize=1 scaling every input by 1/n."
     )
 
@@ -175,3 +184,33 @@ def test_a_base_with_no_sound_never_writes_none_into_the_graph(clips, tmp_path):
 
     assert tone_strength(output, clips["bravo"].hz, at=1.0) > 0.01, "the layer's sound did not survive"
     assert probe_duration(output) == pytest.approx(clips["alpha"].seconds, abs=0.15)
+
+
+def test_keep_preserves_the_base_all_the_way_to_the_end(clips, tmp_path):
+    """The base must still be audible in the FINAL moments, not just the middle.
+
+    An independent review measured the base tone vanishing around 2.54-2.58s of
+    a three-second render under `keep`, while the layer's tone continued. Every
+    existing check sampled at t=1.0 -- the middle -- where both are present, and
+    duration was unchanged, so nothing in the suite noticed the tail.
+
+    Reproduced on ffmpeg 6.1.1-3ubuntu5 and not on a newer nightly, so this is
+    exactly the class `scripts/ci-parity.sh` exists for: the dev box and CI
+    disagree, and only one of them is CI.
+
+    Measured with `tone_level`, absolute: a tail that FADES rather than
+    vanishing would still register as present on a normalised metric.
+    """
+    kept = _with_audio(clips, tmp_path, "tail_kept", policy="keep")
+    dropped = _with_audio(clips, tmp_path, "tail_dropped")
+
+    late = 2.6
+    base_late = tone_level(kept, clips["alpha"].hz, at=late, window=0.2)
+    layer_late = tone_level(kept, clips["bravo"].hz, at=late, window=0.2)
+    control = tone_level(dropped, clips["alpha"].hz, at=late, window=0.2)
+
+    assert control > 100, f"the control render lost the base too; the probe is wrong, not the code: {control:.1f}"
+    assert base_late > control * 0.5, (
+        f"the base's tone is gone from the tail under `keep`: {base_late:.1f} at {late}s "
+        f"against {control:.1f} in the base-only control (layer there: {layer_late:.1f})"
+    )
