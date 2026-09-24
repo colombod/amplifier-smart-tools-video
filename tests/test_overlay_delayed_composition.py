@@ -54,30 +54,43 @@ def varying():
 
 
 #: Every feature that composes with the layer's alpha or geometry.
+#:
+#: Each entry BUILDS its own call rather than supplying a dict to expand with
+#: `**`. A heterogeneous kwargs dict cannot be narrowed by the type checker,
+#: which reported one error per candidate parameter -- 30 for this one call.
+#: Explicit builders keep the parametrisation and stay checkable.
 COMPOSITIONS = [
-    ("plain", {}),
-    ("mask", {"mask": "circle"}),
-    ("opacity", {"opacity": 0.5}),
-    ("motion", {"to_x": 0, "to_y": 0, "to_width": 640, "to_height": 360, "move_over": 1.0}),
+    ("plain", lambda plan, src: lib.overlay(plan, src, 0, 0, 640, 360, start="2", audio="only")),
+    ("mask", lambda plan, src: lib.overlay(plan, src, 0, 0, 640, 360, start="2", audio="only", mask="circle")),
+    (
+        "opacity",
+        lambda plan, src: lib.overlay(plan, src, 0, 0, 640, 360, start="2", audio="only", opacity=0.5),
+    ),
+    (
+        "motion",
+        lambda plan, src: lib.overlay(
+            plan,
+            src,
+            160,
+            90,
+            320,
+            180,
+            start="2",
+            audio="only",
+            to_x=0,
+            to_y=0,
+            to_width=640,
+            to_height=360,
+            move_over=1.0,
+        ),
+    ),
 ]
 
 
-@pytest.mark.parametrize(("label", "extra"), COMPOSITIONS, ids=[case[0] for case in COMPOSITIONS])
-def test_a_delayed_layer_advances_under_every_feature(base, varying, tmp_path, label, extra):
+@pytest.mark.parametrize(("label", "build"), COMPOSITIONS, ids=[case[0] for case in COMPOSITIONS])
+def test_a_delayed_layer_advances_under_every_feature(base, varying, tmp_path, label, build):
     """Picture and sound must advance together through all three segments."""
-    geometry = {"x": 160, "y": 90, "width": 320, "height": 180} if label == "motion" else {}
-    plan = lib.overlay(
-        Plan(source=str(base.path)),
-        str(varying.path),
-        geometry.get("x", 0),
-        geometry.get("y", 0),
-        geometry.get("width", 640),
-        geometry.get("height", 360),
-        start="2",
-        audio="only",
-        **extra,
-    )
-    out = lib.render(plan, str(tmp_path / f"{label}.mp4"))
+    out = lib.render(build(Plan(source=str(base.path)), str(varying.path)), str(tmp_path / f"{label}.mp4"))
 
     seen = [_dominant(pixel_at(out, at, 320, 180)) for at in SAMPLES]
     heard = [_heard(out, at) for at in SAMPLES]
@@ -96,14 +109,36 @@ def test_keying_removes_the_same_segment_delayed_or_not(base, varying, tmp_path)
     delayed and undelayed renders: the same segment must vanish in both, merely
     shifted.
     """
-    keyed = {"key": "colorkey", "key_colour": "0x00FF00"}
-
+    # Arguments written out rather than expanded from a dict: a heterogeneous
+    # kwargs mapping cannot be narrowed by the type checker, and reported one
+    # error per candidate parameter.
     undelayed = lib.render(
-        lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, audio="only", **keyed),
+        lib.overlay(
+            Plan(source=str(base.path)),
+            str(varying.path),
+            0,
+            0,
+            640,
+            360,
+            audio="only",
+            key="colorkey",
+            key_colour="0x00FF00",
+        ),
         str(tmp_path / "key_undelayed.mp4"),
     )
     delayed = lib.render(
-        lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, start="2", audio="only", **keyed),
+        lib.overlay(
+            Plan(source=str(base.path)),
+            str(varying.path),
+            0,
+            0,
+            640,
+            360,
+            start="2",
+            audio="only",
+            key="colorkey",
+            key_colour="0x00FF00",
+        ),
         str(tmp_path / "key_delayed.mp4"),
     )
 
