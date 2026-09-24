@@ -38,6 +38,26 @@ class Cut(BaseModel):
     start: float
     end: float
 
+    @model_validator(mode="after")
+    def _range_removes_something(self) -> Cut:
+        """A cut whose end is not after its start removes nothing -- and does
+        not fail. It renders a LONGER file than the source: measured, 10.0s out
+        of a 6.0s input, duplicating footage rather than removing any. Exit 0,
+        a playable file, content the caller never asked for.
+
+        `lib.cut` does NOT guard this. It parses timecodes and constructs the
+        model, so the CLI reaches it too -- this is not a JSON-only defect, and
+        a review filing that said otherwise (including mine) was wrong.
+        """
+        if self.start < 0:
+            raise ValueError(f"A cut cannot start before the file does, and {self.start:g} is negative.")
+        if self.end <= self.start:
+            raise ValueError(
+                f"A cut must end after it starts, and {self.start:g} -> {self.end:g} does not. "
+                "An empty or reversed range removes nothing and duplicates footage instead."
+            )
+        return self
+
 
 class RampPoint(BaseModel):
     """One `speed@time` control point on a speed curve."""
@@ -59,6 +79,25 @@ class Retime(BaseModel):
     ramp: list[RampPoint] = Field(default_factory=list)
     pitch: bool = True
 
+    @model_validator(mode="after")
+    def _one_kind_of_retime(self) -> Retime:
+        """`lib.retime` enforces this XOR; the model did not.
+
+        A plan carrying BOTH `speed` and `ramp` was accepted and the ramp
+        SILENTLY DROPPED, rendering a constant-speed result. The caller stated
+        two intentions, one was discarded, and nothing said so.
+        """
+        if self.speed is not None and self.ramp:
+            raise ValueError(
+                "A retime is either a constant speed or a ramp, not both. "
+                "Given both, the ramp would be silently discarded."
+            )
+        if self.speed is None and not self.ramp:
+            raise ValueError("A retime needs either a constant speed or a ramp, and has neither.")
+        if self.speed is not None and self.speed <= 0:
+            raise ValueError(f"A retime speed must be above zero, and {self.speed:g} is not.")
+        return self
+
 
 class Zoom(BaseModel):
     """Animated zoom (Ken Burns) centred on a moment."""
@@ -67,6 +106,26 @@ class Zoom(BaseModel):
     to: float = 1.3
     at: float | None = None
     duration: float = 3.0
+
+    @model_validator(mode="after")
+    def _zoom_is_a_zoom(self) -> Zoom:
+        """A negative duration silently clamped into a different mode.
+
+        `lib.zoom` does NOT guard this either -- it constructs the model
+        directly, so the CLI reaches it. `to=0` was accepted too, which is not
+        a zoom at any speed.
+        """
+        if self.to <= 0:
+            raise ValueError(f"A zoom factor must be above zero, and {self.to:g} is not.")
+        if self.duration <= 0:
+            raise ValueError(
+                f"A zoom must last longer than no time at all, and {self.duration:g} does not. "
+                "A negative duration silently becomes a different kind of zoom."
+            )
+        if self.at is not None and self.at < 0:
+            raise ValueError(f"A zoom cannot be centred before the file starts, and {self.at:g} is negative.")
+        return self
+
     x: str = "iw/2-(iw/zoom/2)"
     y: str = "ih/2-(ih/zoom/2)"
 

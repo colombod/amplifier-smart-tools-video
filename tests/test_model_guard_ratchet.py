@@ -29,13 +29,16 @@ import vid.plan as plan_module
 
 #: Models carrying numeric fields with NO validator, as of this commit.
 #:
-#: Each is reachable only through a JSON plan, so `lib.*` cannot protect it.
-#: Three have confirmed defects, found by hand during review:
-#:   Retime  -- accepts `speed` AND `ramp` together, silently dropping the ramp
-#:   Cut     -- `end <= start` renders 10.0s from a 6.0s source, duplicating
-#:   Zoom    -- `duration < 0` silently clamps into a different mode
-#: These pre-date the overlay work and are filed separately rather than fixed
-#: here, so this branch does not grow without bound.
+#: CORRECTION. An earlier version of this note said these were "reachable only
+#: through a JSON plan, so `lib.*` cannot protect it". That was asserted, not
+#: checked, and it was wrong for at least two: `lib.cut` and `lib.zoom` do NOT
+#: guard their arguments -- they parse timecodes and construct the model, so
+#: the CLI reaches the same defects. Measured: `lib.cut(start=5, end=2)`,
+#: `lib.cut(5, 5)`, `lib.zoom(duration=-3)` and `lib.zoom(to=0)` were all
+#: accepted. Only `lib.retime` had a real guard.
+#:
+#: Cut, Retime and Zoom were fixed rather than deferred once that came out --
+#: a defect reachable from the CLI is not someone else's problem later.
 #: `AudioMix` and `AudioReplace` are here because THIS RATCHET CAUGHT THEM on
 #: its first run. The list was transcribed from an enumeration whose output I
 #: had piped through `tail`, so two models were cut off and the truncated list
@@ -45,15 +48,12 @@ import vid.plan as plan_module
 KNOWN_UNGUARDED = {
     "AudioMix",
     "AudioReplace",
-    "Cut",
     "Plan",
     "RampPoint",
     "Recolor",
-    "Retime",
     "Stitch",
     "Trim",
     "Vignette",
-    "Zoom",
 }
 
 
@@ -120,7 +120,7 @@ def test_the_debt_list_does_not_go_stale():
     assert not vanished, f"KNOWN_UNGUARDED names models that no longer exist: {', '.join(sorted(vanished))}"
 
 
-@pytest.mark.parametrize("name", sorted(["Overlay", "Motion", "Mask", "Key", "LayerAudio"]))
+@pytest.mark.parametrize("name", sorted(["Overlay", "Motion", "Mask", "Key", "LayerAudio", "Cut", "Retime", "Zoom"]))
 def test_the_models_this_pr_guarded_stay_guarded(name):
     """The five guarded by this branch, pinned so a refactor cannot quietly
     drop one back into the unguarded set."""

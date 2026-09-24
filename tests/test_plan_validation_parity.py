@@ -191,3 +191,63 @@ def test_workable_duck_settings_are_still_accepted(label, settings):
     """Over-correcting here would refuse settings that duck perfectly well,
     including both range boundaries."""
     assert _duck_via_json(settings), f"a JSON plan wrongly refuses {label}"
+
+
+# ---------------------------------------------------------------------------
+# Cut, Retime and Zoom. Filed as deferred debt, then fixed once measurement
+# showed the filing was wrong about WHY they were dangerous.
+#
+# The filing said they were reachable only through a JSON plan, so `lib.*`
+# would protect a CLI user. Measured, that is false for two of the three:
+#
+#     lib.cut(start=5, end=2)      ACCEPTED   -- no guard at all
+#     lib.cut(start=5, end=5)      ACCEPTED
+#     lib.zoom(duration=-3)        ACCEPTED   -- no guard at all
+#     lib.zoom(to=0)               ACCEPTED
+#     lib.retime(speed AND ramp)   refused    -- the only real library guard
+#
+# `lib.cut` and `lib.zoom` parse timecodes and construct the model directly.
+# The CLI reaches the same defects, which is why these stopped being
+# deferrable. Both doors are pinned below precisely because assuming one of
+# them was safe is what produced the wrong filing.
+# ---------------------------------------------------------------------------
+
+OP_REFUSED = [
+    ("a cut that ends before it starts", {"op": "cut", "start": 5.0, "end": 2.0}),
+    ("a cut that removes nothing", {"op": "cut", "start": 5.0, "end": 5.0}),
+    ("a cut starting before the file", {"op": "cut", "start": -1.0, "end": 2.0}),
+    ("a retime that is both constant and a ramp", {"op": "retime", "speed": 2.0, "ramp": [{"at": 1.0, "speed": 0.5}]}),
+    ("a retime that is neither", {"op": "retime"}),
+    ("a reversed retime speed", {"op": "retime", "speed": -2.0}),
+    ("a zoom lasting negative time", {"op": "zoom", "duration": -3.0}),
+    ("a zoom to nothing", {"op": "zoom", "to": 0.0}),
+    ("a zoom centred before the file", {"op": "zoom", "at": -5.0}),
+]
+
+OP_ACCEPTED = [
+    ("an ordinary cut", {"op": "cut", "start": 2.0, "end": 5.0}),
+    ("a constant retime", {"op": "retime", "speed": 2.0}),
+    ("a ramped retime", {"op": "retime", "ramp": [{"at": 1.0, "speed": 0.5}]}),
+    ("a default zoom", {"op": "zoom"}),
+    ("a zoom OUT, which is not a zoom of zero", {"op": "zoom", "to": 0.8}),
+]
+
+
+def _op_via_json(operation: dict) -> bool:
+    try:
+        Plan.model_validate({"plan_format": 1, "source": "a.mp4", "operations": [operation]})
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+@pytest.mark.parametrize(("label", "operation"), OP_REFUSED, ids=[c[0] for c in OP_REFUSED])
+def test_a_nonsensical_operation_is_refused(label, operation):
+    assert not _op_via_json(operation), f"a plan still accepts {label}"
+
+
+@pytest.mark.parametrize(("label", "operation"), OP_ACCEPTED, ids=[c[0] for c in OP_ACCEPTED])
+def test_a_legitimate_operation_is_still_accepted(label, operation):
+    """`to=0.8` is the one that matters here: a zoom OUT is legitimate, and a
+    guard written as `to >= 1` would have broken it while looking correct."""
+    assert _op_via_json(operation), f"a plan wrongly refuses {label}"
