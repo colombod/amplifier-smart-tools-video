@@ -16,7 +16,7 @@ import re
 import sys
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from vid.schemas import VidError
 
@@ -194,6 +194,31 @@ class Motion(BaseModel):
     duration: float = 1.0
     easing: Literal["linear", "ease_in_out"] = "linear"
 
+    @model_validator(mode="after")
+    def _geometry_is_complete(self) -> Motion:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        A JSON plan reaches these classes directly, never passing through the
+        library function, so every guard that lived only in `lib` was a guard
+        the JSON door did not have. An independent review walked straight
+        through it: a width-only animation the library refuses was accepted
+        from JSON and rendered horizontally stretched.
+        """
+        if (self.to_width is None) != (self.to_height is None):
+            raise ValueError(
+                "An animated overlay needs both --to-width and --to-height, or neither. "
+                "One alone would have to invent the other from an aspect ratio nobody stated."
+            )
+        if self.to_width is not None and self.to_width <= 0:
+            raise ValueError(f"An overlay's target width must be positive, not {self.to_width}.")
+        if self.to_height is not None and self.to_height <= 0:
+            raise ValueError(f"An overlay's target height must be positive, not {self.to_height}.")
+        if self.duration <= 0:
+            raise ValueError(f"An overlay's move must take positive time, not {self.duration:g}.")
+        if self.start < 0:
+            raise ValueError(f"An overlay's move cannot start before the edit, and {self.start:g} does.")
+        return self
+
 
 class Overlay(BaseModel):
     """Lay another clip over the picture, at a stated place and time.
@@ -231,6 +256,37 @@ class Overlay(BaseModel):
     key: Key | None = None
     # Uniform transparency, 0..1. 1.0 is fully opaque and a genuine no-op.
     opacity: float = 1.0
+
+    @model_validator(mode="after")
+    def _geometry_and_window_are_sane(self) -> Overlay:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        Review found three that the JSON door did not have: a size given on one
+        axis only, a window running backwards (start=5, end=1), and an opacity
+        outside 0..1. Each is refused by the library and each was accepted from
+        JSON, so a plan file could reach the compiler in a state the CLI cannot
+        produce.
+
+        Putting them here rather than duplicating them in `lib` means one rule,
+        enforced once, on every path in.
+        """
+        if (self.width is None) != (self.height is None):
+            raise ValueError(
+                "An overlay needs both a width and a height, or neither. One alone would have "
+                "to invent the other from an aspect ratio nobody stated."
+            )
+        if self.width is not None and self.width <= 0:
+            raise ValueError(f"An overlay's width must be positive, not {self.width}.")
+        if self.height is not None and self.height <= 0:
+            raise ValueError(f"An overlay's height must be positive, not {self.height}.")
+        if self.start is not None and self.end is not None and self.end <= self.start:
+            raise ValueError(
+                f"An overlay's window runs from {self.start:g}s to {self.end:g}s, which ends before "
+                "it begins. Give an end later than the start."
+            )
+        if not 0.0 <= self.opacity <= 1.0:
+            raise ValueError(f"An overlay's opacity runs from 0 to 1, and {self.opacity:g} is outside that.")
+        return self
 
 
 class Stitch(BaseModel):

@@ -91,6 +91,14 @@ two colour keys and `threshold` to `lumakey`, with `similarity` and `blend` shap
 edge. **A key and a mask INTERSECT** -- a key reads the layer's own content, a mask
 imposes a shape from outside, and both must pass for a pixel to survive.
 
+**`overlay.start` is when the layer APPEARS, and it plays FROM ITS OWN BEGINNING.**
+At output time `start + d`, both the frame shown and the sound heard come from the
+layer's own time `d`. This is promised rather than left to the implementation because
+it is directly observable, and because the two channels once disagreed: the picture was
+gated on output time while the sound was shifted, so a layer delayed by 2s showed
+content 2s old the moment it appeared. `overlay.end` bounds the window; it does not
+retime the layer.
+
 **The composition order is part of the contract**: key, then mask, then feather, then
 opacity. It is observable in the output, so it is promised rather than left to the
 implementation.

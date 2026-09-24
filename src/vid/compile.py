@@ -1042,6 +1042,18 @@ class Compiler:
         # caller wants and the one ffmpeg would otherwise decide by accident.
         chain = self._placed_audio(op.start)
         self.audio = self._step(chain, incoming, "a")
+        # THE EDIT HAS SOUND AGAIN, so the earlier `audio remove` no longer
+        # describes it. `_refuse_audio_mismatch` short-circuits on this flag,
+        # reading it as "the caller already said what to do with sound here" --
+        # true right after a remove, false once a track has been put back.
+        #
+        # Left stale, `audio remove -> audio replace -> stitch <silent>` walked
+        # straight through the guard and emitted a specifier for an audio stream
+        # the silent file does not have. Measured: inputs a.mp4, music.mp3,
+        # silent.mp4 with the graph referencing [2:a], which ffmpeg rejects as
+        # `Stream specifier ... matches no streams` -- exactly the error the
+        # guard exists to replace with a sentence naming the file.
+        self.audio_removed = False
 
     def _placed_audio(self, start: float) -> str:
         if not math.isfinite(start) or start < 0:

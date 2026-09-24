@@ -327,3 +327,77 @@ def test_a_masked_animated_overlay_composes_with_trim_and_audio(clips, tmp_path)
 
     assert probe_duration(out) == pytest.approx(2.5, abs=0.15)
     assert not has_audio_stream(out), "audio remove left the overlay's mix behind"
+
+
+# ---------------------------------------------------------------------------
+# The stitch audio guard reads STATE, and state can go stale. Compiled rather
+# than rendered, because the guard's whole job is to refuse before ffmpeg runs.
+# ---------------------------------------------------------------------------
+
+_DURATIONS = {"a.mp4": 3.0, "silent.mp4": 2.0, "music.mp3": 5.0}
+_SIZES = {"a.mp4": (640, 360), "silent.mp4": (640, 360)}
+_SOURCE_AUDIO = {"a.mp4": True, "silent.mp4": False, "music.mp3": True}
+
+
+def _compile(plan):
+    from vid.compile import compile_plan
+
+    return compile_plan(
+        plan,
+        "out.mp4",
+        durations=_DURATIONS,
+        has_audio=True,
+        source_sizes=_SIZES,
+        source_audio=_SOURCE_AUDIO,
+    )
+
+
+def test_replacing_audio_after_removing_it_restores_the_stitch_guard():
+    """`audio remove -> audio replace -> stitch <silent>` must be refused.
+
+    The guard short-circuits on an `audio_removed` flag, reading it as "the
+    caller already said what to do with sound here". True right after a remove;
+    FALSE once a track has been put back. Left stale, this chain walked through
+    the guard and emitted a specifier for an audio stream the silent file does
+    not have -- ffmpeg's own `Stream specifier ... matches no streams`, which
+    names neither the file nor the reason.
+    """
+    from vid.schemas import VidError
+
+    plan = lib.audio_remove(Plan(source="a.mp4"))
+    plan = lib.audio_replace(plan, "music.mp3")
+    plan = lib.stitch(plan, ["silent.mp4"])
+
+    with pytest.raises(VidError) as refusal:
+        _compile(plan)
+
+    assert "silent.mp4" in str(refusal.value), "the refusal does not name the file the caller meant"
+
+
+def test_removing_audio_still_permits_stitching_a_silent_clip():
+    """The flag's real purpose must survive the fix.
+
+    Dropping a clip's sound after an explicit `audio remove` is carrying out a
+    stated intent, not discarding something silently. Over-correcting here
+    would refuse a chain that has always been legitimate.
+    """
+    plan = lib.stitch(lib.audio_remove(Plan(source="a.mp4")), ["silent.mp4"])
+
+    _compile(plan)  # must not raise
+
+
+def test_a_direct_compile_without_probing_still_does_not_guess():
+    """Unproven audio must not raise.
+
+    `source_audio` is populated by the render path, which probes. A direct
+    `compile_plan` has no such knowledge, and an unproven guess must not become
+    a refusal -- that distinction is why my own first probe of this defect
+    reported a false negative.
+    """
+    from vid.compile import compile_plan
+
+    plan = lib.audio_remove(Plan(source="a.mp4"))
+    plan = lib.audio_replace(plan, "music.mp3")
+    plan = lib.stitch(plan, ["silent.mp4"])
+
+    compile_plan(plan, "out.mp4", durations=_DURATIONS, has_audio=True, source_sizes=_SIZES)

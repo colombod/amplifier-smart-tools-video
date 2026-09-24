@@ -118,6 +118,26 @@ against the plain composite rather than a single pixel.
 `key` and `opacity` are new optional fields on the `overlay` operation, so `plan_format`
 stays `1`.
 
+**Fixed: a delayed overlay's picture and sound no longer disagree.** `--start` shifts
+the layer's picture as well as gating it, so at output time `start + d` both the frame
+and the tone come from the layer's own time `d`. Previously the picture was gated on
+output time while the sound was delayed, and a layer started at 2s showed content
+already 2s old. The contract is now stated in `contracts/plan.v1.md`.
+
+**Fixed: `--audio keep` no longer loses the base soundtrack's tail.** The base is held
+for the whole edit before mixing. `amix` ends an input when that input's stream ends,
+and a decoded base can finish tens of milliseconds short of its video, so the final
+moments played the layer alone. Seen on ffmpeg 6.1.1 and not on a newer nightly.
+
+**Fixed: `key.colour` can no longer inject a filter.** It is validated against a closed
+allowlist at the model, so a JSON plan is refused on the same terms as a CLI call.
+
+**Fixed: JSON plans are validated like CLI calls.** A size given on one axis only, a
+window that ends before it begins, and an opacity outside 0..1 were refused by the
+library and accepted from JSON. The rules now live on the models, enforced once.
+
+**Fixed: `audio remove` then `audio replace` no longer defeats the stitch guard.**
+
 **Fixed: an overlay no longer extends the edit.** A layer longer than the edit it was laid
 over ran to the LAYER's length, silently undoing a preceding `trim`, `cut` or `retime` --
 a 2.0s trimmed edit rendered 3.0s. The layer's picture is now bounded to the edit's length,

@@ -269,6 +269,11 @@ dimension, and the layer is composited into a frame that will be.
 `--start` and `--end` bound the window. Omit both and the layer runs for the
 whole edit; omit just `--end` and it runs to the end.
 
+`--start` is when the layer APPEARS, and it plays FROM ITS OWN BEGINNING: at
+`--start 0:02` the layer's first frame and first sound both arrive two seconds
+in, together. It is not a seek into the layer, and `--end` bounds the window
+without retiming it.
+
 ## Masks
 
 The layer can be cut to a shape. `--mask circle` and `--mask ellipse` differ:
