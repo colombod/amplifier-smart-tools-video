@@ -127,3 +127,67 @@ def test_both_doors_accept_the_same_plan(label, kwargs, fields):
     """Guard against over-correcting: the new refusals must not catch valid plans."""
     assert _via_library(**kwargs), f"the library wrongly refuses {label}"
     assert _via_json(**fields), f"a JSON plan wrongly refuses {label}"
+
+
+# ---------------------------------------------------------------------------
+# `LayerAudio`'s compressor settings are NOT a parity case, and that is the
+# point. The CLI exposes only `--duck`, so `lib.overlay` has no parameter that
+# can reach these fields at all -- a JSON plan is the only door. There is no
+# library guard to mirror; these ARE the guard.
+#
+# The dangerous values sit INSIDE ffmpeg's accepted range, so ffmpeg renders
+# them happily and says nothing. Measured against a plain no-duck render at
+# 2047.2, with an honest duck reaching 1344.6:
+#
+#     duck_ratio=1.0       base 2047.2  -- identical to no duck at all
+#     duck_threshold=1.0   base 2047.2  -- identical to no duck at all
+#
+# Exit 0, a normal-looking file, no diagnostic.
+# ---------------------------------------------------------------------------
+
+DUCK_REFUSED = [
+    ("a 1:1 ratio, which is no compression", {"duck_ratio": 1.0}),
+    ("a ratio above ffmpeg's maximum", {"duck_ratio": 21.0}),
+    ("a threshold of 1, which nothing crosses", {"duck_threshold": 1.0}),
+    ("a negative threshold", {"duck_threshold": -1.0}),
+    ("an attack beyond ffmpeg's range", {"duck_attack": 99999.0}),
+    ("a release beyond ffmpeg's range", {"duck_release": 99999.0}),
+]
+
+DUCK_ACCEPTED = [
+    ("the defaults", {}),
+    ("a gentle ratio", {"duck_ratio": 4.0, "duck_threshold": 0.1}),
+    ("the maximum ratio", {"duck_ratio": 20.0}),
+    ("a fast attack", {"duck_attack": 5.0}),
+]
+
+
+def _duck_via_json(settings: dict) -> bool:
+    payload = {
+        "plan_format": 1,
+        "source": "a.mp4",
+        "operations": [
+            {
+                "op": "overlay",
+                "source": "b.mp4",
+                "audio": {"policy": "keep", "duck": True, **settings},
+            }
+        ],
+    }
+    try:
+        Plan.model_validate(payload)
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+@pytest.mark.parametrize(("label", "settings"), DUCK_REFUSED, ids=[c[0] for c in DUCK_REFUSED])
+def test_a_duck_that_would_not_duck_is_refused(label, settings):
+    assert not _duck_via_json(settings), f"a JSON plan still accepts {label}"
+
+
+@pytest.mark.parametrize(("label", "settings"), DUCK_ACCEPTED, ids=[c[0] for c in DUCK_ACCEPTED])
+def test_workable_duck_settings_are_still_accepted(label, settings):
+    """Over-correcting here would refuse settings that duck perfectly well,
+    including both range boundaries."""
+    assert _duck_via_json(settings), f"a JSON plan wrongly refuses {label}"

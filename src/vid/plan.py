@@ -196,6 +196,44 @@ class LayerAudio(BaseModel):
     duck_attack: float = 20.0
     duck_release: float = 250.0
 
+    @model_validator(mode="after")
+    def _duck_settings_actually_duck(self) -> LayerAudio:
+        """Refuse settings that render a duck that does not duck.
+
+        These fields reach `sidechaincompress` directly and the CLI exposes
+        only `--duck`, so they arrive ONLY from a JSON plan -- the same
+        unreachable-by-the-library shape as `Mask.radius`.
+
+        The dangerous values are INSIDE ffmpeg's accepted range, so ffmpeg is
+        happy and says nothing. Measured against a plain no-duck render at
+        2047.2, an honest duck reaching 1344.6:
+
+            duck_ratio=1.0       base 2047.2  -- identical to no duck at all
+            duck_threshold=1.0   base 2047.2  -- identical to no duck at all
+
+        Exit 0, a normal-looking file, no diagnostic: the caller asked to duck
+        and got nothing. A ratio of 1:1 is by definition no compression, and a
+        threshold of 1.0 is a ceiling nothing reaches.
+
+        Out-of-range values are refused here too, so the caller gets a sentence
+        naming the field instead of a raw AVOption error.
+        """
+        if not 1.0 < self.duck_ratio <= 20.0:
+            raise ValueError(
+                f"A duck ratio must be above 1 and at most 20, and {self.duck_ratio:g} is not. "
+                "A ratio of 1 is no compression at all, so the base would never dip."
+            )
+        if not 0.0 < self.duck_threshold < 1.0:
+            raise ValueError(
+                f"A duck threshold must be between 0 and 1, and {self.duck_threshold:g} is not. "
+                "At 1 nothing ever crosses it, so the base would never dip."
+            )
+        if not 0.01 <= self.duck_attack <= 2000.0:
+            raise ValueError(f"A duck attack must be between 0.01 and 2000 ms, and {self.duck_attack:g} is not.")
+        if not 0.01 <= self.duck_release <= 9000.0:
+            raise ValueError(f"A duck release must be between 0.01 and 9000 ms, and {self.duck_release:g} is not.")
+        return self
+
 
 class Motion(BaseModel):
     """Where the overlay travels to, and over what window.
