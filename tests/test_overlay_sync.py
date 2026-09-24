@@ -147,3 +147,50 @@ def test_an_undelayed_layer_is_unaffected(clips, varying, tmp_path):
     for at, expected in ((0.5, "0-1s"), (1.5, "1-2s"), (2.5, "2-3s")):
         assert _segment_seen(out, at) == expected
         assert _segment_heard(out, at) == expected
+
+
+# ---------------------------------------------------------------------------
+# The configurations round 2 named but round 2's fix never exercised. The
+# mechanism was repaired and verified on ONE shape; these are the other three.
+# Each uses a window spanning at least two layer segments, so a frozen picture
+# cannot agree by coincidence.
+# ---------------------------------------------------------------------------
+
+
+def test_a_bounded_window_plays_from_the_layers_beginning_and_ends(base, varying, tmp_path):
+    """`--start 1 --end 3`: visible for two seconds, playing its own 0-2s."""
+    plan = lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, start="1", end="3", audio="only")
+    out = lib.render(plan, str(tmp_path / "bounded.mp4"))
+
+    assert [_segment_seen(out, at) for at in (1.5, 2.5)] == ["0-1s", "1-2s"]
+    assert [_segment_heard(out, at) for at in (1.5, 2.5)] == ["0-1s", "1-2s"]
+
+    after = pixel_at(out, 3.5, 320, 180)
+    assert max(after) < 120, f"the layer is still on screen after --end; pixel {after} is not the base"
+
+
+def test_a_trim_before_an_overlay_keeps_the_contract(base, varying, tmp_path):
+    """Trim changes `elapsed`, which the picture shift is sequenced against.
+
+    The shift is applied before the elapsed bound, so a trim that moves that
+    bound is exactly where an ordering mistake would surface.
+    """
+    plan = lib.trim(Plan(source=str(base.path)), "0", "4")
+    plan = lib.overlay(plan, str(varying.path), 0, 0, 640, 360, start="2", audio="only")
+    out = lib.render(plan, str(tmp_path / "trimmed.mp4"))
+
+    assert [_segment_seen(out, at) for at in (2.5, 3.5)] == ["0-1s", "1-2s"]
+    assert [_segment_heard(out, at) for at in (2.5, 3.5)] == ["0-1s", "1-2s"]
+    assert probe_duration(out) == pytest.approx(4.0, abs=0.15), "the trim was undone"
+
+
+def test_a_layer_longer_than_the_edit_does_not_extend_it(base, varying, tmp_path):
+    """A 3s layer over a 2s edit. The original #9 defect, re-checked against a
+    layer that now carries a real picture shift."""
+    plan = lib.trim(Plan(source=str(base.path)), "0", "2")
+    plan = lib.overlay(plan, str(varying.path), 0, 0, 640, 360, audio="only")
+    out = lib.render(plan, str(tmp_path / "longer.mp4"))
+
+    assert probe_duration(out) == pytest.approx(2.0, abs=0.15), "the layer extended the edit"
+    assert [_segment_seen(out, at) for at in (0.5, 1.5)] == ["0-1s", "1-2s"]
+    assert [_segment_heard(out, at) for at in (0.5, 1.5)] == ["0-1s", "1-2s"]
