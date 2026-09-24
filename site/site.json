@@ -18,7 +18,7 @@
     ],
     [
       "Shape the sequence.",
-      "Chain trims, speed changes, zooms, transitions, captions, and audio into an inspectable edit plan."
+      "Chain trims, speed changes, zooms, transitions, captions, layered picture-in-picture, and audio into an inspectable edit plan."
     ],
     [
       "Render it together.",
@@ -38,6 +38,10 @@
     [
       "Keep the edit readable.",
       "Save, diff, and replay the JSON plan. Use the same capabilities from a shell pipeline or the Python library."
+    ],
+    [
+      "Lay one clip over another.",
+      "Put a webcam inset in the corner and grow it to full screen, cut it to a circle, key out its background, and decide whether its sound is dropped or mixed."
     ]
   ],
   "prompt": "Use Vid to edit my local video. Read vid --help and the relevant command help. Help me select the moments to keep, compose the changes as one edit plan, and show me the plan before rendering.",
