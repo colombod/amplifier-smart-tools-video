@@ -93,6 +93,31 @@ class Mask(BaseModel):
     # Soften the matte's edge, in pixels. 0 is a hard edge.
     feather: float = 0.0
 
+    @model_validator(mode="after")
+    def _shape_is_usable(self) -> Mask:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        THIS CLASS WAS THE SIBLING I MISSED. An earlier round moved `Overlay`'s
+        and `Motion`'s guards onto the models and described it as "one rule,
+        enforced once, on every path in". `Mask` sits in this same file,
+        reachable through the same JSON door, and kept none of them -- so a
+        negative radius arrived from a plan file and rendered a plain
+        rectangle, silently ignoring the rounding the caller asked for.
+
+        Fixing the reported site and not sweeping the class is how that
+        sentence became false while reading as true.
+        """
+        if self.kind in ("image", "video") and not self.source:
+            raise ValueError(
+                f"A {self.kind} mask needs a file to take its shape from. The procedural shapes "
+                "(rect, rounded_rect, circle, ellipse) need no file."
+            )
+        if self.radius < 0:
+            raise ValueError(f"A rounded rectangle's radius cannot be negative, and {self.radius} is.")
+        if self.feather < 0:
+            raise ValueError(f"A mask's feather cannot be negative, and {self.feather:g} is.")
+        return self
+
 
 #: A hex literal (`0xRRGGBB`, `#RRGGBBAA`) or a bare colour name, each with an
 #: optional `@alpha`. Anything carrying a filtergraph metacharacter is refused.

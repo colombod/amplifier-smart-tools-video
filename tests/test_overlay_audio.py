@@ -214,3 +214,54 @@ def test_keep_preserves_the_base_all_the_way_to_the_end(clips, tmp_path):
         f"the base's tone is gone from the tail under `keep`: {base_late:.1f} at {late}s "
         f"against {control:.1f} in the base-only control (layer there: {layer_late:.1f})"
     )
+
+
+def test_duck_attenuates_the_base_and_leaves_the_layer_alone(clips, tmp_path):
+    """`--duck` had no test that it ducks.
+
+    It was exercised -- chains ran with it and rendered -- but nothing asserted
+    the base actually got quieter, so the flag could have been a no-op and
+    every test would still have passed.
+
+    TWO assertions, and the second is the one that makes this discriminating.
+    "The base got quieter" alone would pass just as happily if the whole mix
+    were attenuated, which is a different defect wearing the same number. The
+    layer must be UNTOUCHED: ducking lowers what you are talking over, not
+    everything.
+
+    Measured with `tone_level`, absolute. `tone_strength` divides by the
+    loudest of the fixtures' tones, so a base pushed down while the layer
+    stayed put would partly cancel in the ratio -- the metric that already hid
+    a -6 dB defect from an earlier round.
+    """
+
+    from vid import lib
+
+    def rendered(duck: bool):
+        plan = lib.overlay(
+            Plan(source=str(clips["alpha"].path)),
+            str(clips["bravo"].path),
+            0,
+            0,
+            640,
+            360,
+            audio="keep",
+            duck=duck,
+        )
+        return render(plan, str(tmp_path / f"duck_{duck}.mp4"))
+
+    plain, ducked = rendered(False), rendered(True)
+
+    base_plain = tone_level(plain, clips["alpha"].hz, at=1.0)
+    base_ducked = tone_level(ducked, clips["alpha"].hz, at=1.0)
+    layer_plain = tone_level(plain, clips["bravo"].hz, at=1.0)
+    layer_ducked = tone_level(ducked, clips["bravo"].hz, at=1.0)
+
+    assert base_ducked < base_plain * 0.85, (
+        f"`--duck` did not lower the base: {base_plain:.1f} -> {base_ducked:.1f}. "
+        "Measured at roughly 0.66 when the sidechain is working."
+    )
+    assert layer_ducked == pytest.approx(layer_plain, rel=0.1), (
+        f"`--duck` changed the LAYER too: {layer_plain:.1f} -> {layer_ducked:.1f}. "
+        "Ducking lowers what you are talking over, not everything."
+    )
