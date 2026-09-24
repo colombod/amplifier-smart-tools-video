@@ -613,7 +613,19 @@ class Compiler:
         # Shifted BEFORE the elapsed bound below, so the trim still clips the
         # shifted layer to the edit rather than to start+elapsed.
         if start > 0:
-            layer = self._step(f"setpts=PTS+{start:.6f}/TB", layer, "v")
+            # `tpad`, NOT `setpts`. A PTS shift is CANCELLED by the
+            # `setpts=PTS-STARTPTS` rebase in the elapsed bound directly below,
+            # which re-zeros the stream and subtracts exactly the offset just
+            # added. Measured on a 6s base with start=2: the picture froze on a
+            # single segment at output 2.5/3.5/4.5 while the sound advanced
+            # 0-1s/1-2s/2-3s correctly.
+            #
+            # `tpad` PREPENDS REAL FRAMES, so the offset is content rather than
+            # a timestamp, and survives the rebase. That is precisely why the
+            # audio side has always worked: `adelay` inserts real silence.
+            # Transparent padding, so the base shows through before the layer
+            # appears.
+            layer = self._step(f"tpad=start_duration={start:.6f}:start_mode=add:color=0x00000000", layer, "v")
 
         # BOUND THE LAYER TO THE EDIT. `overlay` does not stop when the main
         # input does: a 3s layer over a 2s trimmed edit rendered 3s, silently

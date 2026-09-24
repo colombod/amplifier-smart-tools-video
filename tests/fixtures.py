@@ -745,3 +745,56 @@ def tone_level(path: Path | str, hz: int, at: float = 0.5, window: float = 0.3) 
         s0 = sample + k * s1 - s2
         s2, s1 = s1, s0
     return math.sqrt(abs(s1 * s1 + s2 * s2 - k * s1 * s2)) / count
+
+
+def ensure_long_base_clip() -> Clip:
+    """A SIX-SECOND base, deliberately disjoint from every layer segment.
+
+    Dark grey (48,48,48) carrying 200 Hz: not red/green/blue, and not
+    440/660/880 Hz, so a frame or tone belonging to the base can never be
+    misread as belonging to the layer.
+
+    SIX seconds because the window is the test. `start=2` over the three-second
+    `alpha` leaves a ONE-SECOND window -- exactly one layer segment -- in which
+    a frozen picture and a correctly-delayed sound both classify as `0-1s` and
+    agree by coincidence. That degenerate pairing passed while the picture was
+    frozen on a single held frame, which is how a broken shift shipped as a
+    verified fix. Over six seconds the visible window spans three segments, so
+    the layer must be seen to ADVANCE, not merely to match once.
+    """
+    path = FIXTURE_DIR / "base6.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x303030:s=640x360:r=30:d=6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=200:sample_rate=48000:duration=6",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="base6", colour="0x303030", hz=200, seconds=6.0)

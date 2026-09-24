@@ -18,7 +18,15 @@ come from the layer's own time `d`.
 
 import pytest
 
-from tests.fixtures import ensure_clips, ensure_varying_clip, have_ffmpeg, pixel_at, probe_duration, tone_level
+from tests.fixtures import (
+    ensure_clips,
+    ensure_long_base_clip,
+    ensure_varying_clip,
+    have_ffmpeg,
+    pixel_at,
+    probe_duration,
+    tone_level,
+)
 from vid import lib
 from vid.plan import Plan
 
@@ -51,6 +59,20 @@ def clips():
 
 
 @pytest.fixture(scope="module")
+def base():
+    """Six seconds, dark grey, 200 Hz -- disjoint from every layer segment.
+
+    `start=2` over this leaves a FOUR-second window spanning all three layer
+    segments, so the layer must be seen to ADVANCE. Over the three-second
+    `alpha` the window was ONE second -- a single segment -- where a frozen
+    picture and a correctly-delayed sound both classify as `0-1s` and agree by
+    coincidence. That is how a shift that never survived its own rebase passed
+    as a verified fix.
+    """
+    return ensure_long_base_clip()
+
+
+@pytest.fixture(scope="module")
 def varying():
     return ensure_varying_clip()
 
@@ -64,45 +86,43 @@ def test_the_fixture_itself_changes_in_both_channels(varying):
 
 
 @pytest.mark.parametrize("policy", ["keep", "only"])
-def test_a_delayed_layer_keeps_picture_and_sound_together(clips, varying, tmp_path, policy):
-    """The defect, measured directly.
+def test_a_delayed_layer_keeps_picture_and_sound_together(base, varying, tmp_path, policy):
+    """Picture and sound must name the SAME layer time, at several instants.
 
-    Before the fix, at output 2.5s with start=2 the frame was the layer's
-    2-3s segment while the audible tone was its 0-1s segment.
+    Sampled across three segments rather than one. A single sample cannot tell
+    a layer that is advancing from one frozen on a held frame -- the frozen
+    case matched at one instant and was reported as a pass.
     """
-    plan = lib.overlay(
-        Plan(source=str(clips["alpha"].path)),
-        str(varying.path),
-        0,
-        0,
-        640,
-        360,
-        start="2",
-        audio=policy,
-    )
+    plan = lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, start="2", audio=policy)
     out = lib.render(plan, str(tmp_path / f"delayed_{policy}.mp4"))
 
-    for at in (2.2, 2.5, 2.8):
+    for at in (2.5, 3.5, 4.5):
         seen, heard = _segment_seen(out, at), _segment_heard(out, at)
         assert seen == heard, f"at output {at}s the picture shows {seen} while the sound plays {heard}"
 
 
-def test_a_delayed_layer_plays_from_its_own_beginning(clips, varying, tmp_path):
-    """The contract, stated as an assertion rather than left implicit.
+def test_a_delayed_layers_picture_actually_advances(base, varying, tmp_path):
+    """THE TEST THE ROUND-2 REVIEW ASKED FOR.
 
-    `start=2` means the layer appears at 2s showing its FIRST segment, not its
-    third. Gating visibility without shifting content would show the third.
+    A frozen picture agrees with a correctly-delayed sound at exactly one
+    instant. Asserting agreement alone therefore cannot separate a working
+    shift from a broken one; this asserts the layer moves THROUGH its segments
+    in order.
     """
-    plan = lib.overlay(
-        Plan(source=str(clips["alpha"].path)),
-        str(varying.path),
-        0,
-        0,
-        640,
-        360,
-        start="2",
-        audio="only",
-    )
+    plan = lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, start="2", audio="only")
+    out = lib.render(plan, str(tmp_path / "advances.mp4"))
+
+    seen = [_segment_seen(out, at) for at in (2.5, 3.5, 4.5)]
+    assert seen == ["0-1s", "1-2s", "2-3s"], f"the layer's picture did not advance; saw {seen}"
+
+    heard = [_segment_heard(out, at) for at in (2.5, 3.5, 4.5)]
+    assert heard == ["0-1s", "1-2s", "2-3s"], f"the layer's sound did not advance; heard {heard}"
+
+
+def test_a_delayed_layer_plays_from_its_own_beginning(base, varying, tmp_path):
+    """`start=2` reveals the layer's FIRST segment, not whichever segment its
+    own clock had reached while hidden."""
+    plan = lib.overlay(Plan(source=str(base.path)), str(varying.path), 0, 0, 640, 360, start="2", audio="only")
     out = lib.render(plan, str(tmp_path / "from_beginning.mp4"))
 
     assert _segment_seen(out, 2.5) == "0-1s", "the layer did not start from its own beginning"
