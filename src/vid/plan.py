@@ -93,6 +93,32 @@ class Mask(BaseModel):
     feather: float = 0.0
 
 
+class LayerAudio(BaseModel):
+    """What happens to the overlay layer's own sound.
+
+    Absent from an overlay means `drop`, and that default is the point: in the
+    common picture-in-picture case the base already carries the narration, so a
+    layer that quietly added its own would duplicate it. Inclusion is stated.
+
+    The compressor settings are fields rather than constants so a plan records
+    what it actually did. The CLI exposes only `--duck`; a caller who needs to
+    tune the shape edits the plan, which is the contract, where the CLI is
+    ergonomics.
+    """
+
+    policy: Literal["drop", "keep", "only"] = "drop"
+    #: Applied to the LAYER before mixing, in dB. 0 leaves it alone.
+    gain_db: float = 0.0
+    #: Applied to the BASE before mixing, in dB.
+    base_gain_db: float = 0.0
+    #: Dip the base under the layer, recovering after. Off by default.
+    duck: bool = False
+    duck_threshold: float = 0.05
+    duck_ratio: float = 8.0
+    duck_attack: float = 20.0
+    duck_release: float = 250.0
+
+
 class Motion(BaseModel):
     """Where the overlay travels to, and over what window.
 
@@ -146,6 +172,8 @@ class Overlay(BaseModel):
     mask: Mask | None = None
     # Where the layer travels to. None holds the stated geometry throughout.
     motion: Motion | None = None
+    # What happens to the layer's own sound. None means `drop`.
+    audio: LayerAudio | None = None
 
 
 class Stitch(BaseModel):

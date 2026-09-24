@@ -67,8 +67,13 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # video is right now", and without a known length that bound silently
     # becomes "no bound at all", padding the incoming track's silence forever
     # rather than to the video's actual length.
+    # An overlay that contributes sound needs the edit's length too: its audio
+    # is padded and then trimmed BACK to that length, and without it the pad
+    # has no bound to stop at.
     needs_durations = any(
-        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix))
+        (isinstance(op, Stitch) and op.transition)
+        or isinstance(op, (_Retime, AudioReplace, AudioMix))
+        or (isinstance(op, Overlay) and op.audio is not None and op.audio.policy != "drop")
         for op in plan.operations
     )
     durations: dict[str, float] = {}
@@ -90,7 +95,8 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # specifier for a stream that does not exist and ffmpeg refused the command
     # with a message naming neither the file nor the reason.
     stitch_sources = [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources if s and s != "-"]
-    source_audio = {path: has_audio(path) for path in dict.fromkeys(stitch_sources)}
+    overlay_layers = [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
+    source_audio = {path: has_audio(path) for path in dict.fromkeys([*stitch_sources, *overlay_layers])}
 
     # Sizes, for the same reason and on the same terms: `concat` needs matching
     # resolution and SAR, and which size a file is cannot be read from the plan.
@@ -99,7 +105,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # Overlay layers are sized for the same reason: an image or video matte
     # has to be scaled to the layer it cuts, and that size is a fact about
     # the file rather than anything the plan can state.
-    overlay_sources = [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
+    overlay_sources = overlay_layers
     source_sizes: dict[str, tuple[int, int]] = {}
     if stitch_sources or overlay_sources:
         sized = [*stitch_sources, *overlay_sources]
@@ -977,6 +983,10 @@ def overlay(
     move_at: str | None = None,
     move_over: float = 1.0,
     easing: str = "linear",
+    audio: str | None = None,
+    audio_gain: float = 0.0,
+    base_gain: float = 0.0,
+    duck: bool = False,
 ) -> Plan:
     """Lay another clip over the picture, at a stated place and time.
 
@@ -989,7 +999,7 @@ def overlay(
     picture-in-picture case the base already carries the narration, and adding
     a second copy of it is the defect rather than the feature.
     """
-    from vid.plan import Mask, Motion, Overlay
+    from vid.plan import LayerAudio, Mask, Motion, Overlay
     from vid.timecode import parse_timecode
 
     if (width is None) != (height is None):
@@ -1047,6 +1057,21 @@ def overlay(
             easing=easing,
         )
 
+    sound = None
+    if audio is not None or audio_gain or base_gain or duck:
+        policy = audio if audio is not None else "keep"
+        if policy not in ("drop", "keep", "only"):
+            raise VidError(
+                f"Unknown audio policy {policy!r}. Use `drop` (the layer contributes no sound), "
+                "`keep` (mix it with the base), or `only` (it replaces the base)."
+            )
+        sound = LayerAudio(
+            policy=policy,
+            gain_db=audio_gain,
+            base_gain_db=base_gain,
+            duck=duck,
+        )
+
     return plan.with_operation(
         Overlay(
             source=source,
@@ -1058,6 +1083,7 @@ def overlay(
             end=ends,
             mask=shape,
             motion=travel,
+            audio=sound,
         )
     )
 

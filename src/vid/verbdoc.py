@@ -308,10 +308,23 @@ an animated size crosses odd values constantly.
 
 ## Sound
 
-**The layer's sound is not taken.** In the common picture-in-picture case the
-base already carries the narration, so mixing a second copy in is the defect
-rather than the feature. To use the layer's audio, lay it on deliberately with
-`vid audio mix` or `vid audio replace`.
+**The layer's sound is dropped by default.** In the common picture-in-picture
+case the base already carries the narration, so a layer that quietly added its
+own would duplicate it. Inclusion is stated, never assumed.
+
+```bash
+--audio keep                    mix the layer in with the base
+--audio only                    the layer replaces the base
+--audio keep --audio-gain -6    mix it in, 6 dB down
+--audio keep --duck             dip the base under the layer, recovering after
+```
+
+`keep` sums the two rather than averaging them. `amix` defaults to scaling every
+input by 1/n, which drops the base 3 dB for no reason other than a layer being
+present; this uses `normalize=0` and the gains you state.
+
+The layer's sound starts when the layer appears, is bounded to the edit's own
+length, and is faded 20 ms at each end so it does not click.
 
 **Arguments.**
 - `source` (required) -- the clip to lay over the picture.
@@ -336,6 +349,11 @@ rather than the feature. To use the layer's audio, lay it on deliberately with
 - `--move-at` (optional, default `0`) -- when the move begins.
 - `--move-over` (optional, default `1`) -- seconds the move takes.
 - `--easing` (optional, default `linear`) -- `linear` or `ease_in_out`.
+- `--audio` (optional, default `drop`) -- the layer's sound: `drop`, `keep`
+  or `only`.
+- `--audio-gain` (optional, default `0`) -- layer gain in dB before mixing.
+- `--base-gain` (optional, default `0`) -- base gain in dB before mixing.
+- `--duck` (optional, default off) -- dip the base under the layer.
 
 **Result.** A plan with one more operation, `overlay`, written to stdout.
 

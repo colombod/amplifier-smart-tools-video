@@ -85,6 +85,22 @@ partway through, on whichever frame happened to land wrong.
 
 `motion` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
 
+An overlay's own sound is now a stated choice. `--audio drop` (the default) contributes
+nothing, `keep` mixes it with the base, `only` replaces the base. `--audio-gain` and
+`--base-gain` set the balance in dB, and `--duck` dips the base under the layer,
+recovering after.
+
+`keep` SUMS the two rather than averaging them. `amix` defaults to `normalize=1`, scaling
+every input by 1/n: measured on a 440 Hz base, alone it reads max_volume -17.6 dB and
+through a default `amix` with a second input -18.5 dB. The base lost 3 dB because of
+nothing but a layer being present. This uses `normalize=0` and the gains you state.
+
+The layer's sound starts when the layer appears, is resampled to match the base's rate and
+layout, is bounded to the edit's length, and is faded 20 ms at each end so it does not
+click. Taking audio from a layer that has none is refused by name.
+
+`audio` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

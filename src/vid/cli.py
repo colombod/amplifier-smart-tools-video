@@ -197,6 +197,13 @@ def overlay(
     move_at: Annotated[str | None, typer.Option("--move-at", help="When the move begins.")] = None,
     move_over: Annotated[float, typer.Option("--move-over", help="Seconds the move takes.")] = 1.0,
     easing: Annotated[str, typer.Option("--easing", help="`linear` or `ease_in_out`.")] = "linear",
+    audio: Annotated[
+        str | None,
+        typer.Option("--audio", help="The layer's sound: `drop` (default), `keep`, or `only`."),
+    ] = None,
+    audio_gain: Annotated[float, typer.Option("--audio-gain", help="Layer gain in dB before mixing.")] = 0.0,
+    base_gain: Annotated[float, typer.Option("--base-gain", help="Base gain in dB before mixing.")] = 0.0,
+    duck: Annotated[bool, typer.Option("--duck", help="Dip the base under the layer, recovering after.")] = False,
     help: _doc("overlay") = False,
 ) -> None:
     """Lay another clip over the picture, at a stated place and time."""
@@ -222,6 +229,10 @@ def overlay(
             move_at,
             move_over,
             easing,
+            audio,
+            audio_gain,
+            base_gain,
+            duck,
         )
     )
 
