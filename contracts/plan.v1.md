@@ -49,6 +49,13 @@ edit that is subtly not the one asked for.
 | `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
 | `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable), `motion` (nullable), `audio` (nullable), `key` (nullable), `opacity` | lay another clip over the picture |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
+| `recolor` | `reference`, `source_mean`, `source_std`, `reference_mean`, `reference_std`, `strength` | match another clip's colour |
+| `vignette` | `strength` | darken toward the edges |
+| `grade` | `look` | apply a named look |
+| `lut` | `path` | apply a LUT file |
+| `audio_remove` | none | drop the soundtrack entirely |
+| `audio_replace` | `track`, `start` | replace the soundtrack |
+| `audio_mix` | `track`, `level`, `start` | mix a track in alongside |
 
 **`retime` takes exactly one of `speed` or `ramp`.** Both, or neither, is invalid.
 
@@ -94,7 +101,7 @@ position: `["intro.mp4", "-", "outro.mp4"]` puts the running edit in the middle.
 **`stitch.fit` is `"fit"`, `"fill"`, or absent.** It decides how a clip that is not the
 edit's own size is resolved: `fit` preserves aspect and pads the remainder, `fill`
 preserves aspect and crops the overflow centred. Neither stretches. Absent means the
-caller has not chosen, and a size mismatch is then **refused** rather than normalised —
+caller has not chosen, and a size mismatch is then **refused** rather than normalised --
 resizing footage without being asked changes the framing without saying so. A plan whose
 clips are all one size never consults it.
 

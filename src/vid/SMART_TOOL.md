@@ -3,12 +3,14 @@ smart_tool_format: 1
 name: vid
 version: 0.3.3
 description: >-
-  Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
+  Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "put the webcam in the corner and grow it to full screen", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, lays one clip over another as a picture-in-picture (shaped, keyed, animated), burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
 use_cases:
   - Trim a video down to one section, or cut a section out of the middle
   - Join several clips together, with or without a transition between them
   - Speed a recording up, slow it down, or ramp the speed across a stretch
   - Burn captions into the picture from a subtitle file
+  - Lay one clip over another as a webcam inset, a logo or a reaction shot
+  - Grow an inset to full screen, cut it to a circle, or key out its background
   - Find the moment someone said something, or the moment something appeared on screen
   - Replace, remove or mix the audio, or lay a music bed under a demo
   - Match a video's colour to a reference image, or apply a named look
