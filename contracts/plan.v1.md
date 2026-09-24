@@ -47,9 +47,14 @@ edit that is subtly not the one asked for.
 | `retime` | `speed` **or** `ramp[]`, `pitch` | constant speed, or a curve of `{at, speed}` points |
 | `zoom` | `to`, `at` (nullable), `duration`, `x`, `y` | animated zoom; `x`/`y` are ffmpeg expressions |
 | `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
+| `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable) | lay another clip over the picture |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
 
 **`retime` takes exactly one of `speed` or `ramp`.** Both, or neither, is invalid.
+
+**`overlay` takes `width` and `height` together or not at all.** One alone is invalid: the
+other would have to be derived from an aspect ratio the caller never stated. Its geometry
+is in PIXELS of the edit's own frame, and it never contributes audio.
 
 **In `stitch.sources`, the string `"-"` means "the plan built so far"**, and it holds a
 position: `["intro.mp4", "-", "outro.mp4"]` puts the running edit in the middle.

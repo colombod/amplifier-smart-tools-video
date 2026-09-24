@@ -951,6 +951,51 @@ def stitch(
     )
 
 
+def overlay(
+    plan: Plan,
+    source: str,
+    x: int = 0,
+    y: int = 0,
+    width: int | None = None,
+    height: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> Plan:
+    """Lay another clip over the picture, at a stated place and time.
+
+    Placement is in pixels of the edit's own frame, with the origin at the top
+    left. `width`/`height` resize the layer and must be given together.
+    `start`/`end` bound the window it is on screen for; omit both and it runs
+    for the whole edit.
+
+    Picture only. The layer's sound is not taken: in the common
+    picture-in-picture case the base already carries the narration, and adding
+    a second copy of it is the defect rather than the feature.
+    """
+    from vid.plan import Overlay
+    from vid.timecode import parse_timecode
+
+    if (width is None) != (height is None):
+        raise VidError(
+            "An overlay needs both --width and --height, or neither. Given only one, the "
+            "other would have to be invented from an aspect ratio nobody stated."
+        )
+    if width is not None and width <= 0:
+        raise VidError(f"An overlay's width must be positive, not {width}.")
+    if height is not None and height <= 0:
+        raise VidError(f"An overlay's height must be positive, not {height}.")
+
+    begins = parse_timecode(start) if start else None
+    ends = parse_timecode(end) if end else None
+    if begins is not None and ends is not None and ends <= begins:
+        raise VidError(
+            f"An overlay's --end ({ends:g}s) must come after its --start ({begins:g}s). "
+            "As written the layer would never be on screen."
+        )
+
+    return plan.with_operation(Overlay(source=source, x=x, y=y, width=width, height=height, start=begins, end=ends))
+
+
 def caption(plan: Plan, subtitles: str, style: str | None = None) -> Plan:
     """Burn subtitles into the picture from a subtitle file."""
     from vid.plan import Caption

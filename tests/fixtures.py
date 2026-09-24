@@ -311,6 +311,37 @@ def marker_box(path: Path | str, at: float, width: int, height: int) -> tuple[in
     return (max(columns) - min(columns) + 1, max(rows) - min(rows) + 1)
 
 
+def pixel_at(path: Path | str, at: float, x: int, y: int, width: int = 640) -> tuple[int, int, int]:
+    """One decoded pixel, by coordinate.
+
+    `frame_colour` averages the whole frame, which cannot tell "a layer covers
+    this corner" from "the frame got slightly greener". Compositing needs a
+    named point: inside the layer's box, and outside it.
+    """
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    index = (y * width + x) * 3
+    return (raw[index], raw[index + 1], raw[index + 2])
+
+
 def _is_marker(raw: bytes, width: int, x: int, y: int) -> bool:
     index = (y * width + x) * 3
     return all(channel > 180 for channel in raw[index : index + 3])

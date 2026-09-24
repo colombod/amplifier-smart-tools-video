@@ -70,6 +70,34 @@ class Zoom(BaseModel):
     y: str = "ih/2-(ih/zoom/2)"
 
 
+class Overlay(BaseModel):
+    """Lay another clip over the picture, at a stated place and time.
+
+    Placement is in PIXELS of the edit's own frame. Percentages and an animated
+    geometry track are deliberately not here yet: an inset that grows to full
+    screen is a property of a MOTION over time, and inventing a syntax for it
+    before that lands would mean two ways to say the same thing.
+
+    Sound is not taken from the layer. An overlay that quietly added a second
+    audio track would duplicate narration in the common picture-in-picture case,
+    where the base already carries it.
+    """
+
+    op: Literal["overlay"] = "overlay"
+    source: str
+    x: int = 0
+    y: int = 0
+    # None means the layer's own size, untouched. Both must be given together:
+    # one alone would have to invent the other from an aspect ratio nobody
+    # stated, which is how footage gets silently reshaped.
+    width: int | None = None
+    height: int | None = None
+    # The window the layer is on screen for, in seconds. None for either end
+    # means "from the beginning" and "until the end" respectively.
+    start: float | None = None
+    end: float | None = None
+
+
 class Stitch(BaseModel):
     """Append other sources. `-` stands for the plan arriving on stdin."""
 
@@ -206,6 +234,7 @@ Operation = Annotated[
     | Retime
     | Zoom
     | Stitch
+    | Overlay
     | Caption
     | AudioRemove
     | AudioReplace

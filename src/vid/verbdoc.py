@@ -243,6 +243,58 @@ without saying so, so there is no default.
 **What it costs.** Stitching re-encodes the picture, with or without a transition.
 Picture stream-copy is reserved for audio-only plans.
 """,
+    "overlay": """# vid overlay -- lay another clip over the picture
+
+```bash
+vid overlay inset.mp4 talk.mp4 --x 20 --y 20 --width 320 --height 180
+vid overlay logo.mp4 - --x 40 --y 40 --start 0:05 --end 0:20
+vid trim talk.mp4 --to 2:00 | vid overlay inset.mp4 - --x 300 --y 20
+```
+
+The FIRST argument is the clip being laid on top. The second is what it goes
+over, or `-` for the plan arriving on stdin.
+
+## Where it goes
+
+Placement is in **pixels of the edit's own frame**, origin at the top left.
+`--width` and `--height` resize the layer and must be given together: with only
+one, the other would have to be invented from an aspect ratio nobody stated,
+which silently reshapes the layer.
+
+An odd width or height is rounded down to even. `yuv420p` cannot encode an odd
+dimension, and the layer is composited into a frame that will be.
+
+## When it is on screen
+
+`--start` and `--end` bound the window. Omit both and the layer runs for the
+whole edit; omit just `--end` and it runs to the end.
+
+## Sound
+
+**The layer's sound is not taken.** In the common picture-in-picture case the
+base already carries the narration, so mixing a second copy in is the defect
+rather than the feature. To use the layer's audio, lay it on deliberately with
+`vid audio mix` or `vid audio replace`.
+
+**Arguments.**
+- `source` (required) -- the clip to lay over the picture.
+- `over` (optional) -- what it goes over, or `-` for the plan on stdin.
+- `--x` (optional, default `0`) -- left edge, in pixels from the frame's left.
+- `--y` (optional, default `0`) -- top edge, in pixels from the frame's top.
+- `--width` (optional, default none) -- resize the layer. Needs `--height` too.
+- `--height` (optional, default none) -- resize the layer. Needs `--width` too.
+- `--start` (optional, default none) -- when the layer appears.
+- `--end` (optional, default none) -- when the layer disappears.
+
+**Result.** A plan with one more operation, `overlay`, written to stdout.
+
+**Failures.** Only one of `--width`/`--height`: refused, rather than inventing
+the other. A width or height that is zero or negative: refused. An `--end` at or
+before `--start`: refused, because the layer would never be on screen.
+
+**What it costs.** Compositing re-encodes the picture. Picture stream-copy is
+reserved for audio-only plans.
+""",
     "caption": """# vid caption -- burn subtitles into the picture
 
 ```bash

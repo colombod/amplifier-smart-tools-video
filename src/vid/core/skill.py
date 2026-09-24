@@ -15,6 +15,7 @@ CAPABILITIES = (
     Capability("cut", "Remove a time range, keeping what surrounds it.", model_backed=False),
     Capability("retime", "Change speed, constantly or along a curve.", model_backed=False),
     Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
+    Capability("overlay", "Lay another clip over the picture, at a stated place and time.", model_backed=False),
     Capability("stitch", "Join clips, with or without a transition.", model_backed=False),
     Capability(
         "index", "Build a time-coded account of a video: shots, and speech as timed passages.", model_backed=False

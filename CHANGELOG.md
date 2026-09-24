@@ -41,6 +41,18 @@ changes the framing without saying so.
 
 `fit` is a new optional field on the `stitch` operation, so `plan_format` stays `1`.
 
+New verb: `vid overlay` lays another clip over the picture at a stated place and time.
+Placement is in pixels of the edit's own frame; `--width`/`--height` resize the layer and
+must be given together, because with only one the other would have to be invented from an
+aspect ratio nobody stated. `--start`/`--end` bound the window it is on screen for.
+
+The layer is picture only. Its sound is not taken, because in the common
+picture-in-picture case the base already carries the narration and a second copy of it is
+the defect rather than the feature. Use `audio mix` or `audio replace` to lay a layer's
+sound on deliberately.
+
+`overlay` is a new operation, so `plan_format` stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

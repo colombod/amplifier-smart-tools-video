@@ -29,6 +29,7 @@ from vid.plan import (
     Cut,
     Grade,
     Lut,
+    Overlay,
     Plan,
     Recolor,
     Retime,
@@ -422,6 +423,49 @@ class Compiler:
                     f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
                 )
                 self.video, self.audio = out_v, out_a
+
+    def overlay(self, op: Overlay) -> None:
+        """Lay another clip over the picture at a stated place and time.
+
+        Picture only. The layer's sound is not taken, which is the whole point
+        of stating it: in the common picture-in-picture case the base already
+        carries the narration, and quietly mixing a second copy in is the
+        defect, not the feature. `self.audio` is therefore never read here --
+        it cannot leak the literal string "None" into the graph the way the
+        stitch path once did, because it is not interpolated at all.
+
+        `elapsed` is untouched. An overlay changes what a frame LOOKS like, not
+        how many there are, so a duration that moved would be a defect.
+        """
+        self.inputs.append(op.source)
+        layer = f"{len(self.inputs) - 1}:v"
+
+        if (op.width is None) != (op.height is None):
+            raise VidError(
+                "An overlay needs both --width and --height, or neither. Given only one, "
+                "the other would have to be invented from an aspect ratio nobody stated, "
+                "which silently reshapes the layer."
+            )
+        if op.width is not None and op.height is not None:
+            # Even dimensions: yuv420p cannot encode an odd width or height, and
+            # an overlay is composited into a frame that will be.
+            width, height = (op.width // 2) * 2, (op.height // 2) * 2
+            layer = self._step(f"scale={width}:{height},setsar=1", layer, "v")
+
+        # `enable` is what confines the layer to its window. Without it the
+        # overlay runs for the whole edit regardless of what was asked.
+        window = ""
+        if op.start is not None or op.end is not None:
+            start = op.start if op.start is not None else 0.0
+            window = (
+                f":enable='between(t,{start:.6f},{op.end:.6f})'"
+                if op.end is not None
+                else f":enable='gte(t,{start:.6f})'"
+            )
+
+        out = self._next("v")
+        self.filters.append(f"[{self.video}][{layer}]overlay=x={op.x}:y={op.y}{window}[{out}]")
+        self.video = out
 
     def _normalised(self, source: str, label: str, op: Stitch) -> str:
         """Resize a clip to the target size, or return it untouched.
@@ -832,6 +876,8 @@ def compile_plan(
                 compiler.zoom(operation)
             case Stitch():
                 compiler.stitch(operation)
+            case Overlay():
+                compiler.overlay(operation)
             case Caption():
                 compiler.caption(operation)
             case Recolor():

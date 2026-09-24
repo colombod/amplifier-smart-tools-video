@@ -171,6 +171,22 @@ def stitch(
 
 
 @app.command()
+def overlay(
+    source: Annotated[str, typer.Argument(help="The clip to lay over the picture.")],
+    over: Annotated[str | None, typer.Argument(help="A video file, or omit to continue a piped plan.")] = None,
+    x: Annotated[int, typer.Option("--x", help="Left edge, in pixels from the frame's left.")] = 0,
+    y: Annotated[int, typer.Option("--y", help="Top edge, in pixels from the frame's top.")] = 0,
+    width: Annotated[int | None, typer.Option("--width", help="Resize the layer. Needs --height too.")] = None,
+    height: Annotated[int | None, typer.Option("--height", help="Resize the layer. Needs --width too.")] = None,
+    start: Annotated[str | None, typer.Option("--start", help="When the layer appears.")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="When the layer disappears.")] = None,
+    help: _doc("overlay") = False,
+) -> None:
+    """Lay another clip over the picture, at a stated place and time."""
+    write_plan(lib.overlay(read_plan(over), source, x, y, width, height, start, end))
+
+
+@app.command()
 def caption(
     source: Annotated[str | None, typer.Argument(help="A video file, or omit to continue a piped plan.")] = None,
     subtitles: Annotated[str, typer.Option("--subtitles", help="An .srt or .ass file.")] = ...,
