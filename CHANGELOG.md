@@ -101,6 +101,23 @@ click. Taking audio from a layer that has none is refused by name.
 
 `audio` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
 
+An overlay can be made transparent. `--opacity` scales the whole layer uniformly, and
+`--key` makes part of the layer's OWN picture transparent: `colorkey`, `chromakey` or
+`lumakey`, tuned by `--key-colour`, `--key-threshold`, `--key-similarity` and
+`--key-blend`. A key is distinct from a mask -- a key reads what the layer already
+contains, a mask imposes a shape from outside -- and the two combine by INTERSECTION.
+
+The order is a contract, not an implementation detail, because a different order looks
+different: key, then shape, then feather, then opacity. Feathering before the
+intersection would soften an edge the shape then cuts hard, and scaling opacity before
+the shape would make the shape's own border semi-transparent twice.
+
+At their defaults these are genuine no-ops, asserted by comparing a whole decoded row
+against the plain composite rather than a single pixel.
+
+`key` and `opacity` are new optional fields on the `overlay` operation, so `plan_format`
+stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

@@ -306,6 +306,32 @@ two seconds into the recording, whatever the frame is doing around it.
 Sizes are rounded to even numbers. `yuv420p` cannot encode an odd dimension, and
 an animated size crosses odd values constantly.
 
+## Transparency
+
+`--opacity` scales the whole layer uniformly. `--key` makes part of the layer's
+OWN picture transparent, by colour or by brightness -- distinct from a mask,
+which imposes a shape from outside.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --key colorkey --key-colour 0x00FF00
+vid overlay cam.mp4 talk.mp4 --key chromakey --mask circle --opacity 0.8
+```
+
+**The order is a contract, not an implementation detail**, because a different
+order looks different:
+
+1. `--key` edits the layer's own alpha, from its own content.
+2. `--mask` INTERSECTS that with a shape imposed from outside.
+3. `--mask-feather` softens the COMBINED edge, not just the shape's.
+4. `--opacity` scales whatever survived, uniformly.
+
+Feathering before the intersection would soften an edge the shape then cuts
+hard. Scaling opacity before the shape would make the shape's own border
+semi-transparent twice.
+
+At their defaults (`--opacity 1`, no key, no feather) these are genuine no-ops:
+the emitted chain is the plain composite.
+
 ## Sound
 
 **The layer's sound is dropped by default.** In the common picture-in-picture
@@ -354,6 +380,13 @@ length, and is faded 20 ms at each end so it does not click.
 - `--audio-gain` (optional, default `0`) -- layer gain in dB before mixing.
 - `--base-gain` (optional, default `0`) -- base gain in dB before mixing.
 - `--duck` (optional, default off) -- dip the base under the layer.
+- `--key` (optional, default none) -- make part of the layer's own picture
+  transparent: `colorkey`, `chromakey` or `lumakey`.
+- `--key-colour` (optional, default `0x00FF00`) -- the colour to remove.
+- `--key-threshold` (optional, default `0.9`) -- brightness to remove, `lumakey` only.
+- `--key-similarity` (optional, default `0.3`) -- how close a pixel must be to count.
+- `--key-blend` (optional, default `0`) -- softness at the keyed edge.
+- `--opacity` (optional, default `1`) -- uniform transparency, 0 to 1.
 
 **Result.** A plan with one more operation, `overlay`, written to stdout.
 

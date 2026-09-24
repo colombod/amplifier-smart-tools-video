@@ -29,6 +29,7 @@ from vid.plan import (
     Caption,
     Cut,
     Grade,
+    Key,
     Lut,
     Motion,
     Overlay,
@@ -448,19 +449,14 @@ class Compiler:
         inset_y = f"max(abs(Y-H/2)-(H/2-{radius})\\,0)"
         return f"if(lte({inset_x}*{inset_x}+{inset_y}*{inset_y},{radius}*{radius}),255,0)"
 
-    def _masked(self, layer: str, op: Overlay) -> str:
-        """Cut the layer to its mask, returning an RGBA label.
+    def _shape_matte(self, layer: str, op: Overlay) -> tuple[str, str]:
+        """Build the shape matte, returning (picture, matte).
 
-        Built at the layer's NATIVE size and merged into alpha BEFORE any
-        resize. Scaling RGBA carries the alpha and its feathering along for
-        free, where masking after the resize would force the matte to track the
-        same geometry as the picture -- two descriptions of one shape, free to
-        drift apart the moment either changes.
+        A procedural shape is derived from the layer itself, so the stream is
+        split: one copy stays the picture, the other is reduced to grey.
         """
         mask = op.mask
-        if mask is None:
-            return layer
-
+        assert mask is not None
         if mask.kind in ("image", "video"):
             if not mask.source:
                 raise VidError(f"A {mask.kind} mask needs a file to read the matte from. Name one.")
@@ -472,23 +468,86 @@ class Compiler:
                 )
             self.inputs.append(mask.source)
             matte = self._step(f"format=gray,scale={size[0]}:{size[1]},setsar=1", f"{len(self.inputs) - 1}:v", "v")
-            picture = layer
-        else:
-            # One stream cannot feed two filters, so the layer is split: one
-            # copy becomes the picture, the other is reduced to a matte.
-            picture, source_for_matte = self._next("v"), self._next("v")
-            self.filters.append(f"[{layer}]split[{picture}][{source_for_matte}]")
-            expression = self._SHAPES.get(mask.kind) or self._rounded_rect(mask.radius)
-            matte = self._step(f"format=gray,geq=lum='{expression}':cb=128:cr=128,format=gray", source_for_matte, "v")
+            return layer, matte
 
-        if mask.invert:
-            matte = self._step("negate", matte, "v")
-        if mask.feather > 0:
-            matte = self._step(f"gblur=sigma={mask.feather:g}", matte, "v")
+        picture, source_for_matte = self._next("v"), self._next("v")
+        self.filters.append(f"[{layer}]split[{picture}][{source_for_matte}]")
+        expression = self._SHAPES.get(mask.kind) or self._rounded_rect(mask.radius)
+        matte = self._step(f"format=gray,geq=lum='{expression}':cb=128:cr=128,format=gray", source_for_matte, "v")
+        return picture, matte
+
+    def _key_filter(self, key: Key) -> str:
+        """`lumakey` takes different parameters from the two colour keys.
+
+        Named parameters throughout, because the positional forms do not line
+        up: `colorkey=color:similarity:blend` against
+        `lumakey=threshold:tolerance:softness`. Passing one's arguments
+        positionally to the other keys the wrong thing without complaining.
+        """
+        if key.kind == "lumakey":
+            return f"lumakey=threshold={key.threshold:g}:tolerance={key.similarity:g}:softness={key.blend:g}"
+        return f"{key.kind}=color={key.colour}:similarity={key.similarity:g}:blend={key.blend:g}"
+
+    def _composited(self, layer: str, op: Overlay) -> str:
+        """Key, shape, feather and opacity, resolved into ONE alpha channel.
+
+        THE ORDER IS A CONTRACT, not an implementation detail, because a
+        different order is visibly different:
+
+            key      edits the layer's OWN alpha, from its own content
+            shape    INTERSECTS that with a shape imposed from outside
+            feather  softens the COMBINED edge, not just the shape's
+            opacity  scales whatever survived, uniformly
+
+        Feathering before the intersection would soften an edge the shape then
+        cuts hard; scaling opacity before the shape would make the shape's own
+        border semi-transparent twice.
+
+        All of it at the layer's NATIVE size, merged into alpha BEFORE any
+        resize, so a circular inset stays circular as it grows: one description
+        of the shape rather than two free to drift apart.
+        """
+        key, mask = op.key, op.mask
+        opacity = max(0.0, min(1.0, op.opacity))
+        if key is None and mask is None and opacity >= 1.0:
+            return layer
+
+        picture = layer
+        mattes: list[str] = []
+
+        if key is not None:
+            keyed = self._step(f"{self._key_filter(key)},format=rgba", picture, "v")
+            picture, alpha_source = self._next("v"), self._next("v")
+            self.filters.append(f"[{keyed}]split[{picture}][{alpha_source}]")
+            mattes.append(self._step("alphaextract,format=gray", alpha_source, "v"))
+
+        if mask is not None:
+            picture, shape = self._shape_matte(picture, op)
+            if mask.invert:
+                shape = self._step("negate", shape, "v")
+            mattes.append(shape)
+
+        if not mattes:
+            # Opacity alone still needs something to scale: a white matte the
+            # size of the layer, derived from the layer so it cannot mismatch.
+            picture, source = self._next("v"), self._next("v")
+            self.filters.append(f"[{layer}]split[{picture}][{source}]")
+            mattes.append(self._step("format=gray,geq=lum='255':cb=128:cr=128,format=gray", source, "v"))
+
+        combined = mattes[0]
+        for extra in mattes[1:]:
+            merged = self._next("v")
+            self.filters.append(f"[{combined}][{extra}]blend=all_mode=multiply[{merged}]")
+            combined = self._step("format=gray", merged, "v")
+
+        if mask is not None and mask.feather > 0:
+            combined = self._step(f"gblur=sigma={mask.feather:g}", combined, "v")
+        if opacity < 1.0:
+            combined = self._step(f"lutyuv=y='val*{opacity:g}'", combined, "v")
 
         rgba = self._step("format=rgba", picture, "v")
         out = self._next("v")
-        self.filters.append(f"[{rgba}][{matte}]alphamerge[{out}]")
+        self.filters.append(f"[{rgba}][{combined}]alphamerge[{out}]")
         return out
 
     def overlay(self, op: Overlay) -> None:
@@ -506,7 +565,7 @@ class Compiler:
         """
         self.inputs.append(op.source)
         index = len(self.inputs) - 1
-        layer = self._masked(f"{index}:v", op)
+        layer = self._composited(f"{index}:v", op)
 
         if (op.width is None) != (op.height is None):
             raise VidError(

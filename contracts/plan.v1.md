@@ -47,7 +47,7 @@ edit that is subtly not the one asked for.
 | `retime` | `speed` **or** `ramp[]`, `pitch` | constant speed, or a curve of `{at, speed}` points |
 | `zoom` | `to`, `at` (nullable), `duration`, `x`, `y` | animated zoom; `x`/`y` are ffmpeg expressions |
 | `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
-| `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable), `motion` (nullable), `audio` (nullable) | lay another clip over the picture |
+| `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable), `motion` (nullable), `audio` (nullable), `key` (nullable), `opacity` | lay another clip over the picture |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
 
 **`retime` takes exactly one of `speed` or `ramp`.** Both, or neither, is invalid.
@@ -77,6 +77,16 @@ sidechain compressor whose `duck_threshold`, `duck_ratio`, `duck_attack` and
 plan states what it actually did. **Mixing sums rather than averages**: `amix` runs with
 `normalize=0`, because scaling every input by 1/n changes the base's level for no reason
 the caller asked for.
+
+**`overlay.key` is an object or absent, and `overlay.opacity` runs 0..1 with 1 the
+default.** A key's `kind` is `colorkey`, `chromakey` or `lumakey`; `colour` applies to the
+two colour keys and `threshold` to `lumakey`, with `similarity` and `blend` shaping the
+edge. **A key and a mask INTERSECT** -- a key reads the layer's own content, a mask
+imposes a shape from outside, and both must pass for a pixel to survive.
+
+**The composition order is part of the contract**: key, then mask, then feather, then
+opacity. It is observable in the output, so it is promised rather than left to the
+implementation.
 
 **In `stitch.sources`, the string `"-"` means "the plan built so far"**, and it holds a
 position: `["intro.mp4", "-", "outro.mp4"]` puts the running edit in the middle.

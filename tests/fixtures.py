@@ -178,6 +178,59 @@ def ensure_undecodable_clip() -> Path:
     return path
 
 
+def ensure_keyable_clip() -> Clip:
+    """A green field with a blue bar spanning the FULL width, built once.
+
+    The geometry is chosen to discriminate, which took a correction. A first
+    probe used a 200x200 centred subject and a circle mask -- but the subject
+    sat entirely inside the circle, so keying-with-a-mask and keying-alone
+    rendered identical pixels at every point sampled. The probe proved nothing
+    about the mask.
+
+    A bar across the full width fixes that: its ends stick out well beyond a
+    centred circle, so a point like (30, 180) is inside the SUBJECT and outside
+    the MASK, and the intersection of key and shape becomes measurable.
+    """
+    path = FIXTURE_DIR / "keyable.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=640x360:r=30:d=3",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=770:sample_rate=48000:duration=3",
+                "-vf",
+                "drawbox=x=0:y=150:w=640:h=60:color=blue:t=fill",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="keyable", colour="green", hz=770, seconds=3.0)
+
+
 def ensure_corner_clip() -> Clip:
     """A red clip with a small blue marker in its top-left corner, built once.
 

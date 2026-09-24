@@ -204,6 +204,15 @@ def overlay(
     audio_gain: Annotated[float, typer.Option("--audio-gain", help="Layer gain in dB before mixing.")] = 0.0,
     base_gain: Annotated[float, typer.Option("--base-gain", help="Base gain in dB before mixing.")] = 0.0,
     duck: Annotated[bool, typer.Option("--duck", help="Dip the base under the layer, recovering after.")] = False,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="Make part of the layer transparent: colorkey, chromakey, lumakey."),
+    ] = None,
+    key_colour: Annotated[str, typer.Option("--key-colour", help="The colour to remove.")] = "0x00FF00",
+    key_threshold: Annotated[float, typer.Option("--key-threshold", help="Brightness to remove, lumakey.")] = 0.9,
+    key_similarity: Annotated[float, typer.Option("--key-similarity", help="How close counts.")] = 0.3,
+    key_blend: Annotated[float, typer.Option("--key-blend", help="Softness at the keyed edge.")] = 0.0,
+    opacity: Annotated[float, typer.Option("--opacity", help="Uniform transparency, 0 to 1.")] = 1.0,
     help: _doc("overlay") = False,
 ) -> None:
     """Lay another clip over the picture, at a stated place and time."""
@@ -233,6 +242,12 @@ def overlay(
             audio_gain,
             base_gain,
             duck,
+            key,
+            key_colour,
+            key_threshold,
+            key_similarity,
+            key_blend,
+            opacity,
         )
     )
 

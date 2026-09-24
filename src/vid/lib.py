@@ -987,6 +987,12 @@ def overlay(
     audio_gain: float = 0.0,
     base_gain: float = 0.0,
     duck: bool = False,
+    key: str | None = None,
+    key_colour: str = "0x00FF00",
+    key_threshold: float = 0.9,
+    key_similarity: float = 0.3,
+    key_blend: float = 0.0,
+    opacity: float = 1.0,
 ) -> Plan:
     """Lay another clip over the picture, at a stated place and time.
 
@@ -999,7 +1005,7 @@ def overlay(
     picture-in-picture case the base already carries the narration, and adding
     a second copy of it is the defect rather than the feature.
     """
-    from vid.plan import LayerAudio, Mask, Motion, Overlay
+    from vid.plan import Key, LayerAudio, Mask, Motion, Overlay
     from vid.timecode import parse_timecode
 
     if (width is None) != (height is None):
@@ -1072,6 +1078,24 @@ def overlay(
             duck=duck,
         )
 
+    if not 0.0 <= opacity <= 1.0:
+        raise VidError(f"An overlay's opacity runs from 0 (invisible) to 1 (solid), and {opacity:g} is outside it.")
+
+    cutout = None
+    if key is not None:
+        if key not in ("colorkey", "chromakey", "lumakey"):
+            raise VidError(
+                f"Unknown key {key!r}. Use `colorkey` (flat colour), `chromakey` (better for green "
+                "screen), or `lumakey` (by brightness)."
+            )
+        cutout = Key(
+            kind=key,
+            colour=key_colour,
+            threshold=key_threshold,
+            similarity=key_similarity,
+            blend=key_blend,
+        )
+
     return plan.with_operation(
         Overlay(
             source=source,
@@ -1084,6 +1108,8 @@ def overlay(
             mask=shape,
             motion=travel,
             audio=sound,
+            key=cutout,
+            opacity=opacity,
         )
     )
 

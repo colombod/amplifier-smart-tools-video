@@ -93,6 +93,26 @@ class Mask(BaseModel):
     feather: float = 0.0
 
 
+class Key(BaseModel):
+    """Make part of the layer's OWN picture transparent, by colour or brightness.
+
+    Distinct from a mask: a mask is a shape imposed from outside, a key is a
+    property of what the layer already contains. A caller may key a green
+    screen AND cut the result to a circle in the same operation, and the two
+    combine by intersection.
+    """
+
+    kind: Literal["colorkey", "chromakey", "lumakey"] = "colorkey"
+    #: The colour to remove, for `colorkey` and `chromakey`. Ignored by `lumakey`.
+    colour: str = "0x00FF00"
+    #: The brightness to remove, 0..1, for `lumakey` only.
+    threshold: float = 0.9
+    #: How close a pixel must be to count. Higher takes more.
+    similarity: float = 0.3
+    #: Softness at the edge of what was taken.
+    blend: float = 0.0
+
+
 class LayerAudio(BaseModel):
     """What happens to the overlay layer's own sound.
 
@@ -174,6 +194,10 @@ class Overlay(BaseModel):
     motion: Motion | None = None
     # What happens to the layer's own sound. None means `drop`.
     audio: LayerAudio | None = None
+    # Make part of the layer's own picture transparent. None keys nothing.
+    key: Key | None = None
+    # Uniform transparency, 0..1. 1.0 is fully opaque and a genuine no-op.
+    opacity: float = 1.0
 
 
 class Stitch(BaseModel):
