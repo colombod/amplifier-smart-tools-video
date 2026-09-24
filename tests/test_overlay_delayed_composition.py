@@ -173,3 +173,62 @@ def test_keying_a_colour_the_layer_lacks_removes_nothing(base, varying, tmp_path
 
     seen = [_dominant(pixel_at(out, at, 320, 180)) for at in SAMPLES]
     assert seen == ["R", "G", "B"], f"keying an absent colour changed the picture; saw {seen}"
+
+
+def _right_edge(path, at: float) -> int:
+    """Rightmost column still showing the layer, scanned along the top row.
+
+    GEOMETRY-DISCRIMINATING, which the centre-pixel assertions above are not.
+    A point at (320,180) lies inside BOTH a wrongly-small 480px layer and a
+    correct 640px one, so it reports the right temporal signal either way. The
+    round-3 review found exactly that: the composition test passed while the
+    delayed layer was 480px instead of 640px.
+    """
+    rightmost = 0
+    for x in range(8, 640, 8):
+        if max(pixel_at(path, at, x, 4)) > 90:
+            rightmost = x
+    return rightmost
+
+
+def test_a_delayed_motion_resizes_on_the_same_clock_it_moves_on(base, varying, tmp_path):
+    """One declared motion window must not come apart into two.
+
+    A motion's size lands in `scale=...:eval=frame` applied to the LAYER, and
+    its position lands in `overlay=x=...` applied to the EDIT. `t` means layer
+    time in the first and edit time in the second. While the delay was padded
+    in AFTER the motion was computed, those clocks differed by exactly `start`
+    and the size arrived late -- measured with start=2 and a 1s window at
+    output 2-3s, the right edge sat at 152 through t=3.0 and only reached full
+    width at t=5.0.
+
+    Asserted on the EDGE rather than a centre pixel, because the centre is
+    inside the layer at every size and therefore cannot see this at all.
+    """
+    plan = lib.overlay(
+        Plan(source=str(base.path)),
+        str(varying.path),
+        0,
+        0,
+        160,
+        90,
+        start="2",
+        audio="only",
+        to_x=0,
+        to_y=0,
+        to_width=640,
+        to_height=360,
+        move_at="2",
+        move_over=1.0,
+    )
+    out = lib.render(plan, str(tmp_path / "delayed_motion.mp4"))
+
+    early, middle, done = (_right_edge(out, at) for at in (2.1, 2.5, 3.0))
+
+    assert early < 260, f"the layer started too wide at 2.1s: right edge {early}"
+    assert 330 < middle < 470, f"the layer was not mid-growth at 2.5s: right edge {middle}"
+    assert done > 600, (
+        f"the layer had not finished growing by the end of its window: right edge {done} at 3.0s. "
+        "The size is running on a different clock from the position."
+    )
+    assert middle > early, "the layer did not grow across its motion window"

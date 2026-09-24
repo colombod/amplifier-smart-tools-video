@@ -573,6 +573,43 @@ class Compiler:
                 "the other would have to be invented from an aspect ratio nobody stated, "
                 "which silently reshapes the layer."
             )
+        # SHIFT THE PICTURE FIRST, so every later expression shares one clock.
+        #
+        # `enable` decides WHETHER the layer is drawn at an output time; it does
+        # nothing to WHICH of the layer's own frames is drawn. Left alone, a
+        # layer revealed at start=2 shows its 2-second-old content the moment it
+        # appears, while the sound -- always shifted by `adelay` -- is correct.
+        #
+        # THE CONTRACT: `start` is when the layer APPEARS, and it plays FROM ITS
+        # OWN BEGINNING. That is what the audio path always did, so the picture
+        # was the side that was wrong.
+        #
+        # `tpad`, NOT `setpts`. A PTS shift is cancelled by the
+        # `setpts=PTS-STARTPTS` rebase in the elapsed bound below, which
+        # re-zeros the stream and subtracts exactly the offset just added.
+        # `tpad` PREPENDS REAL FRAMES, so the offset is content rather than a
+        # timestamp and survives the rebase -- precisely why `adelay` works.
+        # Transparent padding, so the base shows through before the layer
+        # appears, and `enable` hides it regardless.
+        #
+        # ORDERED BEFORE `_animated` DELIBERATELY. A motion declares ONE window,
+        # but its two halves are evaluated by different filters: the size lands
+        # in `scale=...:eval=frame` applied to the LAYER, and the position lands
+        # in `overlay=x=...` applied to the EDIT. `t` means layer time in the
+        # first and edit time in the second. With the pad applied afterwards
+        # those clocks differed by exactly `start`, and one declared window came
+        # apart -- measured with start=2 and a 1s window at output 2-3s:
+        #
+        #   move_at=2    right edge 152/152/152 at t=2.1/2.5/3.0, reaching
+        #                640 only at t=5.0 -- the size arrived two seconds late
+        #   move_at=0    position already complete before the layer was revealed
+        #
+        # Padding first puts the layer stream on edit time, so `scale` and
+        # `overlay` read the same `t` and the window stays whole.
+        start = op.start if op.start is not None else 0.0
+        if start > 0:
+            layer = self._step(f"tpad=start_duration={start:.6f}:start_mode=add:color=0x00000000", layer, "v")
+
         position_x, position_y = str(op.x), str(op.y)
         if op.motion is not None:
             layer, position_x, position_y = self._animated(layer, op, self.source_sizes.get(op.source))
@@ -585,47 +622,12 @@ class Compiler:
         # `enable` is what confines the layer to its window. Without it the
         # overlay runs for the whole edit regardless of what was asked.
         window = ""
-        start = op.start if op.start is not None else 0.0
         if op.start is not None or op.end is not None:
             window = (
                 f":enable='between(t,{start:.6f},{op.end:.6f})'"
                 if op.end is not None
                 else f":enable='gte(t,{start:.6f})'"
             )
-
-        # SHIFT THE PICTURE, do not merely gate it.
-        #
-        # `enable` decides WHETHER the layer is drawn at an output time; it does
-        # nothing to WHICH of the layer's own frames is drawn. Left alone, the
-        # layer's frames keep advancing from its source t=0 while hidden, so a
-        # layer revealed at start=2 shows its 2-second-old content the moment it
-        # appears. The sound has always been shifted (`adelay`), so picture and
-        # sound were reading DIFFERENT source times: measured at output t=2.5
-        # with start=2, the frame was the layer's 2.5s segment while the audible
-        # tone was its 0.5s segment. Two seconds apart.
-        #
-        # THE CONTRACT, now that it is written down: `start` is when the layer
-        # APPEARS, and it plays FROM ITS OWN BEGINNING. That is how a
-        # picture-in-picture is described ("bring the webcam in at 0:05"), and
-        # it is what the audio path already did -- so the picture was the side
-        # that was wrong, not the sound.
-        #
-        # Shifted BEFORE the elapsed bound below, so the trim still clips the
-        # shifted layer to the edit rather than to start+elapsed.
-        if start > 0:
-            # `tpad`, NOT `setpts`. A PTS shift is CANCELLED by the
-            # `setpts=PTS-STARTPTS` rebase in the elapsed bound directly below,
-            # which re-zeros the stream and subtracts exactly the offset just
-            # added. Measured on a 6s base with start=2: the picture froze on a
-            # single segment at output 2.5/3.5/4.5 while the sound advanced
-            # 0-1s/1-2s/2-3s correctly.
-            #
-            # `tpad` PREPENDS REAL FRAMES, so the offset is content rather than
-            # a timestamp, and survives the rebase. That is precisely why the
-            # audio side has always worked: `adelay` inserts real silence.
-            # Transparent padding, so the base shows through before the layer
-            # appears.
-            layer = self._step(f"tpad=start_duration={start:.6f}:start_mode=add:color=0x00000000", layer, "v")
 
         # BOUND THE LAYER TO THE EDIT. `overlay` does not stop when the main
         # input does: a 3s layer over a 2s trimmed edit rendered 3s, silently
