@@ -20,6 +20,7 @@ import itertools
 import math
 from pathlib import Path
 import re
+from typing import ClassVar
 
 from vid.plan import (
     AudioMix,
@@ -424,6 +425,71 @@ class Compiler:
                 )
                 self.video, self.audio = out_v, out_a
 
+    #: Procedural mattes, written against `geq`'s own W and H so one expression
+    #: serves every layer size. ffmpeg's expression evaluator has NO `^`
+    #: operator, so every square here is written as a product -- `x^2` parses as
+    #: a bitwise xor against 2 and yields a silently wrong shape.
+    _SHAPES: ClassVar[dict[str, str]] = {
+        "rect": "255",
+        "circle": ("if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),min(W/2\\,H/2)*min(W/2\\,H/2)),255,0)"),
+        "ellipse": ("if(lte(((X-W/2)/(W/2))*((X-W/2)/(W/2))+((Y-H/2)/(H/2))*((Y-H/2)/(H/2)),1),255,0)"),
+    }
+
+    def _rounded_rect(self, radius: int) -> str:
+        """A rectangle with rounded corners, as a `geq` luma expression.
+
+        A point is inside when its distance from the nearest corner CENTRE is
+        within the radius, where the corner centres sit one radius in from each
+        edge. `max(..., 0)` collapses the straight-edge case to zero distance,
+        so the same expression covers the flats and the curves.
+        """
+        inset_x = f"max(abs(X-W/2)-(W/2-{radius})\\,0)"
+        inset_y = f"max(abs(Y-H/2)-(H/2-{radius})\\,0)"
+        return f"if(lte({inset_x}*{inset_x}+{inset_y}*{inset_y},{radius}*{radius}),255,0)"
+
+    def _masked(self, layer: str, op: Overlay) -> str:
+        """Cut the layer to its mask, returning an RGBA label.
+
+        Built at the layer's NATIVE size and merged into alpha BEFORE any
+        resize. Scaling RGBA carries the alpha and its feathering along for
+        free, where masking after the resize would force the matte to track the
+        same geometry as the picture -- two descriptions of one shape, free to
+        drift apart the moment either changes.
+        """
+        mask = op.mask
+        if mask is None:
+            return layer
+
+        if mask.kind in ("image", "video"):
+            if not mask.source:
+                raise VidError(f"A {mask.kind} mask needs a file to read the matte from. Name one.")
+            size = self.source_sizes.get(op.source)
+            if size is None:
+                raise VidError(
+                    f"A {mask.kind} mask has to be scaled to the layer's own size, and the size of "
+                    f"{op.source!r} was not read. Compile through `vid render`, which probes it."
+                )
+            self.inputs.append(mask.source)
+            matte = self._step(f"format=gray,scale={size[0]}:{size[1]},setsar=1", f"{len(self.inputs) - 1}:v", "v")
+            picture = layer
+        else:
+            # One stream cannot feed two filters, so the layer is split: one
+            # copy becomes the picture, the other is reduced to a matte.
+            picture, source_for_matte = self._next("v"), self._next("v")
+            self.filters.append(f"[{layer}]split[{picture}][{source_for_matte}]")
+            expression = self._SHAPES.get(mask.kind) or self._rounded_rect(mask.radius)
+            matte = self._step(f"format=gray,geq=lum='{expression}':cb=128:cr=128,format=gray", source_for_matte, "v")
+
+        if mask.invert:
+            matte = self._step("negate", matte, "v")
+        if mask.feather > 0:
+            matte = self._step(f"gblur=sigma={mask.feather:g}", matte, "v")
+
+        rgba = self._step("format=rgba", picture, "v")
+        out = self._next("v")
+        self.filters.append(f"[{rgba}][{matte}]alphamerge[{out}]")
+        return out
+
     def overlay(self, op: Overlay) -> None:
         """Lay another clip over the picture at a stated place and time.
 
@@ -439,6 +505,7 @@ class Compiler:
         """
         self.inputs.append(op.source)
         layer = f"{len(self.inputs) - 1}:v"
+        layer = self._masked(layer, op)
 
         if (op.width is None) != (op.height is None):
             raise VidError(

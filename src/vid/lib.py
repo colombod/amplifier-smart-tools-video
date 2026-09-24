@@ -54,7 +54,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     import subprocess
 
     from vid.compile import compile_plan, validate_video_codec
-    from vid.plan import AudioMix, AudioReplace, Stitch, Zoom
+    from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Zoom
     from vid.plan import Retime as _Retime
     from vid.probe import dimensions, frame_rate, has_audio, have_ffmpeg, video_duration
 
@@ -96,9 +96,14 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # resolution and SAR, and which size a file is cannot be read from the plan.
     # The plan's own source is included because it IS the target every stitched
     # clip is resolved to.
+    # Overlay layers are sized for the same reason: an image or video matte
+    # has to be scaled to the layer it cuts, and that size is a fact about
+    # the file rather than anything the plan can state.
+    overlay_sources = [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
     source_sizes: dict[str, tuple[int, int]] = {}
-    if stitch_sources:
-        sized = [plan.source, *stitch_sources] if plan.source else stitch_sources
+    if stitch_sources or overlay_sources:
+        sized = [*stitch_sources, *overlay_sources]
+        sized = [plan.source, *sized] if plan.source else sized
         source_sizes = {path: size for path in dict.fromkeys(sized) if (size := dimensions(path)) is not None}
     from vid.plan import Retime
 
@@ -960,6 +965,11 @@ def overlay(
     height: int | None = None,
     start: str | None = None,
     end: str | None = None,
+    mask: str | None = None,
+    mask_source: str | None = None,
+    mask_radius: int = 40,
+    mask_invert: bool = False,
+    mask_feather: float = 0.0,
 ) -> Plan:
     """Lay another clip over the picture, at a stated place and time.
 
@@ -972,7 +982,7 @@ def overlay(
     picture-in-picture case the base already carries the narration, and adding
     a second copy of it is the defect rather than the feature.
     """
-    from vid.plan import Overlay
+    from vid.plan import Mask, Overlay
     from vid.timecode import parse_timecode
 
     if (width is None) != (height is None):
@@ -993,7 +1003,25 @@ def overlay(
             "As written the layer would never be on screen."
         )
 
-    return plan.with_operation(Overlay(source=source, x=x, y=y, width=width, height=height, start=begins, end=ends))
+    shape = None
+    if mask is not None:
+        allowed = ("rect", "rounded_rect", "circle", "ellipse", "image", "video")
+        if mask not in allowed:
+            raise VidError(f"Unknown mask {mask!r}. Use one of: {', '.join(allowed)}.")
+        if mask in ("image", "video") and not mask_source:
+            raise VidError(
+                f"A {mask} mask reads its matte from a file, so --mask-source is required. "
+                "The procedural shapes (rect, rounded_rect, circle, ellipse) need no file."
+            )
+        if mask_feather < 0:
+            raise VidError(f"A mask's feather cannot be negative, and {mask_feather:g} is.")
+        if mask_radius < 0:
+            raise VidError(f"A rounded rectangle's radius cannot be negative, and {mask_radius} is.")
+        shape = Mask(kind=mask, source=mask_source, radius=mask_radius, invert=mask_invert, feather=mask_feather)
+
+    return plan.with_operation(
+        Overlay(source=source, x=x, y=y, width=width, height=height, start=begins, end=ends, mask=shape)
+    )
 
 
 def caption(plan: Plan, subtitles: str, style: str | None = None) -> Plan:

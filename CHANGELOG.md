@@ -53,6 +53,21 @@ sound on deliberately.
 
 `overlay` is a new operation, so `plan_format` stays `1`.
 
+An overlay can be cut to a shape. `--mask` takes `rect`, `rounded_rect`, `circle` or
+`ellipse`, built procedurally, or `image` and `video`, which read the matte from a file
+with `--mask-source`. A `video` matte is read per frame, so the cut-out can move.
+`--mask-invert` turns the window into a hole, `--mask-feather` softens the edge, and
+`--mask-radius` sets the corner radius for `rounded_rect`.
+
+`circle` and `ellipse` are not the same shape: the circle's diameter is the layer's
+shorter side, while the ellipse is inscribed and touches all four edges.
+
+The mask is applied at the layer's own size and merged into alpha BEFORE any
+`--width`/`--height` resize, so the shape and its feathering scale with the picture
+rather than being described twice and left free to drift apart.
+
+`mask` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

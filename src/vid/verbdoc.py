@@ -269,6 +269,26 @@ dimension, and the layer is composited into a frame that will be.
 `--start` and `--end` bound the window. Omit both and the layer runs for the
 whole edit; omit just `--end` and it runs to the end.
 
+## Masks
+
+The layer can be cut to a shape. `--mask circle` and `--mask ellipse` differ:
+the circle's diameter is the layer's SHORTER side, while the ellipse is
+inscribed and touches all four edges.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --x 20 --y 20 --width 320 --height 180 --mask circle
+vid overlay cam.mp4 talk.mp4 --mask rounded_rect --mask-radius 24 --mask-feather 3
+vid overlay cam.mp4 talk.mp4 --mask video --mask-source wipe.mp4
+```
+
+`--mask image` and `--mask video` read the matte from a file: white keeps, black
+drops, and a `video` matte is read **per frame**, so the cut-out can move. The
+matte is scaled to the layer, so it need not match its size.
+
+The mask is applied at the layer's own size, before any `--width`/`--height`
+resize, so the shape and its feathering scale with the picture rather than being
+described twice.
+
 ## Sound
 
 **The layer's sound is not taken.** In the common picture-in-picture case the
@@ -285,6 +305,14 @@ rather than the feature. To use the layer's audio, lay it on deliberately with
 - `--height` (optional, default none) -- resize the layer. Needs `--width` too.
 - `--start` (optional, default none) -- when the layer appears.
 - `--end` (optional, default none) -- when the layer disappears.
+- `--mask` (optional, default none) -- cut the layer to a shape: `rect`,
+  `rounded_rect`, `circle`, `ellipse`, `image`, `video`. None is the whole
+  rectangle.
+- `--mask-source` (optional, default none) -- the matte file, required for
+  an `image` or `video` mask and ignored by the procedural shapes.
+- `--mask-radius` (optional, default `40`) -- corner radius for `rounded_rect`.
+- `--mask-invert` (optional, default off) -- cut a hole instead of a window.
+- `--mask-feather` (optional, default `0`) -- soften the mask edge, in pixels.
 
 **Result.** A plan with one more operation, `overlay`, written to stdout.
 

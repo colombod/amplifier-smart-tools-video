@@ -180,10 +180,36 @@ def overlay(
     height: Annotated[int | None, typer.Option("--height", help="Resize the layer. Needs --width too.")] = None,
     start: Annotated[str | None, typer.Option("--start", help="When the layer appears.")] = None,
     end: Annotated[str | None, typer.Option("--end", help="When the layer disappears.")] = None,
+    mask: Annotated[
+        str | None,
+        typer.Option("--mask", help="Cut the layer to a shape: rect, rounded_rect, circle, ellipse, image, video."),
+    ] = None,
+    mask_source: Annotated[
+        str | None, typer.Option("--mask-source", help="The matte file, for an image or video mask.")
+    ] = None,
+    mask_radius: Annotated[int, typer.Option("--mask-radius", help="Corner radius for rounded_rect.")] = 40,
+    mask_invert: Annotated[bool, typer.Option("--mask-invert", help="Cut a hole instead of a window.")] = False,
+    mask_feather: Annotated[float, typer.Option("--mask-feather", help="Soften the mask edge, in pixels.")] = 0.0,
     help: _doc("overlay") = False,
 ) -> None:
     """Lay another clip over the picture, at a stated place and time."""
-    write_plan(lib.overlay(read_plan(over), source, x, y, width, height, start, end))
+    write_plan(
+        lib.overlay(
+            read_plan(over),
+            source,
+            x,
+            y,
+            width,
+            height,
+            start,
+            end,
+            mask,
+            mask_source,
+            mask_radius,
+            mask_invert,
+            mask_feather,
+        )
+    )
 
 
 @app.command()

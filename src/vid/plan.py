@@ -70,6 +70,29 @@ class Zoom(BaseModel):
     y: str = "ih/2-(ih/zoom/2)"
 
 
+class Mask(BaseModel):
+    """What shape an overlay is cut to, and where that shape comes from.
+
+    Polymorphic on `kind` rather than a fixed set of shape flags, so the same
+    field covers a procedural cut-out, a piece of supplied art, and a matte
+    driven per frame by another clip. A caller who outgrows the built-in shapes
+    reaches for `image` or `video` instead of waiting for a new enum member.
+
+    Geometry is described relative to the layer, never in absolute pixels, so a
+    mask survives the layer being resized.
+    """
+
+    kind: Literal["rect", "rounded_rect", "circle", "ellipse", "image", "video"]
+    # The matte file, for `image` and `video`. Ignored by the procedural shapes.
+    source: str | None = None
+    # Corner radius in pixels, for `rounded_rect` only.
+    radius: int = 40
+    # Swap keep for drop: the shape becomes a hole rather than a window.
+    invert: bool = False
+    # Soften the matte's edge, in pixels. 0 is a hard edge.
+    feather: float = 0.0
+
+
 class Overlay(BaseModel):
     """Lay another clip over the picture, at a stated place and time.
 
@@ -96,6 +119,8 @@ class Overlay(BaseModel):
     # means "from the beginning" and "until the end" respectively.
     start: float | None = None
     end: float | None = None
+    # What the layer is cut to. None is the whole rectangle.
+    mask: Mask | None = None
 
 
 class Stitch(BaseModel):
