@@ -11,7 +11,6 @@ receiving a `Plan` directly and calling these functions with no CLI involved.
 
 import math
 from pathlib import Path
-from typing import Literal
 
 from vid.core import manifest
 from vid.core import skill as skill_module
@@ -907,7 +906,10 @@ def stitch(
     *,
     transition: str | None = None,
     duration: float = 0.5,
-    fit: Literal["fit", "fill"] | None = None,
+    # `str | None`, not a Literal: the CLI hands this straight through from a
+    # typer option, which is a plain string. The runtime check below is the
+    # real gate, and it gives a better message than a type error would.
+    fit: str | None = None,
     model: str = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: ReasoningEffort = "low",
 ) -> Plan:
