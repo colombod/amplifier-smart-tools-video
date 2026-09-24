@@ -138,6 +138,7 @@ class Compiler:
         has_audio: bool = True,
         frame_rate: float | None = None,
         dimensions: tuple[int, int] | None = None,
+        source_audio: dict[str, bool] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -154,6 +155,14 @@ class Compiler:
         # already guarded on this, so the whole chain degrades to video-only
         # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
         self.audio = "0:a" if has_audio else None
+        #: Path -> whether that file carries an audio stream, for the clips a
+        #: stitch pulls in. Probed by the render path for the same reason
+        #: `durations` is: it is a fact about the file, not about the plan, and
+        #: keeping it out of here is what lets every other verb run with no
+        #: ffmpeg at all. A path that is absent is assumed to have sound.
+        self.source_audio = source_audio or {}
+        #: True once `audio remove` has run. See `audio_remove`.
+        self.audio_removed = False
         #: The source's own frame rate, used to put retimed frames back on a
         #: uniform grid, and to give `zoompan` an accurate per-frame clock.
         #: None when it could not be read, in which case retime behaves as
@@ -376,9 +385,26 @@ class Compiler:
             self.inputs.append(source)
             index = len(self.inputs) - 1
             other_v, other_a = f"{index}:v", f"{index}:a"
+            # Whether a clip carries sound is a property of the FILE, probed
+            # before compiling. None means nobody probed -- a direct
+            # `compile_plan` call rather than the render path -- and an unproven
+            # guess must not raise. Unknown follows the running edit, which is
+            # exactly how this behaved before anything probed the sources.
+            known = self.source_audio.get(source)
+            if known is not None:
+                self._refuse_audio_mismatch(source, known)
             if op.transition:
                 self._transition(other_v, other_a, op)
                 self.elapsed += self.durations.get(source, 0.0) - op.transition_duration
+            elif self.audio is None:
+                # Neither side has sound. concat's a=0 form takes video only;
+                # interpolating the absent stream anyway put the literal string
+                # "None" in the graph and ffmpeg rejected the whole command.
+                # Exactly the guard `cut` already carries.
+                self.elapsed += self.durations.get(source, 0.0)
+                out_v = self._next("v")
+                self.filters.append(f"[{self.video}][{other_v}]concat=n=2:v=1:a=0[{out_v}]")
+                self.video = out_v
             else:
                 self.elapsed += self.durations.get(source, 0.0)
                 out_v, out_a = self._next("v"), self._next("a")
@@ -386,6 +412,39 @@ class Compiler:
                     f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
                 )
                 self.video, self.audio = out_v, out_a
+
+    def _refuse_audio_mismatch(self, source: str, incoming_has_audio: bool) -> None:
+        """Refuse a join where exactly one side carries sound.
+
+        concat needs the same streams on both sides. Passing it a specifier for
+        a stream that does not exist fails as `Stream specifier ... matches no
+        streams`, which names neither the file nor the reason -- and dropping
+        the sound instead would silently discard audio the caller still has.
+
+        Named here, before ffmpeg runs, because the caller knows which file they
+        meant and ffmpeg does not.
+        """
+        running_has_audio = self.audio is not None
+        if running_has_audio == incoming_has_audio:
+            return
+        if self.audio_removed:
+            # `audio remove` already said what to do with sound in this edit.
+            # Dropping the incoming clip's too is carrying out that instruction,
+            # not discarding something silently, so there is nothing to refuse.
+            return
+        if incoming_has_audio:
+            raise VidError(
+                f"Cannot stitch {source!r}, which has sound, onto an edit that has none. "
+                "Give the running edit an audio track with `vid audio replace`, or say the "
+                "silence is deliberate with `vid audio remove` before stitching -- joining "
+                "a silent edit to a sounded clip would have to invent a track or discard one."
+            )
+        raise VidError(
+            f"Cannot stitch {source!r} onto this edit: it carries no audio stream, and the "
+            "edit so far does. Add sound to it with `vid audio replace`, or remove the "
+            "edit's own with `vid audio remove` before stitching -- joining them as they "
+            "are would silently drop the audio you already have."
+        )
 
     def _transition(self, other_v: str, other_a: str, op: Stitch) -> None:
         """`xfade` for video, `acrossfade` for audio -- they are separate filters.
@@ -430,6 +489,13 @@ class Compiler:
             f"xfade=transition={op.transition}:duration={op.transition_duration}:offset={offset}"
             f"{expr}[{out_v}]"
         )
+        if self.audio is None:
+            # Silent on both sides -- `_refuse_audio_mismatch` has already ruled
+            # out the one-sided case. xfade is video-only, so the picture blend
+            # above is the whole transition; acrossfade below would interpolate
+            # the absent stream the same way the plain concat path used to.
+            self.video = out_v
+            return
         # AAC decode padding is not a transition handle. Bound both sides to
         # their picture timing before acrossfade, or each join drifts later.
         self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
@@ -540,6 +606,12 @@ class Compiler:
         files, and the second is what "remove" means.
         """
         self.audio = None
+        # Silence a caller ASKED for, as distinct from a source that happened to
+        # arrive without a track. A later stitch reads this: dropping a clip's
+        # sound is carrying out a stated intent, where doing the same to an edit
+        # that was only incidentally silent would be discarding audio nobody
+        # said to discard.
+        self.audio_removed = True
 
     def _extra_audio(self, track: str) -> str:
         """Add an audio file as an input and return its stream label."""
@@ -674,6 +746,7 @@ def compile_plan(
     has_audio: bool = True,
     frame_rate: float | None = None,
     dimensions: tuple[int, int] | None = None,
+    source_audio: dict[str, bool] | None = None,
     video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
@@ -682,7 +755,14 @@ def compile_plan(
         total = (durations or {}).get(plan.source or "", 0.0)
         if not math.isfinite(total) or total <= 0:
             raise VidError("Picture stream-copy needs a known positive video duration. Compile through `vid render`.")
-    compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate, dimensions=dimensions)
+    compiler = Compiler(
+        plan,
+        durations=durations,
+        has_audio=has_audio,
+        frame_rate=frame_rate,
+        dimensions=dimensions,
+        source_audio=source_audio,
+    )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
     # than its own concrete type, which is a real narrowing gap (13 diagnostics

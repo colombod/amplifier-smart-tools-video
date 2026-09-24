@@ -225,6 +225,46 @@ def ensure_corner_clip() -> Clip:
     return Clip(path=path, name="corner", colour="red", hz=550, seconds=3.0)
 
 
+def ensure_silent_clip() -> Clip:
+    """A clip carrying picture and NO audio stream at all, built once.
+
+    Not part of `CLIPS` -- every clip there has a tone, which is what makes them
+    separable in a mix. This one exists for the opposite reason: a file with no
+    audio stream is a distinct state from one whose audio is quiet, and only the
+    former makes a compiler interpolate a stream specifier that matches nothing.
+    """
+    path = FIXTURE_DIR / "silent.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=yellow:s=640x360:r=30:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="silent", colour="yellow", hz=0, seconds=2.0)
+
+
 def corner_pixel(path: Path | str, at: float) -> tuple[int, int, int]:
     """Average RGB of a small patch at the very corner (0,0) of one frame.
 

@@ -83,6 +83,13 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # has sound is a property of the FILE, not of the plan, and keeping that out
     # of the compiler is what lets every other verb run with no ffmpeg at all.
     source_has_audio = has_audio(plan.source) if plan.source else True
+
+    # The same question, asked of every clip a stitch pulls in. It used to be
+    # asked only of `plan.source`, so stitching a silent clip emitted a stream
+    # specifier for a stream that does not exist and ffmpeg refused the command
+    # with a message naming neither the file nor the reason.
+    stitch_sources = [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources if s and s != "-"]
+    source_audio = {path: has_audio(path) for path in dict.fromkeys(stitch_sources)}
     from vid.plan import Retime
 
     # Retime needs the source's frame rate to put retimed frames back on a
@@ -106,6 +113,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
         has_audio=source_has_audio,
         frame_rate=rate,
         dimensions=dims,
+        source_audio=source_audio,
         video_codec=video_codec,
     )
 
