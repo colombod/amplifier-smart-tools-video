@@ -143,3 +143,53 @@ def test_same_size_sources_still_need_no_mode(clips, tmp_path):
 
     assert _dimensions(output) == (BASE_WIDTH, BASE_HEIGHT)
     assert probe_duration(output) == pytest.approx(clips["alpha"].seconds + clips["bravo"].seconds, abs=0.15)
+
+
+def test_equal_sized_clips_are_still_given_a_known_sample_aspect():
+    """Same pixel size is not the same frame.
+
+    Two 640x360 clips at SAR 1:1 and 2:1 describe different shapes, and
+    `concat` refuses them exactly as it refuses mismatched resolutions --
+    inside ffmpeg, naming no file. `_normalised`'s docstring has always said
+    matching dimensions are insufficient, but the branch for equal sizes
+    returned the clip untouched, so the one case where `setsar` was the ONLY
+    thing needed was the one case that skipped it. Even `fit="fit"` could not
+    rescue it: the sizes matched, so nothing ran at all.
+    """
+    from vid import lib
+    from vid.compile import compile_plan
+    from vid.plan import Plan
+
+    plan = lib.stitch(Plan(source="a.mp4"), ["b.mp4"])
+    command = compile_plan(
+        plan,
+        "out.mp4",
+        durations={"a.mp4": 3.0, "b.mp4": 2.0},
+        has_audio=False,
+        source_sizes={"a.mp4": (640, 360), "b.mp4": (640, 360)},
+    )
+    graph = command[command.index("-filter_complex") + 1]
+
+    assert "setsar" in graph, "equal-sized clips reach concat with an unstated sample aspect"
+
+
+def test_equal_sized_clips_are_not_needlessly_rescaled():
+    """Guard against over-correcting: the frame is already the right size, so
+    touching its pixels would be a change nobody asked for."""
+    from vid import lib
+    from vid.compile import compile_plan
+    from vid.plan import Plan
+
+    plan = lib.stitch(Plan(source="a.mp4"), ["b.mp4"])
+    command = compile_plan(
+        plan,
+        "out.mp4",
+        durations={"a.mp4": 3.0, "b.mp4": 2.0},
+        has_audio=False,
+        source_sizes={"a.mp4": (640, 360), "b.mp4": (640, 360)},
+    )
+    graph = command[command.index("-filter_complex") + 1]
+
+    assert "scale=640:360" not in graph, "a clip already the target size was rescaled anyway"
+    assert "pad=" not in graph, "a clip already the target size was padded"
+    assert "crop=" not in graph, "a clip already the target size was cropped"

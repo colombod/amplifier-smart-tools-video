@@ -807,10 +807,25 @@ class Compiler:
         """
         target = self.target_size
         size = self.source_sizes.get(source)
-        if target is None or size is None or size == target:
+        if target is None or size is None:
             # Unknown means nobody probed, which is the direct `compile_plan`
             # path. An unproven guess must not resize someone's footage.
             return label
+        if size == target:
+            # SAME PIXEL SIZE IS NOT THE SAME FRAME. Two 640x360 clips at SAR
+            # 1:1 and 2:1 describe different shapes, and `concat` refuses them
+            # exactly as it refuses mismatched resolutions -- inside ffmpeg,
+            # naming no file.
+            #
+            # The docstring above has always said so; this branch returned
+            # untouched anyway, so the one case where `setsar` was the ONLY
+            # thing needed was the one case that skipped it. Even `fit="fit"`
+            # could not rescue it, because the sizes matched and nothing ran.
+            #
+            # `setsar=1` alone, deliberately: no scale, no pad, no crop. The
+            # frame is already the right size, so touching its pixels would be
+            # a change nobody asked for.
+            return self._step("setsar=1", label, "v")
         if op.fit is None:
             raise VidError(
                 f"Cannot stitch {source!r}: it is {size[0]}x{size[1]} and this edit is "
