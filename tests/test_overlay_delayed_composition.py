@@ -19,7 +19,7 @@ predicate being precisely the defect class this file exists to catch.
 
 import pytest
 
-from tests.fixtures import ensure_long_base_clip, ensure_varying_clip, have_ffmpeg, pixel_at, tone_level
+from tests.fixtures import ensure_long_base_clip, ensure_varying_clip, frame_row, have_ffmpeg, pixel_at, tone_level
 from vid import lib
 from vid.plan import Plan
 
@@ -176,17 +176,23 @@ def test_keying_a_colour_the_layer_lacks_removes_nothing(base, varying, tmp_path
 
 
 def _right_edge(path, at: float) -> int:
-    """Rightmost column still showing the layer, scanned along the top row.
+    """Rightmost column still showing the layer, from ONE decoded row.
 
     GEOMETRY-DISCRIMINATING, which the centre-pixel assertions above are not.
     A point at (320,180) lies inside BOTH a wrongly-small 480px layer and a
     correct 640px one, so it reports the right temporal signal either way. The
     round-3 review found exactly that: the composition test passed while the
     delayed layer was 480px instead of 640px.
+
+    Scanned with `frame_row`, not `pixel_at`. `pixel_at` spawns a process per
+    pixel; its sibling's docstring already warns that scanning through it
+    "turned one test file into four and a half minutes", and writing this with
+    it did precisely that -- 27s to 5m18s -- before the warning was heeded.
     """
+    row = frame_row(path, at, 4)
     rightmost = 0
-    for x in range(8, 640, 8):
-        if max(pixel_at(path, at, x, 4)) > 90:
+    for x, colour in enumerate(row):
+        if max(colour) > 90:
             rightmost = x
     return rightmost
 
@@ -232,3 +238,94 @@ def test_a_delayed_motion_resizes_on_the_same_clock_it_moves_on(base, varying, t
         "The size is running on a different clock from the position."
     )
     assert middle > early, "the layer did not grow across its motion window"
+
+
+def _layer_area(path, at: float) -> int:
+    """How many layer pixels are visible, sampled every 16th row.
+
+    Area rather than an edge, because a circle-masked layer has no single
+    meaningful right edge: the mask is inscribed by the SHORTER side, so the
+    widest row moves as the layer grows. Area grows monotonically regardless.
+
+    Every assertion on this is a RATIO or an ordering, never an absolute count,
+    so the sampling stride can change without silently retuning a threshold.
+    """
+    return sum(sum(1 for colour in frame_row(path, at, y) if max(colour) > 90) for y in range(8, 360, 16))
+
+
+def test_a_delayed_motion_still_ends_when_its_window_closes(base, varying, tmp_path):
+    """start x motion x END -- the third pairing of the shape that bit us twice.
+
+    Every defect in three review rounds lived at a COMBINATION of two features
+    each individually tested: delayed start x picture timing, delayed start x
+    motion geometry, base audio x edit length. This is the same shape, closed
+    before someone else finds it.
+    """
+    plan = lib.overlay(
+        Plan(source=str(base.path)),
+        str(varying.path),
+        0,
+        0,
+        160,
+        90,
+        start="2",
+        end="4",
+        audio="only",
+        to_x=0,
+        to_y=0,
+        to_width=640,
+        to_height=360,
+        move_at="2",
+        move_over=1.0,
+    )
+    out = lib.render(plan, str(tmp_path / "delayed_motion_end.mp4"))
+
+    early, middle, done, held = (_right_edge(out, at) for at in (2.1, 2.5, 3.0, 3.5))
+
+    assert early < middle < done, f"the layer did not grow across its window: {early} {middle} {done}"
+    assert done > 600, f"the layer had not finished growing by 3.0s: right edge {done}"
+    assert held > 600, f"the layer shrank after its motion finished but before --end: right edge {held}"
+    assert _right_edge(out, 4.5) == 0, "the layer is still on screen after --end"
+
+
+def test_a_delayed_motion_under_a_mask_grows_and_stays_masked(base, varying, tmp_path):
+    """start x motion x MASK. The mask must not freeze the growth, and the
+    growth must not defeat the mask.
+
+    Asserted against an UNMASKED control rendered from the same motion. Without
+    it, "the area grew" would pass just as happily with the mask silently
+    dropped -- the measurement would be real and the conclusion wrong.
+    """
+
+    def build(masked: bool):
+        return lib.overlay(
+            Plan(source=str(base.path)),
+            str(varying.path),
+            0,
+            0,
+            160,
+            90,
+            start="2",
+            audio="only",
+            mask="circle" if masked else None,
+            to_x=0,
+            to_y=0,
+            to_width=640,
+            to_height=360,
+            move_at="2",
+            move_over=1.0,
+        )
+
+    out = lib.render(build(True), str(tmp_path / "delayed_motion_mask.mp4"))
+    control = lib.render(build(False), str(tmp_path / "delayed_motion_nomask.mp4"))
+
+    early, middle, done = (_layer_area(out, at) for at in (2.1, 2.5, 3.0))
+
+    assert early < middle < done, f"the masked layer did not grow across its window: {early} {middle} {done}"
+
+    unmasked = _layer_area(control, 3.0)
+    assert done < unmasked * 0.75, (
+        f"the mask was not applied to the grown layer: masked area {done} against unmasked {unmasked}. "
+        "A circle inscribed by the shorter side covers roughly 44% of the rectangle."
+    )
+    assert done > unmasked * 0.2, f"the layer is barely visible; the mask may have swallowed it: {done}/{unmasked}"
