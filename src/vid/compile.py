@@ -593,6 +593,16 @@ class Compiler:
                 else f":enable='gte(t,{start:.6f})'"
             )
 
+        # BOUND THE LAYER TO THE EDIT. `overlay` does not stop when the main
+        # input does: a 3s layer over a 2s trimmed edit rendered 3s, silently
+        # undoing the trim. Measured, and invisible to every test that renders
+        # an overlay on its own, because alone the two lengths agree.
+        #
+        # A layer SHORTER than the edit is left alone: `overlay` holds its last
+        # frame, which is what a picture-in-picture wants.
+        if self.elapsed:
+            layer = self._step(f"trim=end={self.elapsed:.6f},setpts=PTS-STARTPTS", layer, "v")
+
         out = self._next("v")
         self.filters.append(f"[{self.video}][{layer}]overlay=x='{position_x}':y='{position_y}'{window}[{out}]")
         self.video = out

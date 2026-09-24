@@ -67,13 +67,11 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # video is right now", and without a known length that bound silently
     # becomes "no bound at all", padding the incoming track's silence forever
     # rather than to the video's actual length.
-    # An overlay that contributes sound needs the edit's length too: its audio
-    # is padded and then trimmed BACK to that length, and without it the pad
-    # has no bound to stop at.
+    # An overlay needs the edit's length: BOTH its picture and its sound are
+    # bounded back to it, and without that a layer longer than the edit
+    # extends the edit to the layer's own length.
     needs_durations = any(
-        (isinstance(op, Stitch) and op.transition)
-        or isinstance(op, (_Retime, AudioReplace, AudioMix))
-        or (isinstance(op, Overlay) and op.audio is not None and op.audio.policy != "drop")
+        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix, Overlay))
         for op in plan.operations
     )
     durations: dict[str, float] = {}

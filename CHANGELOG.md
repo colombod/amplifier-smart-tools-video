@@ -118,6 +118,15 @@ against the plain composite rather than a single pixel.
 `key` and `opacity` are new optional fields on the `overlay` operation, so `plan_format`
 stays `1`.
 
+**Fixed: an overlay no longer extends the edit.** A layer longer than the edit it was laid
+over ran to the LAYER's length, silently undoing a preceding `trim`, `cut` or `retime` --
+a 2.0s trimmed edit rendered 3.0s. The layer's picture is now bounded to the edit's length,
+exactly as its sound already was. A layer SHORTER than the edit is unaffected: `overlay`
+holds its last frame, which is what a picture-in-picture wants.
+
+The defect was invisible to every test that rendered an overlay on its own, because alone
+the two lengths agree. It took composing the verb with `trim` to see it.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

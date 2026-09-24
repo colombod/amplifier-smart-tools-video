@@ -208,3 +208,122 @@ def test_the_reported_cli_pipeline_renders_end_to_end(clips, tmp_path):
 
     assert probe_duration(str(out)) == pytest.approx(2.0, abs=0.05)
     assert not has_audio_stream(str(out))
+
+
+# ---------------------------------------------------------------------------
+# Overlay in a chain. The verb is correct alone -- tests/test_overlay*.py prove
+# that at length -- which is precisely the condition under which this file's
+# bug class hides. An overlay that KEEPS its layer's audio emits a second audio
+# branch, and a later `audio remove` discards the label that branch feeds.
+# ---------------------------------------------------------------------------
+
+
+def test_overlay_after_trim_is_bounded_to_the_trimmed_length(clips, tmp_path):
+    """`elapsed` must be the TRIMMED length, not the source's.
+
+    The overlay's audio is padded and trimmed back to the edit's length, so a
+    stale `elapsed` here pads to the wrong target: audible as silence on the
+    end, and invisible to any test that only renders an overlay alone.
+    """
+    plan = lib.trim(Plan(source=clips["alpha"]), "0.5", "2.5")
+    plan = lib.overlay(plan, clips["bravo"], 20, 20, 320, 180, audio="keep")
+    out = lib.render(plan, str(tmp_path / "trim_overlay.mp4"))
+
+    assert probe_duration(out) == pytest.approx(2.0, abs=0.1)
+    assert has_audio_stream(out)
+
+
+def test_overlay_keeping_audio_then_remove_renders_with_no_audio(clips, tmp_path):
+    """The exact shape of the bug this file exists for.
+
+    The overlay produces a mixed audio label; `audio remove` then discards it.
+    If the mix were left dangling, ffmpeg would refuse the whole graph with
+    "has output ... unconnected" rather than dropping the unused branch.
+    """
+    plan = lib.overlay(Plan(source=clips["alpha"]), clips["bravo"], 20, 20, 320, 180, audio="keep")
+    plan = lib.audio_remove(plan)
+    out = lib.render(plan, str(tmp_path / "overlay_remove.mp4"))
+
+    assert probe_duration(out) == pytest.approx(3.0, abs=0.1)
+    assert not has_audio_stream(out), "audio remove left the overlay's mix behind"
+
+
+def test_remove_then_overlay_keeping_audio_uses_the_layer_as_the_track(clips, tmp_path):
+    """The base has no audio by the time the overlay runs.
+
+    `self.audio is None` is a normal state here, not an error, and the layer
+    simply becomes the soundtrack. The guard that makes this work is the same
+    one whose absence once put the literal text "None" into the graph.
+    """
+    plan = lib.audio_remove(Plan(source=clips["alpha"]))
+    plan = lib.overlay(plan, clips["bravo"], 20, 20, 320, 180, audio="keep")
+    out = lib.render(plan, str(tmp_path / "remove_overlay.mp4"))
+
+    assert has_audio_stream(out), "the layer's sound did not become the track"
+    assert tone_strength(out, 660, at=1.0) > 0.01, "the layer's own tone is missing"
+    assert probe_duration(out) == pytest.approx(3.0, abs=0.1)
+
+
+def test_overlay_after_stitch_covers_the_joined_edit(clips, tmp_path):
+    """`elapsed` after a stitch is the SUM, and the overlay must respect it."""
+    plan = lib.stitch(Plan(source=clips["alpha"]), [clips["bravo"]])
+    plan = lib.overlay(plan, clips["charlie"], 20, 20, 320, 180, audio="keep")
+    out = lib.render(plan, str(tmp_path / "stitch_overlay.mp4"))
+
+    assert probe_duration(out) == pytest.approx(6.0, abs=0.2)
+    assert has_audio_stream(out)
+
+
+def test_overlay_after_retime_is_bounded_to_the_retimed_length(clips, tmp_path):
+    """Retime changes `elapsed` by division; the overlay's pad follows it."""
+    plan = lib.retime(Plan(source=clips["alpha"]), "2x")
+    plan = lib.overlay(plan, clips["bravo"], 20, 20, 320, 180, audio="keep")
+    out = lib.render(plan, str(tmp_path / "retime_overlay.mp4"))
+
+    assert probe_duration(out) == pytest.approx(1.5, abs=0.15)
+
+
+def test_overlay_after_cut_then_replace_still_binds_the_new_track(clips, tmp_path):
+    """Three verbs, two of which touch audio, with an overlay between them."""
+    plan = lib.cut(Plan(source=clips["alpha"]), "1.0", "2.0")
+    plan = lib.overlay(plan, clips["bravo"], 20, 20, 320, 180)
+    plan = lib.audio_replace(plan, clips["charlie"])
+    out = lib.render(plan, str(tmp_path / "cut_overlay_replace.mp4"))
+
+    assert probe_duration(out) == pytest.approx(2.0, abs=0.1)
+    assert has_audio_stream(out)
+
+
+def test_a_masked_animated_overlay_composes_with_trim_and_audio(clips, tmp_path):
+    """Everything at once: the shape, the motion, the sound and a later verb.
+
+    Each feature has its own file proving it alone. This is the only place they
+    meet, and the mask-before-resize decision is what lets them: the circle is
+    merged into alpha at native size, so the scale that animates the geometry
+    carries it along instead of needing a second description of the shape.
+    """
+    plan = lib.trim(Plan(source=clips["alpha"]), "0.0", "2.5")
+    plan = lib.overlay(
+        plan,
+        clips["bravo"],
+        320,
+        0,
+        160,
+        90,
+        mask="circle",
+        mask_feather=2.0,
+        to_x=0,
+        to_y=0,
+        to_width=640,
+        to_height=360,
+        move_at="0.5",
+        move_over=1.0,
+        audio="keep",
+        audio_gain=-6.0,
+        opacity=0.9,
+    )
+    plan = lib.audio_remove(plan)
+    out = lib.render(plan, str(tmp_path / "everything.mp4"))
+
+    assert probe_duration(out) == pytest.approx(2.5, abs=0.15)
+    assert not has_audio_stream(out), "audio remove left the overlay's mix behind"
