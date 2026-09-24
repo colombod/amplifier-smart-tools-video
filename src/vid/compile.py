@@ -585,13 +585,35 @@ class Compiler:
         # `enable` is what confines the layer to its window. Without it the
         # overlay runs for the whole edit regardless of what was asked.
         window = ""
+        start = op.start if op.start is not None else 0.0
         if op.start is not None or op.end is not None:
-            start = op.start if op.start is not None else 0.0
             window = (
                 f":enable='between(t,{start:.6f},{op.end:.6f})'"
                 if op.end is not None
                 else f":enable='gte(t,{start:.6f})'"
             )
+
+        # SHIFT THE PICTURE, do not merely gate it.
+        #
+        # `enable` decides WHETHER the layer is drawn at an output time; it does
+        # nothing to WHICH of the layer's own frames is drawn. Left alone, the
+        # layer's frames keep advancing from its source t=0 while hidden, so a
+        # layer revealed at start=2 shows its 2-second-old content the moment it
+        # appears. The sound has always been shifted (`adelay`), so picture and
+        # sound were reading DIFFERENT source times: measured at output t=2.5
+        # with start=2, the frame was the layer's 2.5s segment while the audible
+        # tone was its 0.5s segment. Two seconds apart.
+        #
+        # THE CONTRACT, now that it is written down: `start` is when the layer
+        # APPEARS, and it plays FROM ITS OWN BEGINNING. That is how a
+        # picture-in-picture is described ("bring the webcam in at 0:05"), and
+        # it is what the audio path already did -- so the picture was the side
+        # that was wrong, not the sound.
+        #
+        # Shifted BEFORE the elapsed bound below, so the trim still clips the
+        # shifted layer to the edit rather than to start+elapsed.
+        if start > 0:
+            layer = self._step(f"setpts=PTS+{start:.6f}/TB", layer, "v")
 
         # BOUND THE LAYER TO THE EDIT. `overlay` does not stop when the main
         # input does: a 3s layer over a 2s trimmed edit rendered 3s, silently

@@ -636,3 +636,112 @@ def tone_strength(path: Path | str, hz: int, at: float = 0.5, window: float = 0.
 
     strongest = max(power(f) for f in (440, 660, 880)) or 1.0
     return power(hz) / strongest
+
+
+def ensure_varying_clip() -> Clip:
+    """A clip whose PICTURE and SOUND both change, in step, over time.
+
+    Three one-second segments, each a different colour AND a different tone:
+
+        0.0 - 1.0s   red    (254,0,0)   440 Hz
+        1.0 - 2.0s   green  (0,127,0)   660 Hz
+        2.0 - 3.0s   blue   (0,0,254)   880 Hz
+
+    THIS IS THE FIXTURE EVERY OTHER ONE COULD NOT BE. `alpha`, `bravo` and
+    `charlie` are each a constant colour carrying a constant tone. A clip that
+    never changes cannot reveal that a renderer is reading its picture from one
+    source time and its sound from another -- the two are indistinguishable at
+    every instant. That is exactly how a delayed overlay shipped desynchronised
+    past 391 green tests, three spec-adherence passes, and a fixture-
+    discrimination file written specifically to catch non-discriminating
+    fixtures: that file checks base and layer are distinguishable from EACH
+    OTHER, never that either changes over TIME.
+
+    With this clip, "what is on screen" and "what is audible" each name a source
+    time, and a mismatch between them is directly measurable.
+    """
+    path = FIXTURE_DIR / "varying.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        inputs: list[str] = []
+        for colour, hz in (("0xFE0000", 440), ("0x007F00", 660), ("0x0000FE", 880)):
+            inputs += ["-f", "lavfi", "-i", f"color=c={colour}:s=640x360:r=30:d=1"]
+            inputs += ["-f", "lavfi", "-i", f"sine=frequency={hz}:sample_rate=48000:duration=1"]
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                *inputs,
+                "-filter_complex",
+                "[0:v][1:a][2:v][3:a][4:v][5:a]concat=n=3:v=1:a=1[v][a]",
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-c:a",
+                "aac",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="varying", colour="segmented", hz=0, seconds=3.0)
+
+
+def tone_level(path: Path | str, hz: int, at: float = 0.5, window: float = 0.3) -> float:
+    """ABSOLUTE strength of `hz`, with NO normalisation. Use this for level.
+
+    `tone_strength` divides by the loudest of the fixtures' own three tones, so
+    attenuating everything uniformly leaves its ratio UNCHANGED BY
+    CONSTRUCTION -- numerator and denominator scale together. A test built on
+    it cannot detect gain, ducking depth, or a lost soundtrack that fades
+    rather than vanishes. An independent review proved exactly that: the
+    level-preservation test passed with a ~-6 dB attenuation injected.
+
+    Use `tone_strength` to ask WHICH tone is present. Use `tone_level` to ask
+    HOW LOUD it is. Asking the second question with the first metric is the
+    defect that review found.
+    """
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(at),
+            "-t",
+            str(window),
+            "-i",
+            str(path),
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-f",
+            "s16le",
+            "-",
+        ],
+        capture_output=True,
+    ).stdout
+    count = len(raw) // 2
+    if count < 256:
+        return 0.0
+    samples = struct.unpack(f"<{count}h", raw[: count * 2])
+    k = 2 * math.cos(2 * math.pi * hz / 8000)
+    s1 = s2 = 0.0
+    for sample in samples:
+        s0 = sample + k * s1 - s2
+        s2, s1 = s1, s0
+    return math.sqrt(abs(s1 * s1 + s2 * s2 - k * s1 * s2)) / count

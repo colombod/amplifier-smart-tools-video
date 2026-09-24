@@ -131,3 +131,45 @@ def test_an_opacity_outside_zero_to_one_is_refused(clips):
         lib.overlay(Plan(source=str(clips["alpha"].path)), str(clips["bravo"].path), opacity=1.5)
 
     assert "1.5" in str(failure.value)
+
+
+def test_a_colour_cannot_smuggle_a_filter_into_the_graph():
+    """`key.colour` is the one free-form string that reaches filter TEXT.
+
+    An independent review supplied `0x00FF00,negate` and got
+
+        [1:v]colorkey=color=0x00FF00,negate:similarity=...
+
+    an entire extra filter, which visibly turned blue to yellow. The field is
+    now checked against a closed shape at the MODEL, so a JSON plan is refused
+    on the same terms as a CLI call.
+    """
+    import pydantic
+
+    from vid.plan import Key
+
+    for payload in ("0x00FF00,negate", "0x00FF00:similarity=1", "green;volume=0", "0x00FF00[x]"):
+        with pytest.raises(pydantic.ValidationError):
+            Key(colour=payload)
+
+
+def test_legitimate_colours_are_not_caught_by_the_guard():
+    from vid.plan import Key
+
+    for good in ("0x00FF00", "#00FF00", "green", "green@0.5", "0x00FF00AA"):
+        assert Key(colour=good).colour == good
+
+
+def test_a_json_plan_cannot_smuggle_a_filter_either():
+    """The guard sits at the model, so the JSON door is the same door."""
+    import pydantic
+
+    from vid.plan import Plan
+
+    payload = {
+        "plan_format": 1,
+        "source": "a.mp4",
+        "operations": [{"op": "overlay", "source": "b.mp4", "key": {"kind": "colorkey", "colour": "0x00FF00,negate"}}],
+    }
+    with pytest.raises(pydantic.ValidationError):
+        Plan.model_validate(payload)

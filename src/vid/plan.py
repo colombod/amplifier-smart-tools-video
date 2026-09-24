@@ -12,10 +12,11 @@ it is what falls out of not touching pixels until the end.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from vid.schemas import VidError
 
@@ -93,6 +94,11 @@ class Mask(BaseModel):
     feather: float = 0.0
 
 
+#: A hex literal (`0xRRGGBB`, `#RRGGBBAA`) or a bare colour name, each with an
+#: optional `@alpha`. Anything carrying a filtergraph metacharacter is refused.
+_COLOUR = re.compile(r"(?:(?:0x|#)[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?|[A-Za-z]+)(?:@[0-9]*\.?[0-9]+)?")
+
+
 class Key(BaseModel):
     """Make part of the layer's OWN picture transparent, by colour or brightness.
 
@@ -104,6 +110,16 @@ class Key(BaseModel):
 
     kind: Literal["colorkey", "chromakey", "lumakey"] = "colorkey"
     #: The colour to remove, for `colorkey` and `chromakey`. Ignored by `lumakey`.
+    #:
+    #: VALIDATED, because this is the ONE caller-supplied free-form string that
+    #: reaches ffmpeg's filter text. Everything else the compiler interpolates
+    #: is a number or a closed Literal, and mask sources become `-i` inputs
+    #: rather than filter arguments. An independent review showed a colour of
+    #: `0x00FF00,negate` emitting
+    #:     [1:v]colorkey=color=0x00FF00,negate:similarity=...
+    #: which inserted a whole extra filter and visibly turned blue to yellow.
+    #: A comma, colon, quote or bracket is a filtergraph metacharacter, so the
+    #: field is checked against a closed shape instead of being escaped.
     colour: str = "0x00FF00"
     #: The brightness to remove, 0..1, for `lumakey` only.
     threshold: float = 0.9
@@ -111,6 +127,23 @@ class Key(BaseModel):
     similarity: float = 0.3
     #: Softness at the edge of what was taken.
     blend: float = 0.0
+
+    @field_validator("colour")
+    @classmethod
+    def _colour_is_a_colour(cls, value: str) -> str:
+        """Either a hex literal or a bare colour name, with an optional alpha.
+
+        Deliberately a closed allowlist rather than a blocklist of dangerous
+        characters: a blocklist has to anticipate every metacharacter ffmpeg's
+        parser treats specially, and being wrong once reopens the hole.
+        """
+        if not _COLOUR.fullmatch(value):
+            raise ValueError(
+                f"Unusable colour {value!r}. Use a hex literal like `0x00FF00` or `#00FF00`, "
+                "or a colour name like `green`, either optionally followed by `@` and an "
+                "alpha such as `green@0.5`."
+            )
+        return value
 
 
 class LayerAudio(BaseModel):
