@@ -190,6 +190,13 @@ def overlay(
     mask_radius: Annotated[int, typer.Option("--mask-radius", help="Corner radius for rounded_rect.")] = 40,
     mask_invert: Annotated[bool, typer.Option("--mask-invert", help="Cut a hole instead of a window.")] = False,
     mask_feather: Annotated[float, typer.Option("--mask-feather", help="Soften the mask edge, in pixels.")] = 0.0,
+    to_x: Annotated[int | None, typer.Option("--to-x", help="Left edge the layer moves to.")] = None,
+    to_y: Annotated[int | None, typer.Option("--to-y", help="Top edge the layer moves to.")] = None,
+    to_width: Annotated[int | None, typer.Option("--to-width", help="Width the layer grows to.")] = None,
+    to_height: Annotated[int | None, typer.Option("--to-height", help="Height the layer grows to.")] = None,
+    move_at: Annotated[str | None, typer.Option("--move-at", help="When the move begins.")] = None,
+    move_over: Annotated[float, typer.Option("--move-over", help="Seconds the move takes.")] = 1.0,
+    easing: Annotated[str, typer.Option("--easing", help="`linear` or `ease_in_out`.")] = "linear",
     help: _doc("overlay") = False,
 ) -> None:
     """Lay another clip over the picture, at a stated place and time."""
@@ -208,6 +215,13 @@ def overlay(
             mask_radius,
             mask_invert,
             mask_feather,
+            to_x,
+            to_y,
+            to_width,
+            to_height,
+            move_at,
+            move_over,
+            easing,
         )
     )
 

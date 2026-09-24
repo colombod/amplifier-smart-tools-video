@@ -311,6 +311,38 @@ def marker_box(path: Path | str, at: float, width: int, height: int) -> tuple[in
     return (max(columns) - min(columns) + 1, max(rows) - min(rows) + 1)
 
 
+def frame_row(path: Path | str, at: float, y: int, width: int = 640) -> list[tuple[int, int, int]]:
+    """A whole decoded row, in ONE ffmpeg call.
+
+    `pixel_at` costs a process per pixel, which is fine for a handful of named
+    points and ruinous for scanning: measuring a 640px row through it spawns 640
+    ffmpeg invocations and turned one test file into four and a half minutes.
+    Anything that walks a row wants this instead.
+    """
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    start = y * width * 3
+    return [(raw[i], raw[i + 1], raw[i + 2]) for i in range(start, start + width * 3, 3)]
+
+
 def pixel_at(path: Path | str, at: float, x: int, y: int, width: int = 640) -> tuple[int, int, int]:
     """One decoded pixel, by coordinate.
 

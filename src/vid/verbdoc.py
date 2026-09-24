@@ -289,6 +289,23 @@ The mask is applied at the layer's own size, before any `--width`/`--height`
 resize, so the shape and its feathering scale with the picture rather than being
 described twice.
 
+## Motion
+
+An inset can grow to full screen. `--x`/`--y`/`--width`/`--height` are where it
+STARTS; the `--to-*` flags are where it ends.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --x 300 --y 20 --width 320 --height 180 \
+  --to-x 0 --to-y 0 --to-width 1280 --to-height 720 --move-at 0:02 --move-over 1
+```
+
+**This animates presentation only.** The layer is never retimed, so its own
+source timing is untouched: a moment two seconds into the recording still lands
+two seconds into the recording, whatever the frame is doing around it.
+
+Sizes are rounded to even numbers. `yuv420p` cannot encode an odd dimension, and
+an animated size crosses odd values constantly.
+
 ## Sound
 
 **The layer's sound is not taken.** In the common picture-in-picture case the
@@ -313,6 +330,12 @@ rather than the feature. To use the layer's audio, lay it on deliberately with
 - `--mask-radius` (optional, default `40`) -- corner radius for `rounded_rect`.
 - `--mask-invert` (optional, default off) -- cut a hole instead of a window.
 - `--mask-feather` (optional, default `0`) -- soften the mask edge, in pixels.
+- `--to-x` / `--to-y` (optional, default none) -- where the layer moves to.
+- `--to-width` / `--to-height` (optional, default none) -- what it grows to.
+  Both together or neither, for the same reason `--width`/`--height` are.
+- `--move-at` (optional, default `0`) -- when the move begins.
+- `--move-over` (optional, default `1`) -- seconds the move takes.
+- `--easing` (optional, default `linear`) -- `linear` or `ease_in_out`.
 
 **Result.** A plan with one more operation, `overlay`, written to stdout.
 

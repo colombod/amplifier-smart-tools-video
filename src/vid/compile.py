@@ -30,6 +30,7 @@ from vid.plan import (
     Cut,
     Grade,
     Lut,
+    Motion,
     Overlay,
     Plan,
     Recolor,
@@ -513,7 +514,10 @@ class Compiler:
                 "the other would have to be invented from an aspect ratio nobody stated, "
                 "which silently reshapes the layer."
             )
-        if op.width is not None and op.height is not None:
+        position_x, position_y = str(op.x), str(op.y)
+        if op.motion is not None:
+            layer, position_x, position_y = self._animated(layer, op, self.source_sizes.get(op.source))
+        elif op.width is not None and op.height is not None:
             # Even dimensions: yuv420p cannot encode an odd width or height, and
             # an overlay is composited into a frame that will be.
             width, height = (op.width // 2) * 2, (op.height // 2) * 2
@@ -531,8 +535,65 @@ class Compiler:
             )
 
         out = self._next("v")
-        self.filters.append(f"[{self.video}][{layer}]overlay=x={op.x}:y={op.y}{window}[{out}]")
+        self.filters.append(f"[{self.video}][{layer}]overlay=x='{position_x}':y='{position_y}'{window}[{out}]")
         self.video = out
+
+    def _progress(self, motion: Motion) -> str:
+        """0 before the move, 1 after it, and the eased fraction in between.
+
+        `clip` holds the ends flat, so the geometry is stationary outside the
+        window rather than continuing to extrapolate past it.
+        """
+        linear = f"clip((t-{motion.start:.6f})/{max(motion.duration, 1e-6):.6f},0,1)"
+        if motion.easing == "linear":
+            return linear
+        # Smoothstep: 3p^2 - 2p^3, written as products because ffmpeg's
+        # evaluator has no exponent operator.
+        return f"({linear}*{linear}*(3-2*{linear}))"
+
+    def _even(self, expression: str) -> str:
+        """Round a size expression down to an even number of pixels.
+
+        yuv420p cannot encode an odd width or height. An animated size crosses
+        odd values constantly, so without this the render dies partway through
+        on a frame that happened to land wrong -- not at the first frame, which
+        is what makes it look intermittent.
+        """
+        return f"trunc(({expression})/2)*2"
+
+    def _animated(self, layer: str, op: Overlay, size: tuple[int, int] | None) -> tuple[str, str, str]:
+        """Scale the layer per frame, and return the label plus x/y expressions.
+
+        `scale` with `eval=frame` re-evaluates its size expression every frame,
+        and `overlay` already evaluates x/y per frame. Together they move and
+        resize the layer without touching a single timestamp.
+
+        NOT `zoompan`, whose `d` is output-frames-per-input-frame and which
+        rendered 400 seconds from an 8-second source the last time it was used
+        here (see `Compiler.zoom`).
+        """
+        motion = op.motion
+        if motion is None:
+            raise VidError("internal: _animated called without a motion")
+
+        from_width = op.width if op.width is not None else (size[0] if size else None)
+        from_height = op.height if op.height is not None else (size[1] if size else None)
+        to_width = motion.to_width if motion.to_width is not None else from_width
+        to_height = motion.to_height if motion.to_height is not None else from_height
+        if from_width is None or from_height is None or to_width is None or to_height is None:
+            raise VidError(
+                f"An animated overlay needs to know how big {op.source!r} is, and its size was not "
+                "read. Give --width and --height, or compile through `vid render`, which probes it."
+            )
+
+        progress = self._progress(motion)
+        width = self._even(f"{from_width}+({to_width}-{from_width})*{progress}")
+        height = self._even(f"{from_height}+({to_height}-{from_height})*{progress}")
+        moved = self._step(f"scale=w='{width}':h='{height}':eval=frame,setsar=1", layer, "v")
+
+        x = f"{op.x}+({motion.to_x}-{op.x})*{progress}"
+        y = f"{op.y}+({motion.to_y}-{op.y})*{progress}"
+        return moved, x, y
 
     def _normalised(self, source: str, label: str, op: Stitch) -> str:
         """Resize a clip to the target size, or return it untouched.

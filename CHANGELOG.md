@@ -68,6 +68,23 @@ rather than being described twice and left free to drift apart.
 
 `mask` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
 
+An overlay can now MOVE. `--x`/`--y`/`--width`/`--height` are where it starts and the
+`--to-*` flags are where it ends, over a window set by `--move-at` and `--move-over`,
+with `--easing linear` or `ease_in_out`. The requested case, an inset recording growing
+to full screen, is one command.
+
+This animates presentation only. The layer is never retimed, so its own source timing is
+untouched: a moment two seconds into the recording still lands two seconds into the
+recording. Built on `scale` with `eval=frame` feeding `overlay`'s per-frame x/y, NOT on
+`zoompan`, whose `d` is output-frames-per-input-frame and which rendered 400 seconds from
+an 8-second source in 0.3.2.
+
+Animated sizes are rounded to even numbers, because `yuv420p` cannot encode an odd
+dimension and an animated size crosses odd values constantly. Without it a render dies
+partway through, on whichever frame happened to land wrong.
+
+`motion` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

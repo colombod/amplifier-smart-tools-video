@@ -93,6 +93,29 @@ class Mask(BaseModel):
     feather: float = 0.0
 
 
+class Motion(BaseModel):
+    """Where the overlay travels to, and over what window.
+
+    The overlay's own `x`/`y`/`width`/`height` are where the motion STARTS;
+    these fields are where it ends. One geometry is stated twice rather than a
+    list of keyframes, because the requested case is a single move -- an inset
+    growing to full screen -- and a keyframe list would be a larger promise than
+    anything has asked for.
+
+    This animates PRESENTATION only. The layer is never retimed, so its own
+    source timing is untouched by construction.
+    """
+
+    to_x: int = 0
+    to_y: int = 0
+    # None means "stay the size it already was", so a pure move needs no size.
+    to_width: int | None = None
+    to_height: int | None = None
+    start: float = 0.0
+    duration: float = 1.0
+    easing: Literal["linear", "ease_in_out"] = "linear"
+
+
 class Overlay(BaseModel):
     """Lay another clip over the picture, at a stated place and time.
 
@@ -121,6 +144,8 @@ class Overlay(BaseModel):
     end: float | None = None
     # What the layer is cut to. None is the whole rectangle.
     mask: Mask | None = None
+    # Where the layer travels to. None holds the stated geometry throughout.
+    motion: Motion | None = None
 
 
 class Stitch(BaseModel):

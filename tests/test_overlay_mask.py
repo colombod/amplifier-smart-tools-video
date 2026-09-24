@@ -14,7 +14,7 @@ assertion that holds across a range of behaviours has not measured any of them.
 
 import pytest
 
-from tests.fixtures import ensure_clips, have_ffmpeg, pixel_at, probe_duration
+from tests.fixtures import ensure_clips, frame_row, have_ffmpeg, pixel_at, probe_duration
 from vid.lib import render
 from vid.plan import Mask, Overlay, Plan
 from vid.schemas import VidError
@@ -97,11 +97,8 @@ def test_feather_makes_the_edge_intermediate(clips, tmp_path):
     soft = _shaped(clips, tmp_path, "soft", kind="circle", feather=8)
 
     def blended(path) -> int:
-        return sum(
-            1
-            for x in range(120, 260)
-            if not _is_layer(pixel_at(path, 1.0, x, 180)) and not _is_base(pixel_at(path, 1.0, x, 180))
-        )
+        row = frame_row(path, 1.0, 180)
+        return sum(1 for colour in row[120:260] if not _is_layer(colour) and not _is_base(colour))
 
     assert blended(soft) > blended(hard), f"feather produced no blend band: soft={blended(soft)} hard={blended(hard)}"
     assert _is_layer(pixel_at(soft, 1.0, *CENTRE)), "feather bled into the interior"

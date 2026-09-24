@@ -970,6 +970,13 @@ def overlay(
     mask_radius: int = 40,
     mask_invert: bool = False,
     mask_feather: float = 0.0,
+    to_x: int | None = None,
+    to_y: int | None = None,
+    to_width: int | None = None,
+    to_height: int | None = None,
+    move_at: str | None = None,
+    move_over: float = 1.0,
+    easing: str = "linear",
 ) -> Plan:
     """Lay another clip over the picture, at a stated place and time.
 
@@ -982,7 +989,7 @@ def overlay(
     picture-in-picture case the base already carries the narration, and adding
     a second copy of it is the defect rather than the feature.
     """
-    from vid.plan import Mask, Overlay
+    from vid.plan import Mask, Motion, Overlay
     from vid.timecode import parse_timecode
 
     if (width is None) != (height is None):
@@ -1019,8 +1026,39 @@ def overlay(
             raise VidError(f"A rounded rectangle's radius cannot be negative, and {mask_radius} is.")
         shape = Mask(kind=mask, source=mask_source, radius=mask_radius, invert=mask_invert, feather=mask_feather)
 
+    travel = None
+    if any(value is not None for value in (to_x, to_y, to_width, to_height)):
+        if easing not in ("linear", "ease_in_out"):
+            raise VidError(f"Unknown easing {easing!r}. Use `linear` or `ease_in_out`.")
+        if move_over <= 0:
+            raise VidError(f"An overlay's --move-over must be positive, not {move_over:g}.")
+        if (to_width is None) != (to_height is None):
+            raise VidError(
+                "An overlay's motion needs both --to-width and --to-height, or neither, for the "
+                "same reason --width and --height do: one alone invents an aspect ratio."
+            )
+        travel = Motion(
+            to_x=to_x if to_x is not None else x,
+            to_y=to_y if to_y is not None else y,
+            to_width=to_width,
+            to_height=to_height,
+            start=parse_timecode(move_at) if move_at else 0.0,
+            duration=move_over,
+            easing=easing,
+        )
+
     return plan.with_operation(
-        Overlay(source=source, x=x, y=y, width=width, height=height, start=begins, end=ends, mask=shape)
+        Overlay(
+            source=source,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            start=begins,
+            end=ends,
+            mask=shape,
+            motion=travel,
+        )
     )
 
 

@@ -47,7 +47,7 @@ edit that is subtly not the one asked for.
 | `retime` | `speed` **or** `ramp[]`, `pitch` | constant speed, or a curve of `{at, speed}` points |
 | `zoom` | `to`, `at` (nullable), `duration`, `x`, `y` | animated zoom; `x`/`y` are ffmpeg expressions |
 | `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
-| `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable) | lay another clip over the picture |
+| `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable), `motion` (nullable) | lay another clip over the picture |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
 
 **`retime` takes exactly one of `speed` or `ramp`.** Both, or neither, is invalid.
@@ -62,6 +62,13 @@ one of `rect`, `rounded_rect`, `circle`, `ellipse`, `image` or `video`; `image` 
 only to `rounded_rect`, `invert` swaps keep for drop, and `feather` softens the edge in
 pixels. The mask is resolved at the layer's own size, before any resize, so it is
 described relative to the layer and survives the layer being scaled.
+
+**`overlay.motion` is an object or absent.** Absent holds the stated geometry throughout.
+Its `to_x`, `to_y`, `to_width` and `to_height` are where the layer ends, the overlay's own
+`x`/`y`/`width`/`height` being where it starts; `start` and `duration` are the window, in
+seconds, and `easing` is `linear` or `ease_in_out`. `to_width` and `to_height` are given
+together or not at all. **Motion animates presentation only and never retimes the layer**,
+so the layer's own source timing is unaffected by it.
 
 **In `stitch.sources`, the string `"-"` means "the plan built so far"**, and it holds a
 position: `["intro.mp4", "-", "outro.mp4"]` puts the running edit in the middle.
