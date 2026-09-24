@@ -75,6 +75,15 @@ class Stitch(BaseModel):
 
     op: Literal["stitch"] = "stitch"
     sources: list[str]
+    # How a clip that is not the target size is resolved. `concat` requires
+    # matching resolution and SAR, so a mismatch is otherwise rejected by ffmpeg
+    # at render time. None means the caller has not chosen, and a mismatch is
+    # refused rather than normalised: auto-fitting would change someone's
+    # framing without saying so, which is the failure this field exists to
+    # prevent. Aspect ratio is preserved by both modes.
+    #   fit   pad the remainder with bars; nothing leaves frame
+    #   fill  crop the overflow centred; nothing is letterboxed
+    fit: Literal["fit", "fill"] | None = None
     transition: str | None = None
     transition_duration: float = 0.5
     # Where the blend begins, measured from the start of the running edit. xfade

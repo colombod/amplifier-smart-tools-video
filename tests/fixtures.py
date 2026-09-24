@@ -225,6 +225,97 @@ def ensure_corner_clip() -> Clip:
     return Clip(path=path, name="corner", colour="red", hz=550, seconds=3.0)
 
 
+def ensure_square_clip() -> Clip:
+    """A 480x480 clip with a centred 120x120 white square, built once.
+
+    Square on purpose: every clip in `CLIPS` is 640x360, so none of them can
+    show what normalising a DIFFERENT aspect ratio did. 1:1 against 16:9 is the
+    widest disagreement available, which puts the padding and the cropping
+    where a pixel test can find them.
+
+    The marker is what separates "fitted" from "stretched". A flat colour
+    rescaled to the wrong aspect looks exactly like one rescaled to the right
+    one; a square that is still square after the fact does not.
+    """
+    path = FIXTURE_DIR / "square.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=480x480:r=30:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:sample_rate=48000:duration=2",
+                "-vf",
+                "drawbox=x=180:y=180:w=120:h=120:color=white:thickness=fill",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="square", colour="blue", hz=330, seconds=2.0)
+
+
+def marker_box(path: Path | str, at: float, width: int, height: int) -> tuple[int, int]:
+    """The (width, height) of the white marker in a decoded frame, in pixels.
+
+    Reads real pixels rather than trusting the filter graph: a chain can be
+    accepted by ffmpeg and still stretch, and a stretched square is the exact
+    thing `fit` and `fill` promise not to produce.
+    """
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(at),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    columns = [x for x in range(width) if _is_marker(raw, width, x, height // 2)]
+    rows = [y for y in range(height) if _is_marker(raw, width, width // 2, y)]
+    if not columns or not rows:
+        return (0, 0)
+    return (max(columns) - min(columns) + 1, max(rows) - min(rows) + 1)
+
+
+def _is_marker(raw: bytes, width: int, x: int, y: int) -> bool:
+    index = (y * width + x) * 3
+    return all(channel > 180 for channel in raw[index : index + 3])
+
+
 def ensure_silent_clip() -> Clip:
     """A clip carrying picture and NO audio stream at all, built once.
 

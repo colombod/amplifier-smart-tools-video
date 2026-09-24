@@ -139,6 +139,7 @@ class Compiler:
         frame_rate: float | None = None,
         dimensions: tuple[int, int] | None = None,
         source_audio: dict[str, bool] | None = None,
+        source_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -161,6 +162,14 @@ class Compiler:
         #: keeping it out of here is what lets every other verb run with no
         #: ffmpeg at all. A path that is absent is assumed to have sound.
         self.source_audio = source_audio or {}
+        #: Path -> (width, height) for the clips a stitch pulls in, probed by
+        #: the render path alongside `durations` and `source_audio`. Absent
+        #: means nobody probed, and nothing is resized on an unproven guess.
+        self.source_sizes = source_sizes or {}
+        #: The size every stitched clip is resolved to: the plan source's own.
+        #: Taken from the probed sizes rather than `dimensions` so that a plan
+        #: compiled without probing has no target and normalises nothing.
+        self.target_size = self.source_sizes.get(plan.source)
         #: True once `audio remove` has run. See `audio_remove`.
         self.audio_removed = False
         #: The source's own frame rate, used to put retimed frames back on a
@@ -393,6 +402,7 @@ class Compiler:
             known = self.source_audio.get(source)
             if known is not None:
                 self._refuse_audio_mismatch(source, known)
+            other_v = self._normalised(source, other_v, op)
             if op.transition:
                 self._transition(other_v, other_a, op)
                 self.elapsed += self.durations.get(source, 0.0) - op.transition_duration
@@ -412,6 +422,46 @@ class Compiler:
                     f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
                 )
                 self.video, self.audio = out_v, out_a
+
+    def _normalised(self, source: str, label: str, op: Stitch) -> str:
+        """Resize a clip to the target size, or return it untouched.
+
+        `concat` requires matching resolution and SAR across segments. Without
+        this the mismatch reaches ffmpeg, which rejects the whole command rather
+        than naming the file, so a caller learns about it at render time in a
+        message that does not say which clip was the problem.
+
+        Both modes preserve aspect ratio. Stretching is never applied: a frame
+        that silently changed shape looks plausible and is wrong, which is the
+        class of defect this whole compiler keeps paying for.
+
+        `setsar=1` because matching pixel dimensions is not sufficient -- two
+        clips of the same size and different sample aspect are still refused.
+        """
+        target = self.target_size
+        size = self.source_sizes.get(source)
+        if target is None or size is None or size == target:
+            # Unknown means nobody probed, which is the direct `compile_plan`
+            # path. An unproven guess must not resize someone's footage.
+            return label
+        if op.fit is None:
+            raise VidError(
+                f"Cannot stitch {source!r}: it is {size[0]}x{size[1]} and this edit is "
+                f"{target[0]}x{target[1]}. Say how to resolve that with `--fit fit` "
+                "(preserve aspect, pad the remainder with bars, nothing leaves frame) or "
+                "`--fit fill` (preserve aspect, crop the overflow centred, nothing is "
+                "letterboxed). Neither is a default, because resizing footage without "
+                "being asked changes the framing without saying so."
+            )
+        width, height = target
+        if op.fit == "fit":
+            chain = (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+            )
+        else:
+            chain = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+        return self._step(chain, label, "v")
 
     def _refuse_audio_mismatch(self, source: str, incoming_has_audio: bool) -> None:
         """Refuse a join where exactly one side carries sound.
@@ -747,6 +797,7 @@ def compile_plan(
     frame_rate: float | None = None,
     dimensions: tuple[int, int] | None = None,
     source_audio: dict[str, bool] | None = None,
+    source_sizes: dict[str, tuple[int, int]] | None = None,
     video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
@@ -762,6 +813,7 @@ def compile_plan(
         frame_rate=frame_rate,
         dimensions=dimensions,
         source_audio=source_audio,
+        source_sizes=source_sizes,
     )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather

@@ -46,13 +46,20 @@ edit that is subtly not the one asked for.
 | `cut` | `start`, `end` | remove this range, rejoin what surrounds it |
 | `retime` | `speed` **or** `ramp[]`, `pitch` | constant speed, or a curve of `{at, speed}` points |
 | `zoom` | `to`, `at` (nullable), `duration`, `x`, `y` | animated zoom; `x`/`y` are ffmpeg expressions |
-| `stitch` | `sources[]`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
+| `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
 
 **`retime` takes exactly one of `speed` or `ramp`.** Both, or neither, is invalid.
 
 **In `stitch.sources`, the string `"-"` means "the plan built so far"**, and it holds a
 position: `["intro.mp4", "-", "outro.mp4"]` puts the running edit in the middle.
+
+**`stitch.fit` is `"fit"`, `"fill"`, or absent.** It decides how a clip that is not the
+edit's own size is resolved: `fit` preserves aspect and pads the remainder, `fill`
+preserves aspect and crops the overflow centred. Neither stretches. Absent means the
+caller has not chosen, and a size mismatch is then **refused** rather than normalised —
+resizing footage without being asked changes the framing without saying so. A plan whose
+clips are all one size never consults it.
 
 ---
 

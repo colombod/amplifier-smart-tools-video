@@ -28,6 +28,19 @@ out that instruction and is not refused. `vid stitch --help` documents the new r
 
 Both faults were silent until render -- the plan validated and the compile succeeded.
 
+`stitch` can now join clips that are not the same size, which it previously could not do
+at all: it applied no normalization, and `concat` requires matching resolution and SAR, so
+a mixed-size join was rejected by ffmpeg rather than caught by `vid`. The reported case
+mixed 1280x720 animation with 1920x1080 recordings.
+
+`--fit fit` preserves aspect and pads the remainder with bars, so nothing leaves frame.
+`--fit fill` preserves aspect and crops the overflow centred, so nothing is letterboxed.
+Neither stretches. A size mismatch with no mode stated is refused, naming both sizes and
+both modes; there is deliberately no default, because resizing footage without being asked
+changes the framing without saying so.
+
+`fit` is a new optional field on the `stitch` operation, so `plan_format` stays `1`.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

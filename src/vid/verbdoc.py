@@ -217,6 +217,11 @@ Two things a caller usually finds out the hard way, which this verb handles:
   matches.
 - `--duration` (optional, default `0.5`) -- seconds the transition takes.
   Ignored when `--transition` is omitted.
+- `--fit` (optional, default none) -- how a clip that is not this edit's size
+  is resolved. `fit` preserves aspect and pads the remainder with bars, so
+  nothing leaves frame. `fill` preserves aspect and crops the overflow centred,
+  so nothing is letterboxed. Neither stretches. Only consulted when a size
+  actually differs.
 - `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
   selection AND generation. Named presets do not call it.
 - `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
@@ -230,7 +235,10 @@ sound does not match the running edit's -- one carries an audio stream and the
 other does not: refused at render, naming the file. Give the silent side a
 track with `audio replace`, or say the silence is deliberate with
 `audio remove` before stitching; after `audio remove` an incoming clip's sound
-is dropped without complaint, because you already said what to do with it.
+is dropped without complaint, because you already said what to do with it. A
+clip that is not this edit's size, with no `--fit`: refused, naming both sizes
+and both modes. Resizing footage without being asked changes the framing
+without saying so, so there is no default.
 
 **What it costs.** Stitching re-encodes the picture, with or without a transition.
 Picture stream-copy is reserved for audio-only plans.

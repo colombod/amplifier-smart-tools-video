@@ -11,6 +11,7 @@ receiving a `Plan` directly and calling these functions with no CLI involved.
 
 import math
 from pathlib import Path
+from typing import Literal
 
 from vid.core import manifest
 from vid.core import skill as skill_module
@@ -90,6 +91,15 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # with a message naming neither the file nor the reason.
     stitch_sources = [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources if s and s != "-"]
     source_audio = {path: has_audio(path) for path in dict.fromkeys(stitch_sources)}
+
+    # Sizes, for the same reason and on the same terms: `concat` needs matching
+    # resolution and SAR, and which size a file is cannot be read from the plan.
+    # The plan's own source is included because it IS the target every stitched
+    # clip is resolved to.
+    source_sizes: dict[str, tuple[int, int]] = {}
+    if stitch_sources:
+        sized = [plan.source, *stitch_sources] if plan.source else stitch_sources
+        source_sizes = {path: size for path in dict.fromkeys(sized) if (size := dimensions(path)) is not None}
     from vid.plan import Retime
 
     # Retime needs the source's frame rate to put retimed frames back on a
@@ -114,6 +124,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
         frame_rate=rate,
         dimensions=dims,
         source_audio=source_audio,
+        source_sizes=source_sizes,
         video_codec=video_codec,
     )
 
@@ -887,6 +898,7 @@ def stitch(
     *,
     transition: str | None = None,
     duration: float = 0.5,
+    fit: Literal["fit", "fill"] | None = None,
     model: str = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: ReasoningEffort = "low",
 ) -> Plan:
@@ -897,6 +909,12 @@ def stitch(
     starts a fresh plan from its own first entry, appending the rest.
     """
     from vid.plan import Stitch
+
+    if fit is not None and fit not in ("fit", "fill"):
+        raise VidError(
+            f"Unknown fit mode {fit!r}. Use `fit` to preserve aspect and pad the remainder "
+            "with bars, or `fill` to preserve aspect and crop the overflow centred."
+        )
 
     rest = list(sources)
     if plan is None:
@@ -920,6 +938,7 @@ def stitch(
     return plan.with_operation(
         Stitch(
             sources=rest,
+            fit=fit,
             transition=preset,
             transition_duration=duration,
             transition_requested=requested,

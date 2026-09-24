@@ -144,6 +144,10 @@ def stitch(
         str | None, typer.Option("--transition", help="An xfade preset: fade, dissolve, wipeleft...")
     ] = None,
     duration: Annotated[float, typer.Option("--duration", help="Seconds the transition takes.")] = 0.5,
+    fit: Annotated[
+        str | None,
+        typer.Option("--fit", help="Resolve a differing size: `fit` pads with bars, `fill` crops centred."),
+    ] = None,
     help: _doc("stitch") = False,
     model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: EffortOption = "low",
@@ -154,7 +158,15 @@ def stitch(
     else:
         plan, rest = None, sources
     write_plan(
-        lib.stitch(plan, rest, transition=transition, duration=duration, model=model, reasoning_effort=reasoning_effort)
+        lib.stitch(
+            plan,
+            rest,
+            transition=transition,
+            duration=duration,
+            fit=fit,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
     )
 
 
