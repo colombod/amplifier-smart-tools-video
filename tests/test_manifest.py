@@ -2,6 +2,8 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 
+import pytest
+
 from vid.core.manifest import MANIFEST_PATH
 from vid.lib import load_manifest
 
@@ -99,3 +101,58 @@ def test_the_description_stays_under_the_agent_skills_cap() -> None:
     assert len(manifest.description) <= 1024, (
         f"description is {len(manifest.description)} chars, over the 1024 Agent Skills cap"
     )
+
+
+# ---------------------------------------------------------------------------
+# "Failures are loud and they name the remedy. A caller should never have to
+# infer what went wrong from an empty result."
+#
+# `main()` in cli.py catches ONLY VidError. Anything else reaches the user as a
+# Python traceback -- which is the loudest possible way to say nothing useful.
+# A review cited one unwrapped call; sweeping for the PROPERTY found four.
+# ---------------------------------------------------------------------------
+
+#: Every third-party name whose initialisation can fail at runtime. Each must
+#: sit inside a try that converts the failure into a VidError, because the CLI
+#: has no other net. Checked structurally, with ast, rather than by grepping
+#: for `try` near the line -- a guard three functions away would satisfy a grep.
+GUARDED_THIRD_PARTY = {"piper", "faster_whisper"}
+
+
+def test_no_third_party_initialisation_can_escape_as_a_traceback() -> None:
+    import ast
+
+    unguarded = []
+    for relative in ("src/vid/voice.py", "src/vid/index.py"):
+        tree = ast.parse((DISTRIBUTION_ROOT / relative).read_text(encoding="utf-8"))
+        inside_try = {id(node) for block in ast.walk(tree) if isinstance(block, ast.Try) for node in ast.walk(block)}
+        for node in ast.walk(tree):
+            is_third_party = isinstance(node, ast.ImportFrom) and node.module in GUARDED_THIRD_PARTY
+            if is_third_party and id(node) not in inside_try:
+                unguarded.append(f"{relative}:{node.lineno} imports {node.module}")
+
+    assert not unguarded, (
+        "third-party initialisation outside a VidError guard: "
+        + "; ".join(unguarded)
+        + ". cli.main() catches only VidError, so this reaches the user as a traceback."
+    )
+
+
+#: (module, the call that used to fail without naming a remedy)
+REMEDY_REQUIRED = [
+    ("src/vid/verify.py", "ffmpeg frame analysis", ["ffprobe", "vid check"]),
+    ("src/vid/voice.py", "PiperVoice.load and synthesize_wav", ["--voice", "vid check"]),
+    ("src/vid/index.py", "WhisperModel construction", ["tiny, base, small and medium", "vid check"]),
+]
+
+
+@pytest.mark.parametrize(
+    ("relative", "what", "remedies"), REMEDY_REQUIRED, ids=[c[0].split("/")[-1] for c in REMEDY_REQUIRED]
+)
+def test_a_named_failure_carries_a_corrective_action(relative, what, remedies) -> None:
+    """Not "does it raise VidError" -- it always did. The rule is that the
+    message tells the caller what to DO, which is the half that was missing."""
+    source = (DISTRIBUTION_ROOT / relative).read_text(encoding="utf-8")
+
+    for remedy in remedies:
+        assert remedy in source, f"{relative}'s {what} failure does not offer {remedy!r} as a corrective action"

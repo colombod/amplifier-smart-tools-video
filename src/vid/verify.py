@@ -92,7 +92,15 @@ def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
     )
     pixel = result.stdout[:3]
     if result.returncode != 0:
-        raise VidError(f"ffmpeg frame analysis failed for {path!r}: {result.stderr.decode(errors='replace')}")
+        # The stderr alone told the caller WHAT broke and nothing about what to
+        # do next. Both remedies here are real: a file ffmpeg cannot decode, and
+        # a build missing the decoder for this container, look identical at this
+        # line and are distinguished by exactly these two commands.
+        raise VidError(
+            f"ffmpeg frame analysis failed for {path!r}: {result.stderr.decode(errors='replace')}\n"
+            f"Check the file decodes at all with `ffprobe {path}`, and confirm your ffmpeg build "
+            "has the decoder for this format with `vid check`."
+        )
     if len(pixel) < 3:
         raise VidError(
             f"There is no frame at {at}s in {path!r}. Check the video's actual duration "

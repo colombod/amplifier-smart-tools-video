@@ -216,8 +216,19 @@ def transcribe(video: str, model_size: str = "base") -> list[Chunk]:
             "Every mechanical verb keeps working without it -- `vid check` shows what you have."
         ) from exc
 
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(video, beam_size=1)
+    # The ImportError above is handled; CONSTRUCTING the model was not. An
+    # unknown `--model` size, a failed weight download and an onnxruntime built
+    # for another architecture all fail here, and `main()` catches only
+    # VidError -- so each reached the user as a traceback.
+    try:
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(video, beam_size=1)
+    except Exception as exc:
+        raise VidError(
+            f"The speech model {model_size!r} could not transcribe {video!r}: {exc}\n"
+            "Sizes are tiny, base, small and medium -- check the spelling, and confirm the "
+            "machine can reach the model download. `vid check` reports the speech backend."
+        ) from exc
     return [
         Chunk(id=f"c{i}", start=round(segment.start, 3), end=round(segment.end, 3), text=segment.text.strip())
         for i, segment in enumerate(segments)
