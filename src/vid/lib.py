@@ -28,6 +28,29 @@ def skill() -> str:
     return skill_module.skill()
 
 
+def capability_skill(capability: str) -> str:
+    """One capability's skill: its worked invocation, arguments, result and failures.
+
+    THE FACADE WAS COMPLETE FOR THE TOOL AND EMPTY FOR THE CAPABILITY. `skill()`
+    returned the tool-level document, but nothing here returned an INDIVIDUAL
+    capability's, so `cli._doc` reached past the library into `vid.verbdoc`
+    directly. That put domain content on the CLI's side of the seam: a library
+    caller could get the whole tool's skill but not one verb's, and `vid <verb>
+    --help` was the only way to read it.
+
+    Raises `VidError` naming the known capabilities when asked for one that does
+    not exist, rather than a KeyError -- this is reachable from a library caller
+    passing a bad name.
+    """
+    from vid.verbdoc import verb_doc, verbs
+
+    try:
+        return verb_doc(capability)
+    except KeyError:
+        known = ", ".join(sorted(verbs()))
+        raise VidError(f"No capability named {capability!r}. This tool's capabilities are: {known}.") from None
+
+
 def skill_directory() -> Path:
     """The installed package root, where the files the skill names can be read."""
     return skill_module.skill_directory()
@@ -416,10 +439,10 @@ def index(
 ) -> str:
     """Build (or extend) a video's index and report what it holds."""
     import importlib.util
-    import json
 
-    from vid.index import build, describe, index_path
+    from vid.index import build, describe
     from vid.index import load as index_load
+    from vid.index import save as index_save
     from vid.probe import have_ffmpeg, have_ffprobe
 
     # PREFLIGHT BEFORE ANY WORK STARTS. Shot detection shells out to ffmpeg and
@@ -510,7 +533,10 @@ def index(
             return _index_report(video, record, note="vision descriptions skipped at your request")
 
         record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
-        index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
+        # THE SAME GUARDED WRITER `build` uses -- this was the second, unguarded
+        # copy of the write, so an unwritable VID_INDEX_DIR raised a raw OSError
+        # here even once `build`'s own write had been made to name the remedy.
+        index_save(video, record)
 
     return _index_report(video, record)
 

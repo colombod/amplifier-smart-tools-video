@@ -289,10 +289,35 @@ def build(video: str, *, speech: bool = True, shots: bool = True, model_size: st
     if speech and "speech" not in record:
         record["speech"] = [asdict(chunk) for chunk in transcribe(video, model_size)]
 
-    path = index_path(video)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    save(video, record)
     return record
+
+
+def save(video: str, record: dict) -> Path:
+    """Persist the index, naming the remedy when the filesystem refuses.
+
+    THE ONE WRITE PATH FOR THE INDEX, because there were two. `build` wrote it
+    here and `lib.index` wrote it again after `describe`, both with a bare
+    `mkdir` + `write_text`. An unwritable or non-existent `VID_INDEX_DIR` -- a
+    read-only mount, a typo in the variable, a full disk -- therefore escaped
+    as a raw `OSError` traceback from whichever of the two happened to run,
+    naming no remedy and pointing at no setting.
+
+    `VID_INDEX_DIR` is the thing to name: it is the only reason the location is
+    ever surprising, and it is the only knob the caller has.
+    """
+    path = index_path(video)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise VidError(
+            f"The index could not be written to {path}: {exc.strerror or exc}.\n"
+            "That location comes from VID_INDEX_DIR when it is set, and a cache "
+            "directory beside the video otherwise. Point VID_INDEX_DIR at a "
+            "writable directory, or free space on this one."
+        ) from exc
+    return path
 
 
 def chunks_of(record: dict) -> list[Chunk]:

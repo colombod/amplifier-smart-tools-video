@@ -20,7 +20,6 @@ import typer
 from vid import lib
 from vid.plan import read_plan, write_plan
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
-from vid.verbdoc import verb_doc
 
 ModelOption = Annotated[str, typer.Option("--model", "--intelligence-model", help="Model for model-backed work.")]
 EffortOption = Annotated[
@@ -41,11 +40,19 @@ def _print_skill(value: bool) -> None:
 
 
 def _doc(name: str):
-    """A `--help` that prints this verb's document and stops."""
+    """A `--help` that prints this verb's document and stops.
+
+    THROUGH THE LIBRARY, not around it. This reached into `vid.verbdoc`
+    directly, so a capability's own help was the one piece of domain content
+    the CLI owned rather than relayed -- `lib.skill()` gave a library caller
+    the whole tool's document, but no function gave them a single verb's.
+    `lib.capability_skill` is now that function, and the CLI relays it like
+    everything else.
+    """
 
     def callback(value: bool) -> None:
         if value:
-            typer.echo(verb_doc(name))
+            typer.echo(lib.capability_skill(name))
             raise typer.Exit()
 
     return Annotated[

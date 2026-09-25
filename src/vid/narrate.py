@@ -197,6 +197,28 @@ def write_script(
             "Retry, or narrow the prompt so it is unambiguous that a numbered line per segment is wanted."
         )
 
+    # OMITTED IS NOT THE SAME AS DELIBERATELY SILENT, and this used to collapse
+    # the two. `written.get(i, "")` gave an absent segment the same empty text
+    # as one the model explicitly marked `-`, and `fit` then stamps every empty
+    # line `fitted = True, note = "left silent"` -- so `refuse_unfitted` could
+    # never see them. A model that answered 2 of 20 segments produced a
+    # SUCCESSFUL narration that was silent for eighteen, reported as intentional.
+    #
+    # The prompt asks for one numbered line per segment and documents `-` as the
+    # way to say nothing. An absent ID is therefore an incomplete answer, not a
+    # quiet one, and the spec is explicit that a partial result is a failure
+    # unless the capability documents it as valid. This one does not.
+    missing = [i for i in range(len(slots)) if i not in written]
+    if missing:
+        shown = ", ".join(str(i) for i in missing[:12]) + ("..." if len(missing) > 12 else "")
+        raise VidError(
+            f"The model answered {len(written)} of {len(slots)} narration segments, omitting "
+            f"{len(missing)}: {shown}.\n"
+            "An omitted segment is an incomplete answer, not a silent one -- a line that should "
+            "say nothing is written `N: -`, and those are kept. Retry, or shorten the video's "
+            "indexed span so fewer segments are asked for at once."
+        )
+
     for i, (start, length) in enumerate(slots):
         text = written.get(i, "").strip()
         script.lines.append(Line(index=i, start=start, budget=length, text="" if text in {"", "-", "--"} else text))
