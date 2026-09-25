@@ -71,6 +71,31 @@ class RampPoint(BaseModel):
     at: float
     speed: float
 
+    @model_validator(mode="after")
+    def _control_point_is_reachable(self) -> RampPoint:
+        """UNLIKE the other bounds on this model, this ceiling is OURS, not
+        ffmpeg's -- there is no declared range to read, so it is a judgment and
+        is labelled as one.
+
+        `at` is a time offset into the source, and the ramp expression grows
+        with it. Measured on a 6-SECOND source:
+
+            at=1000     rc=0, 0.9s
+            at=10000    rc=0, 6.9s
+            at=100000   never returned
+
+        That last one is worse than the errors this sweep found elsewhere: it
+        does not fail, it hangs, so a caller waits forever with no diagnosis.
+        3600 (one hour) sits well inside the well-behaved region and is longer
+        than any single clip this tool is meant to edit.
+        """
+        if not 0.0 <= self.at <= 3600.0:
+            raise ValueError(
+                f"A ramp control point must sit between 0 and 3600 seconds, and {self.at:g} does not. "
+                "Beyond that the retime expression grows until the render stops terminating."
+            )
+        return self
+
 
 class Retime(BaseModel):
     """A constant speed change, or a ramp between control points.
@@ -235,6 +260,32 @@ class Key(BaseModel):
     #: Softness at the edge of what was taken.
     blend: float = 0.0
 
+    @model_validator(mode="after")
+    def _key_values_are_in_ffmpegs_range(self) -> Key:
+        """Bounds read from `ffmpeg -h filter=colorkey`, not invented here:
+        similarity "(from 1e-05 to 1)", blend "(from 0 to 1)".
+
+        Found by sweeping the ratchet's debt list rather than from a report.
+        `similarity=1e9` rendered rc=222 "Numerical result out of range" --
+        the same shape as `Mask.feather` and `duck_threshold` before it: vid
+        accepted the value and ffmpeg killed the whole render.
+
+        `threshold` is NOT bounded here. It compiles to `lumakey=threshold=`,
+        and 1e9 rendered rc=0 -- it clamps rather than failing, so a guard
+        would refuse a plan that works.
+        """
+        if not 1e-05 <= self.similarity <= 1.0:
+            raise ValueError(
+                f"A key's similarity must be between 1e-05 and 1, and {self.similarity:g} is not. "
+                "That range is ffmpeg's own limit on the colour key it compiles to."
+            )
+        if not 0.0 <= self.blend <= 1.0:
+            raise ValueError(
+                f"A key's blend must be between 0 and 1, and {self.blend:g} is not. "
+                "That range is ffmpeg's own limit on the colour key it compiles to."
+            )
+        return self
+
     @field_validator("colour")
     @classmethod
     def _colour_is_a_colour(cls, value: str) -> str:
@@ -309,6 +360,15 @@ class LayerAudio(BaseModel):
         # not 0. A guard of `0.0 <` admitted 0.0001, which this validator passed
         # and ffmpeg then rejected with a raw AVOption error -- precisely the
         # failure the guard exists to convert into a named one.
+        # SAME CEILING AS `AudioMix.level`, and the same measurement: both
+        # compile to `volume={n}dB`, and past 100 dB the render dies with
+        # rc=234 "Conversion failed!" rather than producing loud audio.
+        for label, value in (("gain_db", self.gain_db), ("base_gain_db", self.base_gain_db)):
+            if not -100.0 <= value <= 100.0:
+                raise ValueError(
+                    f"A layer's {label} must be between -100 and 100 dB, and {value:g} is not. "
+                    "Past that the track overflows and ffmpeg fails the render outright."
+                )
         if not 0.000976563 <= self.duck_threshold < 1.0:
             raise ValueError(
                 f"A duck threshold must be at least 0.000976563 and below 1, and "
@@ -460,6 +520,25 @@ class Stitch(BaseModel):
     # operation resolves it -- by probing durations, which is why this is on the
     # plan rather than invented at compile time.
     transition_offset: float = 0.0
+
+    @model_validator(mode="after")
+    def _transition_fits_ffmpegs_crossfade(self) -> Stitch:
+        """The ceiling is ffmpeg's own. `xfade` refuses a duration outside
+        [0 - 60] and names that range itself:
+
+            Value 100.000000 for parameter 'duration' out of range [0 - 60]
+
+        `transition_duration=1e9` reached ffmpeg and killed the render with
+        rc=222. `transition_offset` is NOT bounded here: 1e9 rendered rc=0,
+        so a guard would refuse a plan that works.
+        """
+        if self.transition is not None and not 0.0 <= self.transition_duration <= 60.0:
+            raise ValueError(
+                f"A transition must last between 0 and 60 seconds, and {self.transition_duration:g} "
+                "does not. That ceiling is ffmpeg's own limit on the crossfade it compiles to."
+            )
+        return self
+
     # PROVENANCE, and it is what keeps a model out of the render path. When a
     # caller describes a transition instead of naming one, a model resolves the
     # description ONCE, here, and the plan stores both what was asked and what
@@ -523,6 +602,25 @@ class AudioMix(BaseModel):
     track: str
     level: float = -18.0
     start: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _level_is_a_survivable_gain(self) -> AudioMix:
+        """`volume=` takes any dB ffmpeg will parse, so the ceiling here is
+        MEASURED through vid's own graph rather than read off a filter:
+
+            level=100   rc=0    renders
+            level=300   rc=234  "Conversion failed!"
+
+        100 dB is already 100,000x amplitude, far past any real mix, and it is
+        the last value that survives. Found by sweeping the ratchet's debt
+        list, not from a report.
+        """
+        if not -100.0 <= self.level <= 100.0:
+            raise ValueError(
+                f"A mix level must be between -100 and 100 dB, and {self.level:g} is not. "
+                "Past that the summed track overflows and ffmpeg fails the render outright."
+            )
+        return self
 
 
 class Recolor(BaseModel):

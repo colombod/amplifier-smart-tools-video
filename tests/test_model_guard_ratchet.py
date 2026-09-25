@@ -46,30 +46,39 @@ import vid.plan as plan_module
 #: directly, so the CLI reaches them too. Cut, Retime and Zoom were fixed
 #: rather than deferred once that came out.
 KNOWN_UNGUARDED: dict[str, set[str]] = {
-    "AudioMix": {"level", "start"},
-    "AudioReplace": {"start"},
-    "Key": {"blend", "similarity", "threshold"},
-    "LayerAudio": {"base_gain_db", "gain_db"},
-    "Motion": {"duration", "start", "to_x", "to_y"},
+    "Key": {"threshold"},
+    "Motion": {"to_x", "to_y"},
     "Overlay": {"end", "start", "x", "y"},
     "Plan": {"plan_format"},
-    "RampPoint": {"at", "speed"},
-    # The four colour statistics were INVISIBLE to the sweep until the tuple
-    # spelling was added -- twelve floats nothing was looking at. They are
-    # normally computed by `recolor` itself, but a JSON plan can set them.
+    "RampPoint": {"speed"},
     "Recolor": {"reference_mean", "reference_std", "source_mean", "source_std", "strength"},
-    "Retime": {"speed"},
     "Stitch": {"transition_duration", "transition_offset"},
     "Trim": {"end", "start"},
     "Vignette": {"strength"},
 }
 
-#: Fully guarded, by measurement: Cut, Mask, Zoom.
+#: Fully guarded, by measurement: AudioMix, AudioReplace, Cut, LayerAudio,
+#: Mask, Retime, Zoom.
 #:
-#: This list GREW when the one-sided rule started being executed. `AudioMix`,
-#: `Motion`, `AudioReplace` and `Retime` gained entries that the old `any`
-#: reported as guarded because each refused one end. That is the bug the round-7
-#: review named, and the growth is the honest measurement of it.
+#: THE SWEEP. Every field above was rendered at +/-1e9 through vid's real
+#: graph. That found FIVE defects the list had been carrying as ordinary debt,
+#: each one a value vid accepted and ffmpeg then died on:
+#:
+#:   AudioMix.level=1e9              rc=234  Conversion failed!
+#:   LayerAudio.gain_db=1e9          rc=234  Conversion failed!
+#:   Stitch.transition_duration=1e9  rc=222  out of range [0 - 60]
+#:   Key.similarity=1e9              rc=222  out of range [1e-05 - 1]
+#:   RampPoint.at=1e9                NEVER RETURNED
+#:
+#: The last is the worst kind: not an error, a hang. All five are now guarded
+#: at bounds ffmpeg declares, except `RampPoint.at`, which has no declared
+#: range and is labelled in plan.py as our judgment with its measurements.
+#:
+#: WHAT REMAINS is open at BOTH ends -- these reject neither +1e9 nor -1e9, so
+#: declaring them "open above" would not have cleared them, and did not.
+#: `Stitch.transition_duration` stays listed because its guard only applies
+#: when a transition is actually set, which the probe's minimal instance does
+#: not do -- the guard is real, the probe cannot see it.
 
 
 def _is_numeric_tuple(annotation) -> bool:
@@ -156,6 +165,28 @@ ONE_SIDED: dict[tuple[str, str], str] = {
     # NOT `Mask.feather`. It looked identical to these two and is not: at 1e9
     # ffmpeg failed the render outright, rc=222 "Numerical result out of
     # range". It is now bounded at 1024 in plan.py and stays two-sided here.
+    #
+    # THE DEBT SWEEP. Every field below rendered rc=0 at +1e9 through vid's
+    # real graph, so its upper end is genuinely open and a guard there would
+    # refuse a working plan. Each was rendered; none was inferred from a
+    # sibling -- `Overlay.y` and `Motion.to_y` were measured separately from
+    # their x counterparts rather than assumed symmetric.
+    ("AudioMix", "start"): "below",
+    ("AudioReplace", "start"): "below",
+    ("Trim", "start"): "below",
+    ("Trim", "end"): "below",
+    ("Retime", "speed"): "below",
+    ("Stitch", "transition_offset"): "below",
+    ("Overlay", "x"): "below",
+    ("Overlay", "y"): "below",
+    ("Overlay", "start"): "below",
+    ("Overlay", "end"): "below",
+    ("Key", "threshold"): "below",
+    ("Motion", "to_x"): "below",
+    ("Motion", "to_y"): "below",
+    ("Motion", "start"): "below",
+    ("Motion", "duration"): "below",
+    ("RampPoint", "speed"): "below",
 }
 
 
