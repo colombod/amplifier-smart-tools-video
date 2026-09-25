@@ -83,15 +83,34 @@ def fingerprint(video: str) -> str:
     which does not happen to encoded video in practice.
     """
     path = Path(video)
-    if not path.is_file():
+    # THE FOURTH SIBLING, and it was found by a test rather than by reading:
+    # monkeypatching `Path.is_file` to refuse surfaced this site alongside the
+    # one in `load`. "No such video" is the WRONG sentence for a file that
+    # exists and cannot be read, and without the guard a video inside an
+    # unreadable directory escaped as a raw PermissionError traceback from
+    # whichever of `is_file`, `stat` or `open` reached the filesystem first.
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        raise VidError(
+            f"The video at {video} could not be read: {exc.strerror or exc}. "
+            "Check the permissions on the file and on every directory above it."
+        ) from exc
+    if not present:
         raise VidError(f"No such video: {video!r}. Check the path is correct and relative to the current directory.")
-    size = path.stat().st_size
-    digest = hashlib.sha256(str(size).encode())
-    with path.open("rb") as handle:
-        digest.update(handle.read(1 << 20))
-        if size > (1 << 21):
-            handle.seek(-(1 << 20), 2)
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256(str(size).encode())
+        with path.open("rb") as handle:
             digest.update(handle.read(1 << 20))
+            if size > (1 << 21):
+                handle.seek(-(1 << 20), 2)
+                digest.update(handle.read(1 << 20))
+    except OSError as exc:
+        raise VidError(
+            f"The video at {video} could not be read: {exc.strerror or exc}. "
+            "Check the permissions on the file and on every directory above it."
+        ) from exc
     return digest.hexdigest()[:16]
 
 
@@ -99,12 +118,52 @@ def index_path(video: str) -> Path:
     return index_dir() / f"{fingerprint(video)}.json"
 
 
+def _unreadable(path: Path, exc: OSError) -> str:
+    """The same sentence `save` gives, for the read side.
+
+    One wording for one cause: whichever end refused, the location came from
+    the same place and the caller has the same one knob.
+    """
+    return (
+        f"The index at {path} could not be read: {exc.strerror or exc}.\n"
+        "That location comes from VID_INDEX_DIR when it is set, and a cache "
+        "directory beside the video otherwise. Point VID_INDEX_DIR at a "
+        "readable directory, or fix the permissions on this one."
+    )
+
+
 def load(video: str) -> dict | None:
+    """The stored index for this video, or None when there is not one yet.
+
+    THE THIRD SIBLING OF A CLASS FIXED TWICE ON THIS BRANCH. `save` already
+    names `VID_INDEX_DIR` when the filesystem refuses a write, and the corrupt
+    JSON case below already names the file and its remedy -- but the two
+    filesystem calls in the READ path were bare. An unreadable index directory
+    (a chmod 000 mount point, a VID_INDEX_DIR pointing inside one) came out of
+    `is_file` as a raw traceback:
+
+        PermissionError: [Errno 13] Permission denied:
+            '/tmp/vidperm/locked/bf6781c471cbcf0d.json'
+
+    `cli.main` only translates `VidError` into a named, non-zero exit, so
+    anything else reaches the user as a stack trace naming neither the setting
+    that chose the location nor anything they could do about it.
+
+    NOT MERGED INTO ONE `try`. A refusal to look and a refusal to read are the
+    same remedy, but "does it exist" must still answer None rather than raising
+    when the answer is honestly no.
+    """
     path = index_path(video)
-    if not path.is_file():
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        raise VidError(_unreadable(path, exc)) from exc
+    if not present:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise VidError(_unreadable(path, exc)) from exc
     except json.JSONDecodeError as exc:
         # A corrupt or truncated index must never escape as a bare traceback --
         # `cli.main` only translates `VidError` into a named, non-zero exit.

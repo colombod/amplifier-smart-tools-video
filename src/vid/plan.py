@@ -22,6 +22,114 @@ from vid.schemas import VidError
 
 PLAN_FORMAT = 1
 
+#: Ceilings that are OURS, not ffmpeg's, and are labelled as such wherever they
+#: are enforced. Each was placed by rendering the field through vid's real graph
+#: until it stopped behaving, then sitting below that edge -- never by picking a
+#: round number and asserting it in a comment. The measurements are recorded on
+#: the validators that use them.
+#:
+#: WHY A SHARED CONSTANT. `Overlay.width` and `Motion.to_width` compile to the
+#: same `scale`, and `Retime.speed` and `RampPoint.speed` to the same `setpts`.
+#: Two copies of a bound drift apart, and a reviewer then has to measure which
+#: copy is the real one.
+
+#: The longest offset into an edit any of these fields may name. A larger number
+#: is a unit error -- milliseconds passed as seconds, or an epoch timestamp --
+#: far more often than it is an intention.
+MAX_OFFSET_SECONDS = 3600.0
+
+#: Speed multipliers. Past these the render either stops terminating (slow) or
+#: collapses every frame onto one timestamp (fast). See `Retime`.
+MIN_SPEED = 0.01
+MAX_SPEED = 100.0
+
+#: The largest picture dimension an overlay may be scaled to.
+MAX_DIMENSION = 16384
+
+
+def _check_speed(speed: float, subject: str) -> None:
+    """One speed rule, for the two fields that compile to the same `setpts`.
+
+    MEASURED through vid's real graph on the 6.0s base fixture. Upward, with
+    the source's audio present:
+
+        speed=100      rc=0     0.133s out
+        speed=1e5      rc=0     but 0.067s out -- already a degenerate stub
+        speed=1e7      rc=234   Conversion failed!
+        speed=1e9      rc=234   Conversion failed!
+
+    And on a source with NO audio stream, where `setpts` alone decides and
+    ffmpeg therefore never objects:
+
+        speed=1e6      rc=0     setpts=0.000001*PTS
+        speed=2e6      rc=0     setpts=0.000000*PTS   <-- the literal string
+        speed=1e9      rc=0     setpts=0.000000*PTS   1657 bytes, 0.067s
+
+    That last group is the dangerous one, and it is why this bound exists.
+    `compile` emits `setpts={1/speed:.6f}*PTS`, so once `1/speed` falls below
+    5e-7 the format rounds it to the literal `"0.000000"`: every frame is
+    multiplied onto timestamp zero, the whole clip collapses to a single frame,
+    and ffmpeg reports SUCCESS. A caller computing speed as a ratio over a
+    near-zero interval reaches this without doing anything exotic.
+
+    Downward the failure is a hang rather than a lie:
+
+        speed=0.5      rc=0     12.0s out
+        speed=0.01     rc=0     600.0s out, 14.6s of wall clock
+        speed=0.001    NEVER RETURNED  (killed at 40s, output still growing)
+
+    WHY %.6f IS LEFT ALONE. With the ceiling at 100, `1/speed` is at least
+    0.01, which `%.6f` carries to four significant figures. The collapse needs
+    speed above 2e6, which this bound now makes unreachable -- so widening the
+    format would buy precision only in a region no plan may enter.
+    """
+    if not MIN_SPEED <= speed <= MAX_SPEED:
+        raise ValueError(
+            f"{subject} must be between {MIN_SPEED:g}x and {MAX_SPEED:g}x, and {speed:g} is not. "
+            "Faster than that, every frame collapses onto one timestamp and the render reports "
+            "success on a clip one frame long; slower, it stops terminating."
+        )
+
+
+def _check_dimension(pixels: int | None, subject: str) -> None:
+    """One size rule, for the two pairs that compile to the same `scale`.
+
+    THIS PAIR WAS CERTIFIED GUARDED WHILE UNGUARDED. `width`/`height` and
+    `to_width`/`to_height` are legal only when set together, and the ratchet's
+    probe sets one field at a time -- so the paired guard refused the probe's
+    single-field attempt, the probe read that refusal as "guarded", and the
+    fields never appeared on the debt list at all. Absence from that list is a
+    positive claim, which made this the one live false certificate rather than
+    a gap.
+
+    Measured through vid's real graph, a 640x360 base with a 320x180 layer:
+
+        width=height=8192     rc=0     1.3s
+        width=height=16384    rc=0     5.7s
+        width=height=32768    rc=0     10.2s
+        width=height=65534    rc=234   Conversion failed!
+        width=height=1e9      rc=234   Conversion failed!
+
+    and through the animated path, which fails worse -- it writes a PARTIAL
+    file and then dies, so the wreckage looks like a real output:
+
+        motion to=4096        rc=0     6.0s out
+        motion to=65536       rc=244   11129 bytes, 1.51s out, Conversion failed!
+
+    THE CEILING IS OURS, NOT FFMPEG'S, and is deliberately below the edge. The
+    exact failure point sits somewhere between 32768 and 65534 and moves with
+    available memory, because what fails there is an allocation -- so pinning
+    the bound to it would encode this machine's RAM as a contract. 16384 is
+    twice the width of 8K, renders in seconds, and is measured good here.
+    """
+    if pixels is None:
+        return
+    if not 0 < pixels <= MAX_DIMENSION:
+        raise ValueError(
+            f"{subject} must be between 1 and {MAX_DIMENSION} pixels, and {pixels} is not. "
+            "Past that ffmpeg fails the render outright, or writes a partial file and then fails."
+        )
+
 
 class Trim(BaseModel):
     """Keep a time range, discard the rest."""
@@ -88,12 +196,24 @@ class RampPoint(BaseModel):
         does not fail, it hangs, so a caller waits forever with no diagnosis.
         3600 (one hour) sits well inside the well-behaved region and is longer
         than any single clip this tool is meant to edit.
+
+        `speed` carries the SAME bounds as `Retime.speed`, and for the same
+        measured reasons -- a ramp reaches the identical `setpts` expression.
+        Measured on the 6.0s base fixture, through vid's own graph:
+
+            ramp [1x@0, 100x@3]   rc=0     setpts=0.108108*PTS
+            ramp [1x@0, 1e7x@3]   rc=234   Conversion failed!
+
+        An earlier review round exempted this field from the upper-bound probe
+        on the strength of a comment saying it had been rendered. It had not.
         """
-        if not 0.0 <= self.at <= 3600.0:
+        if not 0.0 <= self.at <= MAX_OFFSET_SECONDS:
             raise ValueError(
-                f"A ramp control point must sit between 0 and 3600 seconds, and {self.at:g} does not. "
+                f"A ramp control point must sit between 0 and {MAX_OFFSET_SECONDS:g} seconds, "
+                f"and {self.at:g} does not. "
                 "Beyond that the retime expression grows until the render stops terminating."
             )
+        _check_speed(self.speed, "A ramp control point's speed")
         return self
 
 
@@ -125,8 +245,13 @@ class Retime(BaseModel):
             )
         if self.speed is None and not self.ramp:
             raise ValueError("A retime needs either a constant speed or a ramp, and has neither.")
-        if self.speed is not None and self.speed <= 0:
-            raise ValueError(f"A retime speed must be above zero, and {self.speed:g} is not.")
+        # BOUNDED AT BOTH ENDS, not merely above zero. `speed > 0` admitted
+        # 1e9, which the ratchet's ONE_SIDED table exempted from the
+        # upper-bound probe on the strength of a hand-written claim that it had
+        # been rendered. Rendering it showed otherwise; `_check_speed` carries
+        # the measurements.
+        if self.speed is not None:
+            _check_speed(self.speed, "A retime speed")
         return self
 
 
@@ -270,10 +395,21 @@ class Key(BaseModel):
         the same shape as `Mask.feather` and `duck_threshold` before it: vid
         accepted the value and ffmpeg killed the whole render.
 
-        `threshold` is NOT bounded here. It compiles to `lumakey=threshold=`,
-        and 1e9 rendered rc=0 -- it clamps rather than failing, so a guard
-        would refuse a plan that works.
+        `threshold` IS bounded here, and the claim that it was not is the
+        reason this round happened. The note above used to say 1e9 "rendered
+        rc=0 -- it clamps rather than failing". Rendering it says the opposite:
+
+            [1:v]lumakey=threshold=1e+09:tolerance=0.3:softness=0,...
+            rc=222   Error : Numerical result out of range
+
+        Same range, same source, same wording as `similarity` and `blend`
+        above: `ffmpeg -h filter=lumakey` gives threshold as "(from 0 to 1)".
         """
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError(
+                f"A key's threshold must be between 0 and 1, and {self.threshold:g} is not. "
+                "That range is ffmpeg's own limit on the luma key it compiles to."
+            )
         if not 1e-05 <= self.similarity <= 1.0:
             raise ValueError(
                 f"A key's similarity must be between 1e-05 and 1, and {self.similarity:g} is not. "
@@ -419,10 +555,8 @@ class Motion(BaseModel):
                 "An animated overlay needs both --to-width and --to-height, or neither. "
                 "One alone would have to invent the other from an aspect ratio nobody stated."
             )
-        if self.to_width is not None and self.to_width <= 0:
-            raise ValueError(f"An overlay's target width must be positive, not {self.to_width}.")
-        if self.to_height is not None and self.to_height <= 0:
-            raise ValueError(f"An overlay's target height must be positive, not {self.to_height}.")
+        _check_dimension(self.to_width, "An overlay's target width")
+        _check_dimension(self.to_height, "An overlay's target height")
         if self.duration <= 0:
             raise ValueError(f"An overlay's move must take positive time, not {self.duration:g}.")
         if self.start < 0:
@@ -485,10 +619,34 @@ class Overlay(BaseModel):
                 "An overlay needs both a width and a height, or neither. One alone would have "
                 "to invent the other from an aspect ratio nobody stated."
             )
-        if self.width is not None and self.width <= 0:
-            raise ValueError(f"An overlay's width must be positive, not {self.width}.")
-        if self.height is not None and self.height <= 0:
-            raise ValueError(f"An overlay's height must be positive, not {self.height}.")
+        _check_dimension(self.width, "An overlay's width")
+        _check_dimension(self.height, "An overlay's height")
+        # THE WORST OF THE FALSE EXEMPTIONS. The ratchet recorded `start` as
+        # open above, on a written claim that 1e9 had been rendered rc=0.
+        # Rendering it, on the 6.0s base fixture:
+        #
+        #     start=3600    rc=0                0.3s, renders
+        #     start=1e7     rc=0                0.3s, renders
+        #     start=1e8     NEVER RETURNED      killed at 25s
+        #     start=1e9     NEVER RETURNED      killed at 20s, ~250% CPU
+        #
+        # It compiles to `tpad=start_duration=1000000000.000000`, and `tpad`
+        # PREPENDS REAL FRAMES -- so ffmpeg sets about generating a thousand
+        # million seconds of transparent video and never comes back. No error,
+        # no diagnostic, no output: the render simply wedges.
+        #
+        # The ceiling is ours and sits far below the hang, because the values
+        # in between are not meaningful either. A `start` past an hour is a
+        # unit error -- milliseconds handed over as seconds, or an epoch
+        # timestamp (~1.7e9, squarely in the hanging region) -- so the message
+        # names that cause rather than only the number.
+        if self.start is not None and not 0.0 <= self.start <= MAX_OFFSET_SECONDS:
+            raise ValueError(
+                f"An overlay must start between 0 and {MAX_OFFSET_SECONDS:g} seconds, and "
+                f"{self.start:g} does not. A number this large is usually milliseconds passed "
+                "as seconds, or a wall-clock timestamp; rendered literally it pads the layer "
+                "with silence-frames until the render stops terminating."
+            )
         if self.start is not None and self.end is not None and self.end <= self.start:
             raise ValueError(
                 f"An overlay's window runs from {self.start:g}s to {self.end:g}s, which ends before "
@@ -515,11 +673,25 @@ class Stitch(BaseModel):
     fit: Literal["fit", "fill"] | None = None
     transition: str | None = None
     transition_duration: float = 0.5
-    # Where the blend begins, measured from the start of the running edit. xfade
-    # needs an absolute offset and cannot compute one, so whoever appends the
-    # operation resolves it -- by probing durations, which is why this is on the
-    # plan rather than invented at compile time.
-    transition_offset: float = 0.0
+    # REMOVED: `transition_offset`. It was declared here, defaulted to 0.0, and
+    # READ NOWHERE -- `compile.stitch` derives the offset itself from the
+    # running `elapsed`, which is the only value that can be correct, because
+    # xfade measures from the start of the FIRST input. Rendering a plan with
+    # `transition_offset=1e9` emitted `xfade=...:offset=2.5`: the number never
+    # reached the graph at all.
+    #
+    # It was carried on the ratchet's exemption list as "1e9 rendered rc=0",
+    # which was true and meaningless -- a dead field renders rc=0 at every
+    # value. Wiring it in was the alternative and was rejected: a
+    # caller-supplied offset is exactly the "guessed offset [that] blends in
+    # the wrong place and looks like a bug" that `compile.stitch` already
+    # refuses to accept.
+    #
+    # NOT a plan_format bump. The format rule protects MEANING, and this field
+    # had none: `contracts/plan.v1.md` already listed it under "What is NOT
+    # promised" and told callers not to compute it. A stored plan still
+    # carrying the key loads unchanged -- pydantic's default is to ignore an
+    # unknown key, verified by loading one.
 
     @model_validator(mode="after")
     def _transition_fits_ffmpegs_crossfade(self) -> Stitch:
@@ -529,8 +701,7 @@ class Stitch(BaseModel):
             Value 100.000000 for parameter 'duration' out of range [0 - 60]
 
         `transition_duration=1e9` reached ffmpeg and killed the render with
-        rc=222. `transition_offset` is NOT bounded here: 1e9 rendered rc=0,
-        so a guard would refuse a plan that works.
+        rc=222.
         """
         if self.transition is not None and not 0.0 <= self.transition_duration <= 60.0:
             raise ValueError(

@@ -219,6 +219,32 @@ def write_script(
             "indexed span so fewer segments are asked for at once."
         )
 
+    # ANSWERED EMPTILY IS NOT ANSWERED EITHER, and the check above cannot see
+    # it. The fix that added it closed the OMITTED case only: `3:` and
+    # `3:` followed by spaces both parse -- `head` is a digit, so the index
+    # lands IN `written` with an empty tail, walks past the missing-index test,
+    # becomes `text = ""`, and `fit` stamps it `fitted = True, note = "left
+    # silent"`. The result is indistinguishable from the model deliberately
+    # writing `3: -`, which is the one thing the distinction exists to prevent.
+    #
+    # A duplicate index reaches the same place by another road: `written` is a
+    # dict, so a later blank `3:` overwrites an earlier real answer for 3.
+    # Checking the STORED value rather than the input lines catches both.
+    #
+    # `-` and `--` still mean deliberate silence and are still kept -- that is
+    # the documented marker in the prompt above, and the whole point is that
+    # silence has to be SAID.
+    blank = [i for i in range(len(slots)) if i in written and not written[i]]
+    if blank:
+        shown = ", ".join(str(i) for i in blank[:12]) + ("..." if len(blank) > 12 else "")
+        raise VidError(
+            f"The model left {len(blank)} of {len(slots)} narration segments blank -- it wrote the "
+            f"number and then nothing: {shown}.\n"
+            "An empty answer is an incomplete one, not a silent one. A segment that should say "
+            "nothing is written `N: -`, and those are kept. Retry, or shorten the video's indexed "
+            "span so fewer segments are asked for at once."
+        )
+
     for i, (start, length) in enumerate(slots):
         text = written.get(i, "").strip()
         script.lines.append(Line(index=i, start=start, budget=length, text="" if text in {"", "-", "--"} else text))

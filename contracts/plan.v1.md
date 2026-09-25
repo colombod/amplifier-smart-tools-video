@@ -46,7 +46,7 @@ edit that is subtly not the one asked for.
 | `cut` | `start`, `end` | remove this range, rejoin what surrounds it |
 | `retime` | `speed` **or** `ramp[]`, `pitch` | constant speed, or a curve of `{at, speed}` points |
 | `zoom` | `to`, `at` (nullable), `duration`, `x`, `y` | animated zoom; `x`/`y` are ffmpeg expressions |
-| `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_offset`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
+| `stitch` | `sources[]`, `fit`, `transition`, `transition_duration`, `transition_requested`, `transition_rationale` | append clips, optionally blending |
 | `overlay` | `source`, `x`, `y`, `width` (nullable), `height` (nullable), `start` (nullable), `end` (nullable), `mask` (nullable), `motion` (nullable), `audio` (nullable), `key` (nullable), `opacity` | lay another clip over the picture |
 | `caption` | `subtitles`, `style` (nullable) | burn in a subtitle file |
 | `recolor` | `reference`, `source_mean`, `source_std`, `reference_mean`, `reference_std`, `strength` | match another clip's colour |
@@ -156,8 +156,15 @@ a promise, not a convention.
   the graph.
 - **That every operation can be a stream copy.** Whether a cut lands on a keyframe depends
   on the file, not the plan.
-- **`transition_offset`.** It is derived on the render path by probing durations, and a
-  plan written by hand may leave it `0.0`. Do not compute it yourself; `render` will.
+- **Where a transition is placed.** `render` derives the crossfade offset from the clip
+  durations it probes. Do not compute it yourself; there is no field for it.
+
+  A `transition_offset` field was declared on `stitch` up to and including this format,
+  and **no version of `vid` ever read it** -- `render` always derived the offset. It has
+  been removed rather than wired up: a caller-supplied offset is the guessed offset that
+  puts a blend in the wrong place, which `render` already refuses to accept. A stored
+  plan still carrying the key loads and renders exactly as before, because an unknown
+  key is ignored (see below), so this is not a format change.
 
 ---
 
@@ -165,10 +172,22 @@ a promise, not a convention.
 
 `plan_format` is a single integer and it means compatibility, not recency.
 
-- **Adding an optional field, or a new `op`,** keeps format `1`. Older `vid` versions
-  reject the unknown key loudly rather than mis-rendering it, which is the behaviour we
-  want.
-- **Changing the meaning of an existing field, or removing one,** requires `2`.
+- **Adding an optional field, or a new `op`,** keeps format `1`. The two are not handled
+  alike by an older `vid`, and this document used to claim they were:
+
+  - **An unknown `op` is rejected loudly.** Operations are a discriminated union, so a
+    plan carrying `{"op": "sharpen"}` fails validation naming the operation. This is the
+    behaviour we want, and it is what the original sentence described.
+  - **An unknown FIELD is ignored silently.** These are ordinary pydantic models with
+    the default `extra="ignore"`, so an older `vid` drops the key and renders without it.
+    Verified by loading a plan carrying two keys this version does not declare. A field
+    whose absence would change the result therefore needs a format bump, because nothing
+    downstream will complain about it.
+
+- **Changing the meaning of an existing field, or removing one that is read,** requires
+  `2`. Removing a field that no version ever read changes no rendered output and needs no
+  bump -- but it is a claim to check, not assume: grep the compiler, and render a plan
+  that sets it.
 
 A plan whose `plan_format` this tool does not recognise is **refused with its number
 named**. A plan silently rendered under the wrong rules would produce a video that is

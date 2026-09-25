@@ -57,6 +57,55 @@ def test_a_model_that_omits_segments_is_refused(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "tail"),
+    [("nothing at all", ""), ("whitespace only", "    "), ("a tab", "\t")],
+)
+def test_a_segment_answered_emptily_is_refused(monkeypatch, label, tail) -> None:
+    """`3:` is not an answer, and the omission guard above cannot see it.
+
+    THE SIBLING THE OMISSION FIX MISSED. That fix keyed on the index being
+    ABSENT from `written`. `3:` puts the index IN the dict with an empty tail:
+    it walks past the missing-index check, becomes `text = ""`, and `fit`
+    stamps it `fitted = True, note = "left silent"` -- indistinguishable from
+    the model deliberately writing `3: -`.
+
+    Driven through the REAL parser, with the exact strings that produce it.
+    The previous sweep for siblings grepped for patterns across files instead,
+    and this is what grepping missed.
+    """
+    total = len(slots_from(RECORD))
+    lines = [f"{i}: Line {i}." for i in range(total)]
+    lines[3] = f"3:{tail}"
+    _reply(monkeypatch, "\n".join(lines))
+
+    with pytest.raises(VidError) as refusal:
+        write_script(RECORD, "explain the product", Intelligence())
+
+    message = str(refusal.value)
+    assert "blank" in message, f"the refusal does not name the blank answer ({label}): {message!r}"
+    assert "3" in message, f"the refusal does not say which segment was blank: {message!r}"
+    assert "N: -" in message, "the refusal does not tell the caller how to express deliberate silence"
+
+
+def test_a_duplicate_blank_index_cannot_erase_a_real_answer(monkeypatch) -> None:
+    """`written` is a dict, so a later `3:` overwrites an earlier `3: text`.
+
+    Checking the STORED value rather than the input lines is what catches this;
+    a check that counted answered lines would see 7 answers for 6 segments and
+    conclude everything was fine.
+    """
+    total = len(slots_from(RECORD))
+    lines = [f"{i}: Line {i}." for i in range(total)]
+    lines.append("3:")
+    _reply(monkeypatch, "\n".join(lines))
+
+    with pytest.raises(VidError) as refusal:
+        write_script(RECORD, "explain the product", Intelligence())
+
+    assert "blank" in str(refusal.value)
+
+
 def test_deliberate_silence_is_still_honoured(monkeypatch) -> None:
     """The `-` marker must keep working -- refusing it would be the over-correction."""
     total = len(slots_from(RECORD))

@@ -215,6 +215,30 @@ class Compiler:
     # -- operations ---------------------------------------------------------
 
     def trim(self, op: Trim) -> None:
+        # A TRIM THAT STARTS PAST THE END OF THE MATERIAL renders a 261-byte
+        # MP4 with NO STREAMS AT ALL, and exits 0. Measured on the 6.0s base
+        # fixture, before this guard:
+        #
+        #     start=5.9   rc=0   2942 bytes   nb_streams=2   duration=0.100000
+        #     start=6.0   rc=0    261 bytes   nb_streams=0   duration=None
+        #     start=1e9   rc=0    261 bytes   nb_streams=0   duration=None
+        #
+        # The reviewer who found this reached it with `start=1e9` and then
+        # correctly qualified it: 1e9 is not what makes it happen, being past
+        # the end is, and `start=10` on a ten-second clip does it just as well.
+        # So it is guarded HERE rather than by a bound on the model -- this is
+        # the only place the source's actual length is known, and no ceiling on
+        # `start` could express "past the end of THIS file".
+        #
+        # `self.elapsed` is 0.0 when the length is genuinely unknown, which is
+        # falsy and correctly skips the check rather than refusing everything.
+        if self.elapsed and op.start >= self.elapsed:
+            raise VidError(
+                f"This trim starts at {op.start:g}s, and by that point the edit is only "
+                f"{self.elapsed:g}s long -- so it would keep nothing. Rendered as asked it "
+                "produces a file with no video and no audio in it, and reports success. "
+                "Give a start inside the material, or drop the operation."
+            )
         end = f":end={op.end}" if op.end is not None else ""
         self.video = self._step(f"trim=start={op.start}{end},setpts=PTS-STARTPTS", self.video, "v")
         aend = f":end={op.end}" if op.end is not None else ""
