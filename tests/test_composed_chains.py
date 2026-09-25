@@ -28,7 +28,7 @@ import sys
 
 import pytest
 
-from tests.fixtures import ensure_clips, has_audio_stream, have_ffmpeg, probe_duration, tone_strength
+from tests.fixtures import ensure_clips, has_audio_stream, have_ffmpeg, probe_duration, tone_level, tone_strength
 from vid import lib
 from vid.plan import Plan
 
@@ -165,8 +165,18 @@ def test_trim_then_mix_keeps_both_tones(clips, tmp_path):
     out = lib.render(plan, str(tmp_path / "out.mp4"))
 
     assert probe_duration(out) == pytest.approx(2.0, abs=0.05)
-    assert tone_strength(out, 440, at=1.0) > 0.8, "the original track was lost in the mix"
-    assert tone_strength(out, 660, at=1.0) > 0.0, "the mixed-in track is not present at all"
+
+    # `> 0.0` was the whole assertion here, and a mix attenuated by 40 dB --
+    # inaudible -- passed it. The level was REQUESTED as -18 dB, so check that
+    # it arrived at -18 dB. Measured 257.8 against a base of 2047.9, a ratio of
+    # 0.126; 10**(-18/20) is 0.1259.
+    base = tone_level(out, 440, at=1.0)
+    mixed = tone_level(out, 660, at=1.0)
+    assert base > 1000, f"the original track was lost in the mix: {base:.1f}"
+    assert mixed / base == pytest.approx(0.126, rel=0.3), (
+        f"the mixed-in track did not arrive at the requested -18 dB: {mixed:.1f}/{base:.1f} "
+        f"= {mixed / base:.3f}, expected about 0.126"
+    )
 
 
 def test_remove_then_trim_still_renders(clips, tmp_path):
@@ -230,7 +240,11 @@ def test_overlay_after_trim_is_bounded_to_the_trimmed_length(clips, tmp_path):
     out = lib.render(plan, str(tmp_path / "trim_overlay.mp4"))
 
     assert probe_duration(out) == pytest.approx(2.0, abs=0.1)
-    assert has_audio_stream(out)
+
+    # `has_audio_stream` says a stream EXISTS, not what is in it. A stream of
+    # silence, or one carrying the wrong clip, passed it.
+    assert tone_level(out, 440, at=1.0) > 1000, "the trimmed base track is missing"
+    assert tone_level(out, 660, at=1.0) > 1000, "the overlay's track is missing"
 
 
 def test_overlay_keeping_audio_then_remove_renders_with_no_audio(clips, tmp_path):
@@ -260,8 +274,16 @@ def test_remove_then_overlay_keeping_audio_uses_the_layer_as_the_track(clips, tm
     out = lib.render(plan, str(tmp_path / "remove_overlay.mp4"))
 
     assert has_audio_stream(out), "the layer's sound did not become the track"
-    assert tone_strength(out, 660, at=1.0) > 0.01, "the layer's own tone is missing"
     assert probe_duration(out) == pytest.approx(3.0, abs=0.1)
+
+    # `> 0.01` passed for a tone that is effectively gone. Both halves of the
+    # claim are now measured: the layer's tone BECAME the track (1448.9), and
+    # the removed base did not come back (0.1). Absent tones read 0.1-0.4 here,
+    # present ones about 2047, so these thresholds sit in open space.
+    layer = tone_level(out, 660, at=1.0)
+    removed_base = tone_level(out, 440, at=1.0)
+    assert layer > 1000, f"the layer's own tone is missing: {layer:.1f}"
+    assert removed_base < 50, f"the removed base track came back: {removed_base:.1f}"
 
 
 def test_overlay_after_stitch_covers_the_joined_edit(clips, tmp_path):
@@ -271,7 +293,12 @@ def test_overlay_after_stitch_covers_the_joined_edit(clips, tmp_path):
     out = lib.render(plan, str(tmp_path / "stitch_overlay.mp4"))
 
     assert probe_duration(out) == pytest.approx(6.0, abs=0.2)
-    assert has_audio_stream(out)
+
+    # At t=1.0 the edit is inside alpha's segment, so bravo is correctly absent
+    # (0.4) while charlie's overlay runs across the whole join (2046.2). The
+    # boolean could see none of that.
+    assert tone_level(out, 440, at=1.0) > 1000, "the first clip's track is missing"
+    assert tone_level(out, 880, at=1.0) > 1000, "the overlay does not cover the join"
 
 
 def test_overlay_after_retime_is_bounded_to_the_retimed_length(clips, tmp_path):
@@ -282,6 +309,12 @@ def test_overlay_after_retime_is_bounded_to_the_retimed_length(clips, tmp_path):
 
     assert probe_duration(out) == pytest.approx(1.5, abs=0.15)
 
+    # Duration alone was the entire test, on a chain whose point is that the
+    # overlay's AUDIO pad follows the retimed `elapsed`. A silent or dropped
+    # branch would have passed. Both tracks must survive the retime.
+    assert tone_level(out, 440, at=0.7) > 1000, "the retimed base track was lost"
+    assert tone_level(out, 660, at=0.7) > 1000, "the overlay's track was lost"
+
 
 def test_overlay_after_cut_then_replace_still_binds_the_new_track(clips, tmp_path):
     """Three verbs, two of which touch audio, with an overlay between them."""
@@ -291,7 +324,13 @@ def test_overlay_after_cut_then_replace_still_binds_the_new_track(clips, tmp_pat
     out = lib.render(plan, str(tmp_path / "cut_overlay_replace.mp4"))
 
     assert probe_duration(out) == pytest.approx(2.0, abs=0.1)
-    assert has_audio_stream(out)
+
+    # The test is named "binds the NEW track" and the boolean could not see
+    # WHICH track it bound. The replacement must be there AND both earlier
+    # tracks gone -- measured 880 at 2046.7, with 440 and 660 at 0.3 and 0.2.
+    assert tone_level(out, 880, at=1.0) > 1000, "the replacement track is missing"
+    assert tone_level(out, 440, at=1.0) < 50, "the original track survived the replace"
+    assert tone_level(out, 660, at=1.0) < 50, "the overlay's track survived the replace"
 
 
 def test_a_masked_animated_overlay_composes_with_trim_and_audio(clips, tmp_path):
