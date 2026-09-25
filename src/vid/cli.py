@@ -416,6 +416,13 @@ def narrate(
     mix: Annotated[
         bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")
     ] = None,
+    allow_unfitted: Annotated[
+        bool,
+        typer.Option(
+            "--allow-unfitted",
+            help="Lay the narration on even if a line overruns its slot. Without this, an unfitted line is refused.",
+        ),
+    ] = False,
     help: _doc("narrate") = False,
     model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: EffortOption = "low",
@@ -429,6 +436,7 @@ def narrate(
             script_only=script_only,
             voice=voice,
             mix=mix,
+            allow_unfitted=allow_unfitted,
             model=model,
             reasoning_effort=reasoning_effort,
         )

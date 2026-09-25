@@ -590,6 +590,12 @@ argument, never a piped continuation, and the result is a human-readable report
 - `--mix` / `--replace` (optional, default none) -- force laying the narration
   over the original audio, or in place of it. Omit to decide from whether the
   video already has speech.
+- `--allow-unfitted` (optional, default `False`) -- lay the narration on even
+  if a line still overruns its slot after every rewrite. WITHOUT this, an
+  unfitted line is a REFUSAL, not a note in the report: the run stops and names
+  each line and by how much it overran. A narration that did not fit is not a
+  success carrying a warning, and a report the caller must remember to read is
+  not a failure.
 - `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
   script writing and every shortening retry, not the speech synthesiser.
 - `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.

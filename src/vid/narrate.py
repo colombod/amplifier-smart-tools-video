@@ -285,6 +285,35 @@ def fit(
     return script
 
 
+def refuse_unfitted(script: Script, *, allow_unfitted: bool) -> None:
+    """Stop when a line could not be fitted, unless the caller asked for it.
+
+    A NARRATION THAT DID NOT FIT IS NOT A SUCCESS CARRYING A NOTE. The unfitted
+    lines used to be appended to `narrate`'s report and that report returned
+    normally, so a caller received a string and had to remember to read it. A
+    report the caller must remember to read is not a failure -- and `lib.narrate`
+    returns a string, so a programmatic caller had nothing to branch on at all.
+
+    `vision.describe_shots` already refuses to return a partial set and
+    `index.describe` enforces that again explicitly. This is the same rule
+    reaching the one capability that was exempt from it.
+
+    Lives here, beside `fit`, rather than inline in `lib.narrate`: the decision
+    is the contract, and a contract buried in a 60-line function is one no test
+    can reach without a provider and a speech engine.
+    """
+    unfitted = script.unfitted()
+    if not unfitted or allow_unfitted:
+        return
+    detail = "\n".join(f"    {line.start:.2f}s -- {line.note}" for line in unfitted)
+    raise VidError(
+        f"{len(unfitted)} of {len(script.lines)} narration line(s) could not be fitted to "
+        f"the time available:\n{detail}\n"
+        "Shorten the prompt so the script has less to say, give the narration more room by "
+        "trimming less, or pass --allow-unfitted to accept the overrun and lay it on anyway."
+    )
+
+
 def assemble(script: Script, out: Path | str, total: float) -> Path:
     """Lay every fitted line on a silent bed at its own start time.
 

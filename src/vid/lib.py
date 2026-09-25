@@ -659,10 +659,15 @@ def narrate(
     script_only: bool = False,
     voice: str | None = None,
     mix: bool | None = None,
+    allow_unfitted: bool = False,
     model: str = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Write a narration for a video, fit it to the timing, and lay it on.
+
+    REFUSES when a line could not be fitted, unless `allow_unfitted` is set.
+    An overrunning line used to come back inside a success report, which the
+    caller had to remember to read.
 
     Returns a human-readable report. The script is always printed before any
     audio is synthesised, because narration is the most expensive thing here to
@@ -676,7 +681,7 @@ def narrate(
 
     from vid.core.manifest import manifest_install
     from vid.index import fingerprint, load
-    from vid.narrate import assemble, fit, write_script
+    from vid.narrate import assemble, fit, refuse_unfitted, write_script
     from vid.probe import have_ffmpeg
     from vid.speech.interface import resolve_speech, speech_preflight
 
@@ -737,11 +742,13 @@ def narrate(
         fit(script, speaker, workdir, intelligence, model=model, reasoning_effort=reasoning_effort)
         temp_track = assemble(script, workdir / "narration.wav", total)
 
+        refuse_unfitted(script, allow_unfitted=allow_unfitted)
+        unfitted = script.unfitted()
+
         report = [f"narration for {video}", ""]
         report += [line.report() for line in script.lines]
-        unfitted = script.unfitted()
         if unfitted:
-            report += ["", f"  {len(unfitted)} line(s) did not fit:"]
+            report += ["", f"  {len(unfitted)} line(s) did not fit (accepted via --allow-unfitted):"]
             report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
 
         if out is None:
