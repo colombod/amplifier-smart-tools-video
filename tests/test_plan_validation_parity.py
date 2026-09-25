@@ -214,13 +214,11 @@ def test_workable_duck_settings_are_still_accepted(label, settings):
 
 OP_REFUSED = [
     ("a cut that ends before it starts", {"op": "cut", "start": 5.0, "end": 2.0}),
-    ("a cut that removes nothing", {"op": "cut", "start": 5.0, "end": 5.0}),
     ("a cut starting before the file", {"op": "cut", "start": -1.0, "end": 2.0}),
     ("a retime that is both constant and a ramp", {"op": "retime", "speed": 2.0, "ramp": [{"at": 1.0, "speed": 0.5}]}),
     ("a retime that is neither", {"op": "retime"}),
     ("a reversed retime speed", {"op": "retime", "speed": -2.0}),
     ("a zoom lasting negative time", {"op": "zoom", "duration": -3.0}),
-    ("a zoom to nothing", {"op": "zoom", "to": 0.0}),
     ("a zoom centred before the file", {"op": "zoom", "at": -5.0}),
 ]
 
@@ -230,6 +228,20 @@ OP_ACCEPTED = [
     ("a ramped retime", {"op": "retime", "ramp": [{"at": 1.0, "speed": 0.5}]}),
     ("a default zoom", {"op": "zoom"}),
     ("a zoom OUT, which is not a zoom of zero", {"op": "zoom", "to": 0.8}),
+    # MOVED HERE FROM `OP_REFUSED`, on measurement rather than preference.
+    # Rendered pre-guard against a 6.0s source, validation fully bypassed:
+    #     cut 5 -> 5    rc=0, 6.0s   removes nothing, harms nothing
+    #     cut 5 -> 2    rc=0, 9.0s   DUPLICATES footage -- still refused above
+    #     zoom to=0     rc=0, 6.0s   same duration as the control
+    #     zoom dur=0    rc=0, 6.0s   same
+    # These are degenerate no-ops that plan_format 1 has always accepted, so
+    # refusing them changed the meaning of a stored plan without a format bump.
+    # The guards were narrowed from `<=` to `<`: a REVERSED range invents
+    # footage and a NEGATIVE duration silently clamps into a different mode,
+    # and those remain refused. Doing nothing is not the same as doing harm.
+    ("a cut that removes nothing", {"op": "cut", "start": 5.0, "end": 5.0}),
+    ("a zoom of zero, a no-op rather than an error", {"op": "zoom", "to": 0.0}),
+    ("a zoom lasting no time", {"op": "zoom", "duration": 0.0}),
 ]
 
 

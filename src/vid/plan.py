@@ -51,10 +51,16 @@ class Cut(BaseModel):
         """
         if self.start < 0:
             raise ValueError(f"A cut cannot start before the file does, and {self.start:g} is negative.")
-        if self.end <= self.start:
+        # STRICTLY LESS THAN, not <=. Measured on a 6.0s source, pre-guard:
+        #     end < start  (5 -> 2)   renders 9.0s -- the duplication defect
+        #     end == start (5 -> 5)   renders 6.0s -- removes nothing, harms nothing
+        # An empty range is a no-op that plan_format 1 has always accepted, so
+        # refusing it would break a stored plan without a format bump. Only the
+        # REVERSED range invents footage, and only that is refused.
+        if self.end < self.start:
             raise ValueError(
-                f"A cut must end after it starts, and {self.start:g} -> {self.end:g} does not. "
-                "An empty or reversed range removes nothing and duplicates footage instead."
+                f"A cut must not end before it starts, and {self.start:g} -> {self.end:g} does. "
+                "A reversed range removes nothing and duplicates footage instead."
             )
         return self
 
@@ -115,11 +121,18 @@ class Zoom(BaseModel):
         directly, so the CLI reaches it. `to=0` was accepted too, which is not
         a zoom at any speed.
         """
-        if self.to <= 0:
-            raise ValueError(f"A zoom factor must be above zero, and {self.to:g} is not.")
-        if self.duration <= 0:
+        # STRICTLY NEGATIVE, not <=, for the same reason as `Cut` above. Measured
+        # on a 6.0s source, pre-guard, every one of these rendered rc=0 at 6.0s:
+        # to=0, to=1.0, to=-2, duration=0, duration=-3. So none of them CRASHED,
+        # and refusing the zero cases would reject plans plan_format 1 accepted.
+        # A negative factor or duration is still refused: `duration < 0` silently
+        # clamps into a different kind of zoom, which is a wrong result rather
+        # than a no-op.
+        if self.to < 0:
+            raise ValueError(f"A zoom factor cannot be negative, and {self.to:g} is.")
+        if self.duration < 0:
             raise ValueError(
-                f"A zoom must last longer than no time at all, and {self.duration:g} does not. "
+                f"A zoom cannot last less than no time at all, and {self.duration:g} does. "
                 "A negative duration silently becomes a different kind of zoom."
             )
         if self.at is not None and self.at < 0:
@@ -282,10 +295,15 @@ class LayerAudio(BaseModel):
                 f"A duck ratio must be above 1 and at most 20, and {self.duck_ratio:g} is not. "
                 "A ratio of 1 is no compression at all, so the base would never dip."
             )
-        if not 0.0 < self.duck_threshold < 1.0:
+        # 0.000976563 is ffmpeg's ACTUAL floor for sidechaincompress `threshold`,
+        # not 0. A guard of `0.0 <` admitted 0.0001, which this validator passed
+        # and ffmpeg then rejected with a raw AVOption error -- precisely the
+        # failure the guard exists to convert into a named one.
+        if not 0.000976563 <= self.duck_threshold < 1.0:
             raise ValueError(
-                f"A duck threshold must be between 0 and 1, and {self.duck_threshold:g} is not. "
-                "At 1 nothing ever crosses it, so the base would never dip."
+                f"A duck threshold must be at least 0.000976563 and below 1, and "
+                f"{self.duck_threshold:g} is not. That floor is ffmpeg's own, not ours; "
+                "at 1 nothing ever crosses it, so the base would never dip."
             )
         if not 0.01 <= self.duck_attack <= 2000.0:
             raise ValueError(f"A duck attack must be between 0.01 and 2000 ms, and {self.duck_attack:g} is not.")
