@@ -368,11 +368,23 @@ def verify(
     model produced.
     """
     from vid import verify as checks
-    from vid.probe import have_ffmpeg
+    from vid.probe import have_ffmpeg, have_ffprobe
 
-    if not have_ffmpeg():
+    # BOTH EXECUTABLES, not just ffmpeg. `check_duration` and the resolution
+    # and stream checks read container metadata through `_ffprobe`, so a
+    # stripped installation carrying ffmpeg alone -- the minimal container
+    # image the manifest's ffprobe entry describes -- passed this guard and
+    # then failed inside an unguarded subprocess call, well outside this
+    # tool's own remedial error path.
+    #
+    # The manifest declares ffmpeg and ffprobe SEPARATELY because the code
+    # checks for them separately; a guard naming only one of them put the
+    # refusal and the manifest back out of agreement.
+    if not (have_ffmpeg() and have_ffprobe()):
         raise VidError(
-            "verify reads actual frames, so it needs ffmpeg on PATH. "
+            "verify reads actual frames and the container's own metadata, so it needs "
+            "both ffmpeg and ffprobe on PATH. They ship together in every mainstream "
+            "distribution, so installing ffmpeg usually supplies both. "
             "Run `vid check` for the install command for your system."
         )
 
