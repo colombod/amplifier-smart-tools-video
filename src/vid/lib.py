@@ -403,9 +403,11 @@ def index(
     reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Build (or extend) a video's index and report what it holds."""
+    import importlib.util
     import json
 
     from vid.index import build, describe, index_path
+    from vid.index import load as index_load
     from vid.probe import have_ffmpeg, have_ffprobe
 
     # PREFLIGHT BEFORE ANY WORK STARTS. Shot detection shells out to ffmpeg and
@@ -443,6 +445,31 @@ def index(
                 "`vid check` says how to configure a provider."
             )
 
+    # THE SPEECH BACKEND IS CONFIRMED BEFORE `build()` TOO, for the same reason
+    # as the provider above: `transcribe()` used to discover a missing
+    # faster-whisper only after the duration read and shot detection had run.
+    #
+    # GATED ON WHETHER TRANSCRIPTION WILL ACTUALLY HAPPEN, not on the `speech`
+    # flag. `speech` defaults to True, so testing the flag alone refused every
+    # index on a box without the extra -- including the cases `build()` would
+    # have completed without transcribing at all, because the stored index
+    # already carries speech. That is the same over-correction as refusing a
+    # value that renders: a guard that fires where nothing would have broken.
+    # The condition below mirrors `build()`'s own (`speech and "speech" not in
+    # record`), so the two cannot disagree about when the backend is needed.
+    #
+    # It sits AFTER the provider check so that `--vision` with no provider
+    # still reports the provider, which is the more specific thing the caller
+    # asked for; both refusals leave no new index behind either way.
+    if speech and "speech" not in (index_load(video) or {}) and importlib.util.find_spec("faster_whisper") is None:
+        raise VidError(
+            "Indexing speech needs a speech backend, and none is installed:\n"
+            "  uv tool install --force 'vid[speech] @ "
+            "git+https://github.com/colombod/amplifier-smart-tools-video'\n"
+            "Pass `--no-speech` to index shots only, which needs no backend at all. "
+            "`vid check` shows what you have."
+        )
+
     record = build(video, speech=speech, model_size=model_size)
 
     if vision:
@@ -460,7 +487,15 @@ def index(
             "to one frame per shot."
         )
         if not _confirm_before_spending(notice, yes):
-            return "Nothing described. The index is unchanged."
+            # NOT "the index is unchanged" -- that was false. `build()` above
+            # writes the index unconditionally (index.py: path.write_text), so
+            # on a video with no prior index, declining here still left a NEW
+            # file on disk while reporting that nothing had happened. The
+            # shots and speech genuinely succeeded; only the vision pass was
+            # declined, so this reports the real outcome and names the part
+            # that was skipped, rather than a reassuring sentence that the
+            # filesystem contradicts.
+            return _index_report(video, record, note="vision descriptions skipped at your request")
 
         record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
         index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
