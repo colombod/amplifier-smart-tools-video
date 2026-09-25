@@ -186,8 +186,18 @@ class Mask(BaseModel):
             )
         if self.radius < 0:
             raise ValueError(f"A rounded rectangle's radius cannot be negative, and {self.radius} is.")
-        if self.feather < 0:
-            raise ValueError(f"A mask's feather cannot be negative, and {self.feather:g} is.")
+        # BOUNDED ABOVE TOO, and the ceiling is ffmpeg's, not ours. `feather`
+        # compiles to `gblur=sigma=`, whose range `ffmpeg -h filter=gblur`
+        # gives as "from 0 to 1024"; rendering confirms 1024 passes and 1024.1
+        # is refused. A guard on the lower end only let feather=1e9 through
+        # this validator and into ffmpeg, which failed the whole render with
+        # rc=222 "Numerical result out of range" -- exactly the raw error this
+        # guard exists to convert into vid's own message.
+        if not 0.0 <= self.feather <= 1024.0:
+            raise ValueError(
+                f"A mask's feather must be between 0 and 1024, and {self.feather:g} is not. "
+                "That ceiling is ffmpeg's own limit on the blur it compiles to, not ours."
+            )
         return self
 
 

@@ -46,24 +46,36 @@ import vid.plan as plan_module
 #: directly, so the CLI reaches them too. Cut, Retime and Zoom were fixed
 #: rather than deferred once that came out.
 KNOWN_UNGUARDED: dict[str, set[str]] = {
-    "AudioMix": {"level"},
+    "AudioMix": {"level", "start"},
+    "AudioReplace": {"start"},
     "Key": {"blend", "similarity", "threshold"},
     "LayerAudio": {"base_gain_db", "gain_db"},
-    "Motion": {"to_x", "to_y"},
+    "Motion": {"duration", "start", "to_x", "to_y"},
     "Overlay": {"end", "start", "x", "y"},
     "Plan": {"plan_format"},
     "RampPoint": {"at", "speed"},
-    "Recolor": {"strength"},
+    # The four colour statistics were INVISIBLE to the sweep until the tuple
+    # spelling was added -- twelve floats nothing was looking at. They are
+    # normally computed by `recolor` itself, but a JSON plan can set them.
+    "Recolor": {"reference_mean", "reference_std", "source_mean", "source_std", "strength"},
+    "Retime": {"speed"},
     "Stitch": {"transition_duration", "transition_offset"},
     "Trim": {"end", "start"},
     "Vignette": {"strength"},
 }
-#: Fully guarded, by measurement: AudioReplace, Cut, Mask, Retime, Zoom.
-#: `AudioReplace` was previously RECORDED AS DEBT and is not; `Stitch`'s real
-#: open fields are transition_duration/transition_offset, and my first draft of
-#: this dict guessed `crossfade`, which is not even a field. Both errors came
-#: from writing the list by inference instead of running the probe -- the same
-#: mistake, one layer up, as the check this file replaces.
+
+#: Fully guarded, by measurement: Cut, Mask, Zoom.
+#:
+#: This list GREW when the one-sided rule started being executed. `AudioMix`,
+#: `Motion`, `AudioReplace` and `Retime` gained entries that the old `any`
+#: reported as guarded because each refused one end. That is the bug the round-7
+#: review named, and the growth is the honest measurement of it.
+
+
+def _is_numeric_tuple(annotation) -> bool:
+    """A fixed-width tuple of numbers, e.g. `tuple[float, float, float]`."""
+    text = str(annotation)
+    return text.startswith("tuple[") and all(part.strip() in ("int", "float") for part in text[6:-1].split(","))
 
 
 def _numeric_models() -> dict[str, list[str]]:
@@ -74,10 +86,17 @@ def _numeric_models() -> dict[str, list[str]]:
             continue
         if obj.__module__ != "vid.plan":
             continue
+        # FOUR SPELLINGS PLUS TUPLES. The scalar list misses a numeric tuple,
+        # and `Recolor`'s four `tuple[float, float, float]` colour statistics
+        # carry twelve floats that nothing was looking at. `Retime.ramp` is
+        # `list[RampPoint]` and needs no special case: RampPoint is swept as a
+        # model in its own right, so its numbers are already covered.
         numeric = [
             field
             for field, info in obj.model_fields.items()
-            if info.annotation in (int, float) or str(info.annotation) in ("int | None", "float | None")
+            if info.annotation in (int, float)
+            or str(info.annotation) in ("int | None", "float | None")
+            or _is_numeric_tuple(info.annotation)
         ]
         if numeric:
             found[name] = numeric
@@ -106,9 +125,43 @@ SEEDS: dict[str, dict] = {
     "Overlay": {"layer": "over.mp4"},
 }
 
-#: Values no legitimate field should accept. Both ends, because a guard on one
-#: side only (`x > 0`) must not read as fully guarded.
+#: Values no legitimate field should accept.
 ABSURD = (-1e9, 1e9)
+
+#: Fields legitimately bounded on ONE end only, with the render that establishes
+#: it. NEITHER `any` nor `all` over both ends is the rule, and this file has now
+#: shipped both errors:
+#:
+#:   `any`  certified a field guarded when only one end was refused -- so a
+#:          genuinely two-sided field, guarded below and open above, passed.
+#:   `all`  demanded both ends of fields whose upper end is legitimately open,
+#:          which would report a CORRECT guard as debt.
+#:
+#: Measured against a 6.0s source, validation bypassed:
+#:   Cut.end=1e9        -> 1.0s   "remove everything from 1s on", clamped right
+#:   Zoom.at=1e9        -> 6.0s   centre beyond the file, clamped
+#:   Zoom.duration=1e9  -> 6.0s   clamped
+#:
+#: Anything NOT listed defaults to "both", so a new field is reported as debt
+#: until someone renders it and writes the evidence down here. Conservative in
+#: the direction that costs a false alarm rather than a false certificate.
+ONE_SIDED: dict[tuple[str, str], str] = {
+    ("Cut", "end"): "below",
+    ("Zoom", "at"): "below",
+    ("Zoom", "duration"): "below",
+    # Both render clean at 1e9 against a 640x360 base: radius clamps to the
+    # shape, and a zoom factor is open above by definition.
+    ("Mask", "radius"): "below",
+    ("Zoom", "to"): "below",
+    # NOT `Mask.feather`. It looked identical to these two and is not: at 1e9
+    # ffmpeg failed the render outright, rc=222 "Numerical result out of
+    # range". It is now bounded at 1024 in plan.py and stays two-sided here.
+}
+
+
+def _ends_for(name: str, field: str) -> tuple[float, ...]:
+    """The values this field must refuse, per its declared shape."""
+    return {"both": ABSURD, "below": (-1e9,), "above": (1e9,)}[ONE_SIDED.get((name, field), "both")]
 
 
 def _valid_kwargs(model: type[BaseModel], name: str) -> dict:
@@ -154,14 +207,24 @@ def _unguarded_fields(name: str) -> list[str]:
 
     unguarded = []
     for field in numeric:
-        if not any(_rejects(model, base, field, value) for value in ABSURD):
+        # EVERY end this field is declared to be bounded on must be refused.
+        # `all` over `_ends_for(...)`, not over ABSURD: the set of ends is the
+        # per-field rule, and it is now executed rather than asserted in prose.
+        if not all(_rejects(model, base, field, value) for value in _ends_for(name, field)):
             unguarded.append(field)
     return unguarded
 
 
 def _rejects(model: type[BaseModel], base: dict, field: str, value: float) -> bool:
+    payload = value
+    annotation = model.model_fields[field].annotation
+    if _is_numeric_tuple(annotation):
+        # One absurd element among valid ones: a guard that checks only the
+        # first slot must not read as guarding the whole tuple.
+        width = str(annotation)[6:-1].count(",") + 1
+        payload = tuple([1.0] * (width - 1) + [value])
     try:
-        model(**{**base, field: value})
+        model(**{**base, field: payload})
     except ValidationError:
         return True
     except Exception:
