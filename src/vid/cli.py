@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from pydantic import ValidationError
 import typer
 
 from vid import lib
@@ -549,11 +550,39 @@ def check(help: _doc("check") = False) -> None:
     typer.echo(lib.check())
 
 
+def _readable(error: ValidationError) -> list[str]:
+    """Pydantic's report, reduced to the sentences the validators actually wrote.
+
+    Every range guard in `plan.py` raises `ValueError` from inside a validator,
+    and each one is phrased for a caller -- naming the remedy, and whose limit
+    the number is. Pydantic wraps that in a `ValidationError` whose `str()` is a
+    developer artefact: the message survives, buried under a type tag, the
+    offending input dict and a link to pydantic.dev.
+    """
+    lines: list[str] = []
+    for item in error.errors():
+        # Pydantic prefixes a validator's own ValueError with "Value error, ".
+        message = str(item.get("msg", "")).removeprefix("Value error, ")
+        where = ".".join(str(part) for part in item.get("loc", ()) if not isinstance(part, int))
+        lines.append(f"{where}: {message}" if where else message)
+    return lines or [str(error)]
+
+
 def main() -> int:
     try:
         app()
     except VidError as error:
         typer.echo(f"vid: {error}", err=True)
+        return 1
+    except ValidationError as error:
+        # CAUGHT ALONGSIDE VidError, because a direct verb builds its model by
+        # hand: `vid cut --from 5 --to 2` constructed `Cut` straight from the
+        # CLI, so the ValidationError escaped `main` entirely and Typer printed
+        # a Python traceback. The JSON plan path never showed this -- `read_plan`
+        # catches ValidationError itself -- so the two doors onto the SAME guards
+        # behaved differently, and only the documented one was civil.
+        for line in _readable(error):
+            typer.echo(f"vid: {line}", err=True)
         return 1
     return 0
 
