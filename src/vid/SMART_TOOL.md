@@ -41,7 +41,16 @@ requires:
       fontconfig, so a brew install that leaves its dependencies unconfigured can render
       captions with no text. `brew postinstall ca-certificates fontconfig gnutls glib
       openssl@3` is what fixed it on a real machine.
-    optional: false
+
+      OPTIONAL: TRUE, and the flag has to match the paragraphs above it. This
+      said `false` while the same entry stated that trim, cut, retime, zoom,
+      stitch, caption, plan and transitions all run WITHOUT ffmpeg -- so the
+      manifest contradicted itself, and a caller trusting the flag would think a
+      tool that works is broken. `false` means "nothing works without this",
+      which is not true of vid: a plan is JSON and nothing touches a frame until
+      render. What is genuinely unavailable without it is render, verify, index
+      and recolor -- named above, and reported by `vid check`.
+    optional: true
     install: https://ffmpeg.org/download.html
   - name: ffprobe
     purpose: >-
@@ -57,7 +66,12 @@ requires:
       The exception is a minimal container image that installs an `ffmpeg` binary alone:
       there, every verb that only builds a plan still works, and everything that needs to
       know how long a clip is does not. `vid check` reports each one separately.
-    optional: false
+
+      OPTIONAL: TRUE, for the same reason as ffmpeg above and measured the same
+      way: `probe.have_ffprobe` is preflighted by the operations that need
+      duration data, NOT by the tool generally, so every verb that only builds a
+      plan still runs without it.
+    optional: true
     install: https://ffmpeg.org/download.html
   - name: faster-whisper
     purpose: >-

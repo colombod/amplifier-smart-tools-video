@@ -76,7 +76,24 @@ def test_the_declared_prerequisite_carries_a_purpose_and_an_install_reference() 
 
     assert ffprobe.purpose.strip(), "ffprobe is declared with no purpose"
     assert manifest_install("ffprobe"), "ffprobe is declared with no install reference"
-    assert not ffprobe.optional, "ffprobe is preflighted as required, so it must not be declared optional"
+    # OPTIONAL=TRUE, and this assertion used to demand the opposite. It read
+    # "ffprobe is preflighted as required, so it must not be declared
+    # optional" -- an over-strong claim I wrote, and measurement refutes it.
+    # With ffmpeg on PATH but ffprobe genuinely absent:
+    #
+    #     vid trim src.mp4 --from 1 --to 3   WITH ffprobe     rc=0
+    #     vid trim src.mp4 --from 1 --to 3   WITHOUT ffprobe  rc=0
+    #
+    # ffprobe is preflighted by the operations that need duration data, NOT by
+    # the tool generally, so `optional: false` told a caller that a tool which
+    # demonstrably works is broken. Declaring the prerequisite at all is the
+    # honesty win and is asserted above; the flag is a separate axis and has
+    # to describe the tool's real reduced operation.
+    assert ffprobe.optional, (
+        "ffprobe is preflighted only by the operations needing duration data -- plan-only "
+        "verbs run without it (measured: `vid trim --from --to` exits 0 with ffprobe absent), "
+        "so declaring it non-optional contradicts the tool's own documented behaviour"
+    )
 
 
 def test_every_ffprobe_refusal_names_what_the_manifest_declares() -> None:
