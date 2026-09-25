@@ -612,7 +612,10 @@ narration track and the command to lay it on.
 (`vid index`). No provider configured: refused, naming the fix (`vid check`).
 No speech synthesiser installed (unless `--script-only`): refused, naming the
 install command. A line that still does not fit after two rewrites and a
-speed-up: reported by name in the result, not silently dropped.
+speed-up: REFUSED, naming each line and by how much it overran. It is not a
+result carrying a warning -- `lib.narrate` returns a string, so a programmatic
+caller would have nothing to branch on. Pass `--allow-unfitted` to lay the
+narration on anyway and accept the overrun.
 
 ## Why it does not just write a script and read it
 
@@ -986,8 +989,19 @@ model only says what a frame shows. A time is a lookup, never a guess.
 **Result.** A text report: duration, fingerprint, shot count, speech passage
 count, and where the index is stored.
 
+**Declining the `--vision` prompt is a VALID PARTIAL OUTCOME, and the report
+says so.** Shots and any requested speech are detected and STORED before the
+prompt is shown, so answering no keeps that work rather than discarding it --
+the index on disk is real and reusable, and re-running with `--vision --yes`
+describes the shots without redoing detection or transcription. The report
+names what was skipped ("vision descriptions skipped at your request"). This
+is the one case where `index` succeeds having done less than the flags asked
+for; every other shortfall below is a refusal.
+
 **Failures.** ffmpeg or ffprobe missing: refused before any work starts,
-naming the fix (`vid check`). `--vision` with no provider configured: refused,
+naming the fix (`vid check`). Speech requested with no backend installed and
+nothing already transcribed: refused before any work starts, naming the
+install and `--no-speech`. `--vision` with no provider configured: refused,
 naming the fix. `--vision` without `--yes` and not attached to a terminal:
 refused, telling you to pass `--yes`.
 
@@ -1101,6 +1115,13 @@ ffmpeg's own failure: refused, showing its last lines of output.
 
 **What it needs.** ffmpeg on PATH to render, ffprobe when input timing or
 geometry is needed (including picture copy and supplied audio).
+
+**No model, ever.** Rendering is deterministic: the same plan and the same
+inputs compile to the same ffmpeg invocation and the same output. It never
+calls a provider, never needs one configured, and costs nothing beyond the
+encode. The model-backed verbs are the ones that WRITE a plan (`narrate`,
+`find`, `index --vision`); `render` only executes one, so a plan produced by a
+model is still inspectable with `--print-command` before a frame is touched.
 """,
     "plan": """# vid plan -- show the edit, without performing it
 
