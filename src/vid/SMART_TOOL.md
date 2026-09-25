@@ -43,6 +43,22 @@ requires:
       openssl@3` is what fixed it on a real machine.
     optional: false
     install: https://ffmpeg.org/download.html
+  - name: ffprobe
+    purpose: >-
+      Reads container metadata -- duration, resolution, stream presence. Declared
+      SEPARATELY from ffmpeg because the code checks for it separately: `probe.have_ffprobe`
+      is preflighted in its own right by `probe.duration`, `probe`'s stream reads,
+      `lib.stitch`, `index` and `recolor`, each of which refuses by name when it is absent.
+      A manifest that named only ffmpeg would leave a caller meeting a refusal for
+      something the manifest never admitted existed.
+
+      It ships WITH ffmpeg in every mainstream distribution and in the official builds, so
+      installing ffmpeg almost always satisfies both and this is rarely a separate action.
+      The exception is a minimal container image that installs an `ffmpeg` binary alone:
+      there, every verb that only builds a plan still works, and everything that needs to
+      know how long a clip is does not. `vid check` reports each one separately.
+    optional: false
+    install: https://ffmpeg.org/download.html
   - name: faster-whisper
     purpose: >-
       Transcribes speech locally so `index` can build timed passages and `find` can search
