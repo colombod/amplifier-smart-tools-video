@@ -27,8 +27,8 @@ import math
 from pathlib import Path
 import subprocess
 
-from vid.core.manifest import manifest_install
-from vid.probe import have_ffmpeg, have_ffprobe
+from vid.core.writes import writing
+from vid.probe import require_ffmpeg_tools
 from vid.schemas import VidError
 
 #: Frames sampled from a video to measure its colour. Nine, spread evenly and
@@ -114,16 +114,15 @@ def _require_ffmpeg_tools() -> None:
 
     Recolor samples frames to measure a palette while a plan is still being
     BUILT, unlike every other plan-building capability -- so it needs its own
-    preflight rather than relying on `render`'s. The install reference comes
-    from the manifest (`vid.core.manifest`) rather than a second, hand-copied
-    string, so the two can never disagree.
+    preflight rather than relying on `render`'s.
+
+    NAMING THE ABSENT BINARY IS NOT THIS FUNCTION'S BUSINESS ANY MORE. Four
+    call sites guarded on the same two binaries and each wrote its own
+    sentence; three of the four named the wrong one or named neither. That is
+    a property of the class, so it lives in `probe.require_ffmpeg_tools` and
+    this passes only the half of the sentence that is its own.
     """
-    if not have_ffmpeg() or not have_ffprobe():
-        raise VidError(
-            "ffmpeg is not on PATH, and recolor needs it to sample colour from a frame before the "
-            f"plan can even be built. Install it ({manifest_install('ffmpeg')}) -- see `vid check` "
-            "for the command for your system."
-        )
+    require_ffmpeg_tools("recolor needs them to sample colour from a frame before the plan can even be built")
 
 
 def _raw_rgb(command: list[str]) -> bytes:
@@ -297,5 +296,9 @@ def write_cube(source: ColorStats, reference: ColorStats, out: Path | str, stren
                 blended = tuple(lab[c] + (moved[c] - lab[c]) * strength for c in range(3))
                 nr, ng, nb = lab_to_rgb(*blended)
                 lines.append(f"{nr:.6f} {ng:.6f} {nb:.6f}")
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # One rule for every write; see vid/core/writes.py for the class this
+    # belongs to. The destination is caller-chosen here, so the remedy names
+    # the path rather than an environment variable.
+    with writing(out, "The colour lookup table", "Choose a writable path for it, or free space on this one."):
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

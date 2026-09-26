@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
+from vid.core.writes import writing
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: How many times a model may rewrite one overrunning line before the tool stops
@@ -295,7 +296,8 @@ def fit(
     report. Every step is decided by a measured duration, never by a model's
     opinion of its own output.
     """
-    workdir.mkdir(parents=True, exist_ok=True)
+    with writing(workdir, "The narration working directory", "Free space on this filesystem, or set TMPDIR."):
+        workdir.mkdir(parents=True, exist_ok=True)
 
     for line in script.lines:
         if not line.text:

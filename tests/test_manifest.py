@@ -96,17 +96,41 @@ def test_the_declared_prerequisite_carries_a_purpose_and_an_install_reference() 
     )
 
 
-def test_every_ffprobe_refusal_names_what_the_manifest_declares() -> None:
+def test_every_ffprobe_preflight_goes_through_the_one_shared_rule() -> None:
     """The agreement, checked at every site rather than the one a review cited.
 
-    Reading source rather than forcing five separate PATH-stripped runs: the
-    property is that each refusal NAMES the prerequisite, which is a property
-    of the message, and this catches a fifth site being added without one.
+    THIS TEST USED TO BE A GREP, and the grep is what went stale. It asserted
+    the literal text `have_ffprobe()` appeared in each module -- a check on the
+    APPEARANCE of a safeguard rather than on what the safeguard does, which is
+    the same defect the model-guard ratchet exists to stop. It passed happily
+    while three of the four sites named the WRONG binary in their refusal,
+    because all three did contain the string it looked for.
+
+    `check-spec-adherence` reported those sites one per run, each time citing
+    the previously-fixed one as the model to copy. The rule now lives once, in
+    `probe.require_ffmpeg_tools`, so the property to check is that each site
+    routes through it rather than writing a sentence of its own.
+
+    THE BEHAVIOUR IS CHECKED BY CALLING IT, not from here:
+    `tests/test_prerequisites_name_what_is_missing.py` drives every call site
+    with ffmpeg present and ffprobe absent and asserts the message blames
+    ffprobe. This test's remaining job is structural -- catching a fifth site
+    that preflights on its own and so never reaches that file's list.
     """
+    rule = (DISTRIBUTION_ROOT / "src/vid/probe.py").read_text(encoding="utf-8")
+    assert "def require_ffmpeg_tools" in rule, "the shared prerequisite rule is gone; this list is stale"
+    assert "have_ffprobe()" in rule, "the shared rule no longer tests for ffprobe"
+    assert "ffprobe" in rule, "the shared rule never names ffprobe in its refusal"
+
     for relative, what in FFPROBE_PREFLIGHTS:
+        if relative == "src/vid/probe.py":
+            continue
         source = (DISTRIBUTION_ROOT / relative).read_text(encoding="utf-8")
-        assert "have_ffprobe()" in source, f"{relative} no longer preflights ffprobe; this list is stale"
-        assert "ffprobe" in source, f"{relative} preflights ffprobe for {what} but never names it in a refusal"
+        assert "require_ffmpeg_tools" in source, (
+            f"{relative} preflights ffprobe for {what} without going through "
+            "probe.require_ffmpeg_tools -- a site writing its own sentence is how three of "
+            "these came to name the wrong binary"
+        )
 
 
 def test_the_description_stays_under_the_agent_skills_cap() -> None:

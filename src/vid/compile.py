@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 from typing import ClassVar
 
+from vid.core.writes import writing
 from vid.plan import (
     AudioMix,
     AudioRemove,
@@ -1044,7 +1045,13 @@ class Compiler:
         ).hexdigest()[:16]
         cube = lut_cache_dir() / f"{key}.cube"
         if not cube.is_file():
-            cube.parent.mkdir(parents=True, exist_ok=True)
+            with writing(
+                cube,
+                "The generated colour lookup table",
+                "That location comes from VID_LUT_CACHE_DIR when it is set, and a cache "
+                "directory otherwise. Point VID_LUT_CACHE_DIR at a writable directory.",
+            ):
+                cube.parent.mkdir(parents=True, exist_ok=True)
             write_cube(
                 ColorStats(mean=op.source_mean, std=op.source_std),
                 ColorStats(mean=op.reference_mean, std=op.reference_std),

@@ -111,6 +111,24 @@ requires:
       this file works around.
     optional: true
     install: https://github.com/colombod/amplifier-smart-tools-video#voice-openai
+
+  - name: openai-api-key
+    purpose: >-
+      The CREDENTIAL the `openai-tts` extra needs, declared separately because
+      installing the package and having an account are different prerequisites
+      and fail at different moments. `narrate --voice openai:<voice>[@profile]`
+      reads it from the environment variable named by `api_key_env` in
+      $XDG_CONFIG_HOME/vid/config.toml, defaulting to OPENAI_API_KEY when there
+      is no config file at all. The key is never sent anywhere but OpenAI's TTS
+      API, never written to a plan, and never logged.
+
+      Declared because the code preflights it: `speech.interface` refuses
+      before any synthesis when the named variable is unset, and the spec
+      requires that refusal and this manifest to agree. Nothing else in the
+      tool needs it -- every deterministic capability, and narration through
+      the local piper backend, runs without any credential at all.
+    optional: true
+    install: https://platform.openai.com/api-keys
   - name: gh
     purpose: >-
       Generates the token that signs in to GitHub Copilot. Without it, the model-backed
@@ -132,9 +150,15 @@ wrapper over it, so anything you can do from the shell you can also do from Pyth
 
 ## Read this first: chain the verbs, do not orchestrate them
 
-**Every verb except `render` reads an edit plan on stdin, appends one operation,
-and writes the plan to stdout.** Nothing decodes a frame until `render`, which
-compiles the whole plan into ONE ffmpeg pass.
+**The plan-building verbs read an edit plan on stdin, append one operation, and
+write the plan to stdout.** `render` compiles the whole plan into ONE ffmpeg pass.
+
+Two exceptions, both stated because an agent that assumes otherwise gets them
+wrong. `index`, `find`, `narrate`, `verify`, `check`, `manifest`, `transitions`
+and `audio extract` report or read rather than appending to a plan. And
+`recolor`, which does append an operation, still needs ffmpeg *while building*
+-- it samples real frames to measure the palette. Every other plan-building
+verb decodes nothing until `render`.
 
 ```bash
 vid trim talk.mp4 --from 0:10 --to 2:30 \

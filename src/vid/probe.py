@@ -28,13 +28,77 @@ def have_ffprobe() -> bool:
     return shutil.which("ffprobe") is not None
 
 
+def _refuse_missing(missing: list[str], what_for: str) -> None:
+    """The one sentence every prerequisite refusal in this tool is built from.
+
+    ALWAYS CARRIES THE MANIFEST'S INSTALL REFERENCE. The spec requires the
+    failure and the manifest to agree, and `check-spec-adherence` run 9 found
+    four refusals that named neither the install URL nor anything but
+    "Run `vid check`" -- while the manifest declares both binaries with
+    `https://ffmpeg.org/download.html`. Reading it from `manifest_install`
+    rather than repeating the string means they cannot drift apart.
+    """
+    from vid.core.manifest import manifest_install
+
+    named = " and ".join(missing)
+    verb = "is" if len(missing) == 1 else "are"
+    pronoun = "it" if len(missing) == 1 else "them"
+    raise VidError(
+        f"{named} {verb} not on PATH, and {what_for}. "
+        f"Install {pronoun} ({manifest_install('ffmpeg')}) -- ffmpeg ships ffprobe with it. "
+        "See `vid check` for the command for your system."
+    )
+
+
+def require_ffprobe(what_for: str) -> None:
+    """For the sites that need ffprobe alone -- durations and stream metadata."""
+    if not have_ffprobe():
+        _refuse_missing(["ffprobe"], what_for)
+
+
+def require_ffmpeg(what_for: str) -> None:
+    """For the sites that decode or encode, and so need ffmpeg alone."""
+    if not have_ffmpeg():
+        _refuse_missing(["ffmpeg"], what_for)
+
+
+def require_ffmpeg_tools(what_for: str) -> None:
+    """Refuse when either binary is missing, NAMING THE ONE THAT IS ABSENT.
+
+    ONE RULE FOR A CLASS WITH FOUR MEMBERS. Four places guarded on both
+    binaries and each wrote its own sentence, so each was free to be wrong in
+    its own way -- and three of them were:
+
+        index.py            said "ffmpeg is not on PATH" whichever was missing
+        lib.verify          said "it needs both", naming neither as the absent one
+        lib.index           same
+        color.py            correct, and only because it was reported
+
+    `check-spec-adherence` reported `color` on run 6 and `index` on run 7, one
+    instance at a time, each time pointing at the previously-fixed one as the
+    model to copy. Copying it a third time would have left `verify` and
+    `lib.index` still wrong and waiting for run 8. The spec asks the failure to
+    name what is absent; that is a property of the CLASS, so it is enforced in
+    one place.
+
+    Measured, with ffmpeg alone on PATH, before this existed:
+        ffmpeg present: True | ffprobe present: False
+        "ffmpeg is not on PATH, and recolor needs it to sample colour..."
+    -- sending the caller to install something they already had. They ship as
+    separate packages on several distributions, so this is a real arrangement.
+
+    `what_for` completes the sentence "..., and {what_for}." so each caller
+    keeps its own explanation of why it needs them.
+    """
+    missing = [name for name, present in (("ffmpeg", have_ffmpeg()), ("ffprobe", have_ffprobe())) if not present]
+    if not missing:
+        return
+    _refuse_missing(missing, what_for)
+
+
 def duration(path: str) -> float:
     """Seconds, from the container metadata."""
-    if not have_ffprobe():
-        raise VidError(
-            "ffprobe is not on PATH, and a transition needs to know how long the clips are. "
-            "Install ffmpeg (it ships ffprobe) -- see `vid check` for the command for your system."
-        )
+    require_ffprobe("a transition needs to know how long the clips are")
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
         capture_output=True,
@@ -57,8 +121,7 @@ def duration(path: str) -> float:
 
 def picture_presentation_bounds(path: str) -> tuple[float, float]:
     """Decoded picture's first PTS and final presentation end, including the last frame."""
-    if not have_ffprobe():
-        raise VidError("Picture timing needs ffprobe. Run `vid check`.")
+    require_ffprobe("picture timing is read from the container's own metadata")
     result = subprocess.run(
         [
             "ffprobe",
@@ -102,8 +165,7 @@ def picture_presentation_bounds(path: str) -> tuple[float, float]:
 
 def video_duration(path: str) -> float:
     """Picture duration, never the duration of a longer audio stream."""
-    if not have_ffprobe():
-        raise VidError("Picture timing needs ffprobe. Run `vid check`.")
+    require_ffprobe("picture timing is read from the container's own metadata")
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "json", path],
         capture_output=True,
@@ -123,8 +185,7 @@ def video_duration(path: str) -> float:
 
 def copy_video_duration(path: str) -> float:
     """Copy cannot retime packets: require a zero-based, measured picture stream."""
-    if not have_ffprobe():
-        raise VidError("Picture stream-copy needs ffprobe. Run `vid check`.")
+    require_ffprobe("picture stream-copy has to read the source's packet layout first")
     result = subprocess.run(
         [
             "ffprobe",

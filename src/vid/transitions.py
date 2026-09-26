@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import difflib
 
+from vid.probe import require_ffmpeg
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: ffmpeg's xfade vocabulary. Checked against `ffmpeg -h filter=xfade`; a build
@@ -392,8 +393,6 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
     import tempfile
 
     from vid import verify as checks
-    from vid.core.manifest import manifest_install
-    from vid.probe import have_ffmpeg
 
     # REFUSE LOUDLY, BEFORE THE GENERATED EXPRESSION IS EVEN TRIED. Without this,
     # a missing binary escaped as a bare `FileNotFoundError` from inside
@@ -401,12 +400,7 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
     # already been paid for to write `expression` (see `resolve_with_clips`).
     # The install reference comes from the manifest so it can never disagree
     # with what `vid check` and `SMART_TOOL.md` already say.
-    if not have_ffmpeg():
-        raise VidError(
-            "Checking a generated transition renders it and measures the result, so it needs "
-            f"ffmpeg on PATH before that can happen. Install it ({manifest_install('ffmpeg')}) "
-            "-- see `vid check` for the command for your system."
-        )
+    require_ffmpeg("checking a generated transition renders it and measures the result")
 
     with tempfile.TemporaryDirectory(prefix="vid-probe-") as work:
         out = str(Path(work) / "probe.mp4")
@@ -508,15 +502,8 @@ def resolve_with_clips(
     # preflight. `probe` (below) needs ffmpeg to render and measure whatever
     # `generate` writes, and finding that out only after the model call would
     # mean paying for generation and then refusing anyway.
-    from vid.core.manifest import manifest_install
-    from vid.probe import have_ffmpeg
 
-    if not have_ffmpeg():
-        raise VidError(
-            "Writing a new transition means rendering and measuring it before it can be "
-            f"trusted, so it needs ffmpeg on PATH first. Install it ({manifest_install('ffmpeg')}) "
-            "-- see `vid check` for the command for your system."
-        )
+    require_ffmpeg("writing a new transition means rendering and measuring it before it can be trusted")
 
     expression, why = generate(text, intelligence, model=model, reasoning_effort=reasoning_effort)
     passed, detail = probe(expression, first, second, duration)

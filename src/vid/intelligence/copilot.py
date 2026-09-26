@@ -31,7 +31,31 @@ class CopilotIntelligence:
 
     def run(self, request: AgentRequest) -> AgentResult:
         working_directory = str(request.workspace.path) if request.workspace is not None else None
-        client = CopilotClient(working_directory=working_directory, github_token=self._github_token())
+        # THE SDK CLIENT IS CONSTRUCTED OUTSIDE `_run`, so until this guard
+        # existed a constructor or SDK-initialisation failure had no conversion
+        # to VidError at all: `_run` catches timeouts and SDK errors, but only
+        # once it is already running, and `cli.main` translates only VidError.
+        # A provider whose startup failed therefore reached the user as a raw
+        # traceback naming no remedy -- the same shape as the unguarded
+        # filesystem calls swept out of index.py and lib.py, one layer over.
+        try:
+            client = CopilotClient(working_directory=working_directory, github_token=self._github_token())
+        except VidError:
+            # STRAIGHT THROUGH, NEVER REWRAPPED. `self._github_token()` is
+            # evaluated as an argument inside this `try`, and it already
+            # raises VidError naming the exact remedy -- gh is not installed,
+            # or gh is not signed in. Swallowing those into the general
+            # message below would replace a precise diagnosis with a vague
+            # one, which is a worse failure than the traceback this guard
+            # exists to remove.
+            raise
+        except Exception as exc:
+            raise VidError(
+                f"The GitHub Copilot provider could not be started: {exc}.\n"
+                "Check that `gh auth login` has been run with an account carrying a GitHub "
+                "Copilot subscription, and that the copilot SDK is installed -- `vid check` "
+                "reports what this installation can actually do."
+            ) from exc
         return asyncio.run(self._run(client, request))
 
     def _github_token(self) -> str:

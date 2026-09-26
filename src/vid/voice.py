@@ -20,6 +20,7 @@ import subprocess
 import sys
 import wave
 
+from vid.core.writes import writing
 from vid.schemas import VidError
 
 #: The default voice. Medium quality is the honest middle: `low` sounds
@@ -96,7 +97,12 @@ def ensure_voice(name: str = DEFAULT_VOICE) -> Path:
     if model.is_file():
         return model
 
-    directory.mkdir(parents=True, exist_ok=True)
+    with writing(
+        directory,
+        "The voice model directory",
+        "That location comes from VID_VOICES_DIR when it is set. Point it at a writable directory.",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [sys.executable, "-m", "piper.download_voices", name, "--download-dir", str(directory)],
         capture_output=True,
@@ -153,7 +159,8 @@ class Speaker:
         the render. The file exists; its length is a fact.
         """
         out = Path(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
+        with writing(out, "The synthesised speech", "Choose a writable --out path, or free space on this one."):
+            out.parent.mkdir(parents=True, exist_ok=True)
 
         # piper expresses rate as a length scale: >1 is SLOWER. A caller
         # asking for 1.2x speed wants a scale of 1/1.2. Passed as an explicit

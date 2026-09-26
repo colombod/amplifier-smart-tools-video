@@ -78,7 +78,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     from vid.compile import compile_plan, validate_video_codec
     from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import dimensions, frame_rate, has_audio, have_ffmpeg, video_duration
+    from vid.probe import dimensions, frame_rate, has_audio, video_duration
 
     validate_video_codec(plan, output, video_codec)
 
@@ -164,12 +164,12 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
 
         return " ".join(shlex.quote(part) for part in command)
 
-    if not have_ffmpeg():
-        raise VidError(
-            "ffmpeg is not on PATH, and rendering is the one thing that needs it. "
-            "Run `vid check` for the install command for your system, or re-run with "
-            "--print-command to see the invocation without running it."
-        )
+    from vid.probe import require_ffmpeg
+
+    require_ffmpeg(
+        "rendering is the one thing that needs it -- or re-run with --print-command to see "
+        "the invocation without running it"
+    )
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-12:])
@@ -362,6 +362,15 @@ def resolve_transition(
 
             intelligence = default_intelligence()
             intelligence.preflight()
+        except VidError:
+            # STRAIGHT THROUGH. `preflight()` already said exactly what is
+            # wrong -- gh not installed, or gh not signed in -- WITH the
+            # manifest's install reference. Collapsing that into "none is
+            # configured" below tells a caller to go configure a provider they
+            # have already configured, and drops the one line that would have
+            # fixed it. Swallowed only where a model is genuinely OPTIONAL
+            # (`find`, which falls back to literal search); here it is required.
+            raise
         except Exception:
             # Left as None so the resolver can explain the situation properly --
             # it knows whether a model was needed, and this does not.
@@ -391,7 +400,7 @@ def verify(
     model produced.
     """
     from vid import verify as checks
-    from vid.probe import have_ffmpeg, have_ffprobe
+    from vid.probe import require_ffmpeg_tools
 
     # BOTH EXECUTABLES, not just ffmpeg. `check_duration` and the resolution
     # and stream checks read container metadata through `_ffprobe`, so a
@@ -403,13 +412,7 @@ def verify(
     # The manifest declares ffmpeg and ffprobe SEPARATELY because the code
     # checks for them separately; a guard naming only one of them put the
     # refusal and the manifest back out of agreement.
-    if not (have_ffmpeg() and have_ffprobe()):
-        raise VidError(
-            "verify reads actual frames and the container's own metadata, so it needs "
-            "both ffmpeg and ffprobe on PATH. They ship together in every mainstream "
-            "distribution, so installing ffmpeg usually supplies both. "
-            "Run `vid check` for the install command for your system."
-        )
+    require_ffmpeg_tools("verify reads actual frames and the container's own metadata, so it needs both")
 
     results = []
     if expect_duration is not None:
@@ -440,22 +443,20 @@ def index(
     """Build (or extend) a video's index and report what it holds."""
     import importlib.util
 
-    from vid.index import build, describe
+    from vid.index import build, describe, index_path
     from vid.index import load as index_load
     from vid.index import save as index_save
-    from vid.probe import have_ffmpeg, have_ffprobe
+    from vid.probe import require_ffmpeg_tools
 
     # PREFLIGHT BEFORE ANY WORK STARTS. Shot detection shells out to ffmpeg and
     # the duration read shells out to ffprobe; both used to be discovered
     # missing only when one of those subprocess calls failed, well outside this
     # tool's own remedial error path. Checking first means the caller learns
     # what to install before any indexing work has spent time on the file.
-    if not (have_ffmpeg() and have_ffprobe()):
-        raise VidError(
-            "Indexing reads the file directly -- shot detection needs ffmpeg and the duration "
-            "read needs ffprobe, both on PATH before any indexing work starts. "
-            "Run `vid check` for the install command for your system."
-        )
+    require_ffmpeg_tools(
+        "indexing reads the file directly -- shot detection needs ffmpeg and the duration read "
+        "needs ffprobe, both before any indexing work starts"
+    )
 
     # THE PROVIDER IS CONFIRMED BEFORE `build()` EVER RUNS, not after. `build()`
     # writes the index to disk unconditionally -- on a video with no prior
@@ -471,6 +472,15 @@ def index(
 
             intelligence = default_intelligence()
             intelligence.preflight()
+        except VidError:
+            # STRAIGHT THROUGH. `preflight()` already said exactly what is
+            # wrong -- gh not installed, or gh not signed in -- WITH the
+            # manifest's install reference. Collapsing that into "none is
+            # configured" below tells a caller to go configure a provider they
+            # have already configured, and drops the one line that would have
+            # fixed it. Swallowed only where a model is genuinely OPTIONAL
+            # (`find`, which falls back to literal search); here it is required.
+            raise
         except Exception:
             intelligence = None
         if intelligence is None:
@@ -532,7 +542,27 @@ def index(
             # filesystem contradicts.
             return _index_report(video, record, note="vision descriptions skipped at your request")
 
-        record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
+        # THE DECLINE PATH ABOVE ALREADY REPORTS THE RETAINED INDEX; THE FAILURE
+        # PATH DID NOT. `build()` writes the shots-and-speech index
+        # unconditionally, so when `describe()` raises -- a model refusal, a
+        # partial reply, a dead provider -- the expensive work was already on
+        # disk and the error said only "None were applied -- re-run". A caller
+        # reading that reasonably concludes nothing happened, and re-runs the
+        # whole index including the shot detection and transcription they had
+        # already paid for.
+        #
+        # The vision error keeps its own diagnosis; this only adds the state it
+        # could not know about, since `vision` has no idea whether anything was
+        # persisted.
+        try:
+            record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
+        except VidError as exc:
+            raise VidError(
+                f"{exc}\n"
+                f"The shots and speech index WAS saved, at {index_path(video)} -- that work is not "
+                "lost and does not need redoing. Only the vision descriptions failed. Resume just "
+                f"that step with `vid index {video} --vision --yes`."
+            ) from exc
         # THE SAME GUARDED WRITER `build` uses -- this was the second, unguarded
         # copy of the write, so an unwritable VID_INDEX_DIR raised a raw OSError
         # here even once `build`'s own write had been made to name the remedy.
@@ -672,13 +702,9 @@ def audio_extract(video: str, output: str) -> str:
     """
     import subprocess
 
-    from vid.probe import have_ffmpeg
+    from vid.probe import require_ffmpeg
 
-    if not have_ffmpeg():
-        raise VidError(
-            "Extracting audio decodes the file, so it needs ffmpeg on PATH. "
-            "Run `vid check` for the install command for your system."
-        )
+    require_ffmpeg("extracting audio decodes the file")
 
     resolved_output = str(Path(output).resolve())
     result = subprocess.run(
@@ -752,10 +778,8 @@ def narrate(
     import subprocess
     import tempfile
 
-    from vid.core.manifest import manifest_install
     from vid.index import fingerprint, load
     from vid.narrate import assemble, fit, refuse_unfitted, write_script
-    from vid.probe import have_ffmpeg
     from vid.speech.interface import resolve_speech, speech_preflight
 
     record = load(video)
@@ -778,14 +802,11 @@ def narrate(
     # to avoid paying.
     #
     # ffmpeg is checked BEFORE speech, so that missing binary is reported
+    from vid.probe import require_ffmpeg
+
     # before the model write happens, regardless of which backend is chosen.
     if not script_only:
-        if not have_ffmpeg():
-            raise VidError(
-                "Assembling a narration lays every synthesised line onto a silent bed with "
-                f"ffmpeg, so it needs ffmpeg on PATH first. Install it ({manifest_install('ffmpeg')}) "
-                "-- see `vid check` for the command for your system."
-            )
+        require_ffmpeg("assembling a narration lays every synthesised line onto a silent bed with ffmpeg")
         speech_preflight(voice)
 
     intelligence = None
@@ -794,6 +815,15 @@ def narrate(
 
         intelligence = default_intelligence()
         intelligence.preflight()
+    except VidError:
+        # STRAIGHT THROUGH. `preflight()` already said exactly what is
+        # wrong -- gh not installed, or gh not signed in -- WITH the
+        # manifest's install reference. Collapsing that into "none is
+        # configured" below tells a caller to go configure a provider they
+        # have already configured, and drops the one line that would have
+        # fixed it. Swallowed only where a model is genuinely OPTIONAL
+        # (`find`, which falls back to literal search); here it is required.
+        raise
     except Exception:
         intelligence = None
     if intelligence is None:
@@ -830,9 +860,32 @@ def narrate(
             # be somewhere durable -- a path into a directory that no longer
             # exists is not a usable track.
             durable_dir = _narration_dir()
-            durable_dir.mkdir(parents=True, exist_ok=True)
             track = durable_dir / f"{fingerprint(video)}.wav"
-            shutil.copyfile(temp_track, track)
+            # THE FIFTH SIBLING OF A CLASS FIXED FOUR TIMES ON THIS BRANCH.
+            # `index.save`, `index.load` and `fingerprint` all now name the
+            # env var that chose their location when the filesystem refuses;
+            # these two calls did not, so an unwritable VID_NARRATION_DIR (a
+            # read-only mount, a typo in the variable, a full disk) escaped as
+            # a raw OSError traceback. `cli.main` translates only `VidError`.
+            #
+            # WORSE HERE THAN ELSEWHERE, which is why it is not merely tidy:
+            # the synthesis has ALREADY RUN by this point. The model has been
+            # called and paid for, the audio is rendered, and the only thing
+            # left is the copy out of the scoped temp dir -- so a traceback
+            # here throws away completed, billable work and tells the caller
+            # nothing about how to keep it.
+            try:
+                durable_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(temp_track, track)
+            except OSError as exc:
+                raise VidError(
+                    f"The narration was synthesised, but it could not be saved to {track}: "
+                    f"{exc.strerror or exc}.\n"
+                    "That location comes from VID_NARRATION_DIR when it is set, and the XDG "
+                    "state directory otherwise. Point VID_NARRATION_DIR at a writable "
+                    "directory and run this again, or pass --out to write the track straight "
+                    "to a path you choose."
+                ) from exc
             report += [
                 "",
                 f"  narration track: {track}",
@@ -921,7 +974,16 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
 def recolor(plan: Plan, like: str, strength: float = 1.0) -> Plan:
     """Map a plan's own source video's colour onto a reference image's."""
     if plan.source is None:
-        raise VidError("recolor needs a plan with a source video to measure.")
+        # NAMES THE CORRECTIVE INVOCATION, not just the condition. `recolor`
+        # measures the SOURCE's palette, so a sourceless plan cannot be
+        # recoloured -- but "needs a plan with a source video" left the caller
+        # to work out how a plan acquires one. Its sibling in `compile.py`
+        # already said "Name one when the chain starts"; this one did not.
+        raise VidError(
+            "recolor measures the source video's own palette, and this plan has no source to "
+            "measure. Start the chain by naming a video -- `vid trim talk.mp4 ... | vid recolor "
+            "--like reference.png` -- or pass a plan that already names one."
+        )
     operation = recolor_op(plan.source, like, strength)
     return plan.with_operation(operation)
 

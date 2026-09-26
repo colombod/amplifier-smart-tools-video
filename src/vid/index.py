@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from vid.probe import have_ffmpeg, have_ffprobe
+from vid.probe import require_ffmpeg_tools
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 INDEX_FORMAT = 1
@@ -36,11 +36,7 @@ def _require_ffmpeg_tools() -> None:
     entry for ffmpeg (`SMART_TOOL.md`): ffmpeg ships ffprobe, so one message
     covers both.
     """
-    if not have_ffmpeg() or not have_ffprobe():
-        raise VidError(
-            "ffmpeg is not on PATH, and indexing needs it to detect shots and read durations. "
-            "Install ffmpeg (it ships ffprobe) -- see `vid check` for the command for your system."
-        )
+    require_ffmpeg_tools("indexing needs them to detect shots and read durations")
 
 
 def index_dir() -> Path:

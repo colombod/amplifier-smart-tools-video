@@ -15,13 +15,16 @@ from __future__ import annotations
 PIPE_RULE = """
 ## The pipe carries a plan, not pixels
 
-Every verb except `render` reads a plan on stdin, appends one operation, and
-writes the plan to stdout. Nothing decodes a frame until `render`, which compiles
-the whole plan into ONE ffmpeg pass.
+The plan-building verbs read a plan on stdin, append one operation, and write
+the plan to stdout. No frame is decoded while a plan is being built; `render`
+compiles the whole plan into ONE ffmpeg pass.
 
-So this verb is instant, deterministic, and needs neither ffmpeg nor any AI
-provider. It costs $0.00. Chain freely -- five operations cost one decode and one
-encode, not five of each.
+NOT every verb works this way, and saying so used to be wrong here: `index`,
+`find`, `narrate`, `verify`, `check`, `manifest`, `transitions` and
+`audio extract` report or read rather than appending to a plan, and each says
+so in its own document.
+
+{cost_clause}
 
 ```bash
 vid trim talk.mp4 --from 0:10 --to 2:30 \\
@@ -32,6 +35,29 @@ vid trim talk.mp4 --from 0:10 --to 2:30 \\
 Start a chain by naming a file. Continue one by piping. A verb given neither
 fails and says so.
 """
+
+#: The ordinary case: building a plan touches nothing.
+FREE_COST_CLAUSE = """So this verb is instant, deterministic, and needs neither ffmpeg nor any AI
+provider. It costs $0.00. Chain freely -- five operations cost one decode and one
+encode, not five of each."""
+
+#: The exception, and it shipped as a FALSE CLAIM. `recolor` appends an
+#: operation like any other plan-building verb, so it was given the pipe rule
+#: above -- which told the reader it "needs neither ffmpeg nor any AI
+#: provider". It does need ffmpeg, immediately: `lib.recolor` measures the
+#: source's palette by sampling real frames while the plan is still being
+#: built, which is why `color._require_ffmpeg_tools` exists at all.
+#:
+#: A document that says a capability needs no ffmpeg, in a tool whose whole
+#: contract is that plan-building is free, is the kind of claim an agent acts
+#: on -- and it was wrong for exactly one verb.
+SAMPLES_PIXELS_WHILE_BUILDING = frozenset({"recolor"})
+
+SAMPLING_COST_CLAUSE = """So this verb is deterministic and needs no AI provider -- but UNLIKE every other
+plan-building verb it DOES need ffmpeg right now, not at `render`. It measures
+the reference and the source by sampling real frames while the plan is being
+built, and refuses by name if ffmpeg or ffprobe is absent. It costs $0.00 in
+provider spend; it is not free of decode."""
 
 _DOCS: dict[str, str] = {
     "trim": """# vid trim -- keep a time range
@@ -1277,14 +1303,85 @@ NOT_PIPE_PARTICIPANTS = frozenset(
 )
 
 
+#: Verbs whose library function is not simply `lib.<verb>`.
+_LIBRARY_NAMES: dict[str, str] = {
+    "plan": "show",
+    "manifest": "load_manifest",
+}
+
+#: Verbs with NO library function, and why. `audio` is a command GROUP rather
+#: than a verb -- its own document already says "None of its own" for every
+#: section and points at the four subcommands, each of which has a real library
+#: function and gets a real signature below.
+#:
+#: EXPLICIT, not inferred from a failed lookup. A verb whose library function
+#: was renamed would otherwise silently join this set and lose its documented
+#: surface, which is exactly the kind of quiet omission this section exists to
+#: stop.
+_NO_LIBRARY_SURFACE: frozenset[str] = frozenset({"audio"})
+
+
+def _library_section(name: str) -> str:
+    """The verb's Python signature, READ FROM THE FUNCTION rather than retyped.
+
+    WHY GENERATED. `check-spec-adherence` found that every capability skill
+    documented its CLI arguments and none documented the library's -- so an
+    agent reading `vid trim --help` learned about `source`, `--from` and
+    `--to`, and had no way to know `lib.trim` takes a required `plan: Plan`
+    first. Both surfaces are supported; only one was described.
+
+    Hand-writing 22 signature blocks would have fixed it once and then rotted,
+    because nothing would tie the prose to the function. Deriving it from
+    `inspect.signature` means a changed parameter changes this text in the same
+    commit, and `test_verbdoc.py` asserts the tie holds.
+    """
+    import inspect
+
+    from vid import lib
+
+    function = getattr(lib, _LIBRARY_NAMES.get(name, name))
+    signature = inspect.signature(function)
+    summary = (inspect.getdoc(function) or "").strip().split("\n")[0]
+
+    section = [
+        "",
+        "## The same capability from Python",
+        "",
+        "The CLI arguments above are one surface; this is the other. Both are supported.",
+        "",
+        "```python",
+        "from vid import lib",
+        "",
+        f"lib.{function.__name__}{signature}",
+        "```",
+    ]
+    if summary:
+        section += ["", summary]
+    if "plan" in signature.parameters:
+        section += [
+            "",
+            (
+                "`plan` is the edit the operation is appended to, and it is REQUIRED here -- the "
+                "CLI's optional `source` argument is the command-line shorthand for starting one. "
+                "Build a plan with any verb that begins a chain and pass the result along; plans "
+                "are never mutated in place, so each call returns a new one."
+            ),
+        ]
+    return "\n".join(section) + "\n"
+
+
 def verb_doc(name: str) -> str:
     """The document for one verb, with the pipe rule appended where it applies."""
     body = _DOCS.get(name)
     if body is None:
         raise KeyError(name)
+    document = body.strip() + "\n"
+    if name not in _NO_LIBRARY_SURFACE:
+        document += _library_section(name)
     if name in NOT_PIPE_PARTICIPANTS:
-        return body.strip() + "\n"
-    return body.strip() + "\n" + PIPE_RULE
+        return document
+    clause = SAMPLING_COST_CLAUSE if name in SAMPLES_PIXELS_WHILE_BUILDING else FREE_COST_CLAUSE
+    return document + PIPE_RULE.format(cost_clause=clause)
 
 
 def verbs() -> tuple[str, ...]:

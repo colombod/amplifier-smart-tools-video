@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from vid.core.writes import writing
+from vid.probe import require_ffprobe
 from vid.schemas import VidError
 
 DEFAULT_OPENAI_VOICE = "alloy"
@@ -52,6 +54,34 @@ def available(profile: str = "default") -> bool:
     return bool(os.environ.get(section["api_key_env"]))
 
 
+_SPEECH_REMEDY = (
+    "Choose a writable --out path, or free space on this one. The synthesis itself "
+    "succeeded, so retrying costs another API call."
+)
+
+
+def missing_api_key_error(voice: str, profile: str, env_var: str) -> VidError:
+    """The ONE missing-key refusal, for the two places that check.
+
+    `speech_preflight` checks before any synthesis starts and
+    `OpenAIBackend.__init__` checks again when the backend is built, so the
+    same sentence is needed twice. It was WRITTEN twice, and when the first
+    was corrected to carry the manifest's provisioning reference the second
+    kept telling the caller to export a key without saying where one comes
+    from -- reported as a fresh deviation one run later.
+
+    Same reasoning as `probe.require_ffmpeg_tools`: a sentence composed in two
+    places is a sentence that will be right in one of them.
+    """
+    from vid.core.manifest import manifest_install
+
+    return VidError(
+        f"--voice 'openai:{voice}@{profile}' needs {env_var} set (profile "
+        f"{profile!r} reads it), and it is not. Export it ({manifest_install('openai-api-key')}), "
+        f"or point profile {profile!r} at a different api_key_env in your vid config."
+    )
+
+
 class OpenAIBackend:
     """Sends narration text to OpenAI's TTS API for the named voice/profile."""
 
@@ -69,24 +99,40 @@ class OpenAIBackend:
 
         api_key = os.environ.get(self._env_var)
         if not api_key:
-            raise VidError(
-                f"--voice 'openai:{voice}@{profile}' needs {self._env_var} set (profile "
-                f"{profile!r} reads it), and it is not. Export it, or point profile "
-                f"{profile!r} at a different api_key_env in your vid config."
-            )
+            raise missing_api_key_error(voice, profile, self._env_var)
         self._api_key = api_key
 
     def _client(self):
-        import openai
+        # THE OPENAI SIBLING of the copilot constructor guard. Both build a
+        # provider client outside any conversion, and `cli.main` translates
+        # only VidError -- so a bad `base_url` in a profile, or a broken SDK
+        # install, reached the caller as a traceback naming neither. The
+        # copilot one was fixed when it was reported; this one was its
+        # unreported twin, found one run later.
+        try:
+            import openai
 
-        # Two explicit calls rather than **kwargs off a plain dict -- a dict
-        # of one value type loses each keyword's own, more specific type,
-        # which is exactly what made a `**kwargs` unpack unreadable to `ty`
-        # here (`base_url` and `api_key` are both `str`, but `OpenAI.__init__`
-        # accepts many other keyword shapes on that same overload).
-        if self._base_url:
-            return openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
-        return openai.OpenAI(api_key=self._api_key)
+            # Two explicit calls rather than **kwargs off a plain dict -- a dict
+            # of one value type loses each keyword's own, more specific type,
+            # which is exactly what made a `**kwargs` unpack unreadable to `ty`
+            # here (`base_url` and `api_key` are both `str`, but `OpenAI.__init__`
+            # accepts many other keyword shapes on that same overload).
+            if self._base_url:
+                return openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
+            return openai.OpenAI(api_key=self._api_key)
+
+        except VidError:
+            # Straight through, for the same reason as the copilot guard: a
+            # precise diagnosis must not be replaced by a general one.
+            raise
+        except Exception as exc:
+            raise VidError(
+                f"The OpenAI speech client could not be created for profile "
+                f"{self._profile!r}: {exc}.\n"
+                "Check that profile's base_url and api_key_env in your vid config, and that "
+                "the 'openai' package is installed -- `vid check` reports what this "
+                "installation can actually do."
+            ) from exc
 
     def say(self, text: str, out: Path | str, *, rate: float = 1.0) -> float:
         """Speak `text` via OpenAI's TTS API. Returns the MEASURED duration
@@ -104,7 +150,11 @@ class OpenAIBackend:
         speed = min(max(rate, lo), hi)
 
         out = Path(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
+        # BEFORE THE API CALL, deliberately: discovering an unwritable
+        # destination after the request would waste a paid synthesis, the
+        # same way the narration copy did.
+        with writing(out, "The synthesised speech", _SPEECH_REMEDY):
+            out.parent.mkdir(parents=True, exist_ok=True)
         client = self._client()
         try:
             response = client.audio.speech.create(
@@ -139,7 +189,10 @@ class OpenAIBackend:
                 "check https://status.openai.com/."
             ) from error
 
-        out.write_bytes(response.content)
+        # The API call SUCCEEDED and was billed; a filesystem failure here
+        # must not come back as a traceback that looks like the API broke.
+        with writing(out, "The synthesised speech", _SPEECH_REMEDY):
+            out.write_bytes(response.content)
         return _duration_of(out)
 
 
@@ -213,17 +266,12 @@ def _duration_from_data_bytes(path: Path) -> float | None:
 def _ffprobe_duration(path: Path) -> float:
     import subprocess
 
-    from vid.probe import have_ffprobe
-
     # Reached only when `_duration_from_data_bytes` could not parse the
     # response as PCM -- rare, but a missing binary must still refuse with a
     # named remedy rather than a bare `FileNotFoundError` from `subprocess.run`.
-    if not have_ffprobe():
-        raise VidError(
-            f"Could not measure the OpenAI TTS output at {path}: it did not parse as plain PCM, "
-            "and ffprobe -- the fallback -- is not on PATH. Install ffmpeg (it ships ffprobe) "
-            "-- see `vid check` for the command for your system."
-        )
+    require_ffprobe(
+        f"the OpenAI TTS output at {path} did not parse as plain PCM, so measuring it falls back to ffprobe"
+    )
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
         capture_output=True,
