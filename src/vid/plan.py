@@ -1,8 +1,15 @@
 """The edit plan: what travels through the pipe.
 
-Every verb reads a plan on stdin, appends one operation, and writes the plan to
-stdout. Nothing decodes a frame until `render`. That is the whole architecture,
-and this module is its vocabulary.
+The plan-building verbs read a plan on stdin, append one operation, and write the
+plan to stdout; `render` compiles the lot into one ffmpeg pass. That is the whole
+architecture, and this module is its vocabulary.
+
+NOT every verb works that way, and saying so here used to be wrong. `index`,
+`find`, `narrate`, `verify`, `check`, `manifest`, `transitions` and
+`audio extract` report or read rather than appending to a plan -- they are
+registered in `verbdoc.NOT_PIPE_PARTICIPANTS`. And `recolor` appends an operation
+but still needs ffmpeg while BUILDING, because it samples real frames to measure
+the source palette.
 
 A plan is JSON, so every verb that builds one is deterministic, instant, and
 needs neither ffmpeg nor a provider. That is not a property we engineer around;
@@ -902,7 +909,9 @@ def read_plan(source: str | None = None) -> Plan:
         preview = raw[:120] + ("..." if len(raw) > 120 else "")
         raise VidError(
             f"What arrived on stdin is not a plan -- it is not JSON. It began: {preview!r}. "
-            "Every verb except `render` writes a plan to stdout; check what produced this."
+            "The plan-building verbs write a plan to stdout; the reporting ones "
+            "(`index`, `find`, `narrate`, `verify`, `check`, `manifest`, `transitions`, "
+            "`audio extract`) do not. Check what produced this."
         ) from exc
 
     if isinstance(data, dict) and data.get("plan_format") not in (None, PLAN_FORMAT):

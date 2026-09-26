@@ -18,9 +18,16 @@ vid trim talk.mp4 --from 0:10 --to 2:30 \
   | vid render out.mp4
 ```
 
-Every verb reads a plan on stdin, appends one operation, and writes the plan to stdout.
-Nothing decodes a frame until `render`, which compiles the whole plan into **one**
-`filter_complex` and encodes **once**.
+The plan-building verbs read a plan on stdin, append one operation, and write the plan
+to stdout. `render` compiles the whole plan into **one** `filter_complex` and encodes
+**once**.
+
+Two exceptions, stated because an agent that assumes otherwise gets them wrong.
+`index`, `find`, `narrate`, `verify`, `check`, `manifest`, `transitions` and
+`audio extract` report or read rather than appending to a plan. And `recolor`, which
+does append an operation, still needs ffmpeg *while building* -- it samples real frames
+to measure the source palette. Every other plan-building verb decodes nothing until
+`render`.
 
 Why this and not the obvious thing:
 
@@ -36,9 +43,10 @@ Why this and not the obvious thing:
 
 Consequences worth stating plainly:
 
-- **Every verb except `render` is instant, deterministic, and needs no ffmpeg and no
-  provider.** A plan is JSON. The spec's "deterministic paths run with no AI configured"
-  is not something we work around; it is the default state of the tool.
+- **The plan-building verbs are instant, deterministic, and need no provider** -- and,
+  `recolor` excepted, no ffmpeg either. A plan is JSON. The spec's "deterministic paths
+  run with no AI configured" is not something we work around; it is the default state of
+  the tool.
 - **The plan is the artifact.** It can be saved, diffed, reviewed, hand-edited, and
   replayed. An edit produced by a model is as inspectable as one typed by a person.
 - **`render` can explain itself.** `--print-command` emits the ffmpeg invocation. A tool

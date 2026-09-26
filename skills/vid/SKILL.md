@@ -20,8 +20,8 @@ metadata:
 # vid
 
 Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by
-what was said or shown. Chainable — every verb passes an edit plan, and one
-render compiles it to a single ffmpeg pass.
+what was said or shown. Chainable — the plan-building verbs pass an edit plan,
+and one render compiles it to a single ffmpeg pass.
 
 ## Install
 

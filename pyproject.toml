@@ -1,7 +1,7 @@
 [project]
 name = "vid"
 version = "0.3.3"
-description = "Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable \u2014 every verb passes an edit plan, and one render compiles it to a single ffmpeg pass"
+description = "Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable \u2014 the plan-building verbs pass an edit plan, and one render compiles it to a single ffmpeg pass"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

@@ -1,8 +1,9 @@
 """Asking ffprobe how long something is.
 
 Kept apart from `compile` on purpose. Compiling a plan is pure -- same plan, same
-argv, no filesystem, no subprocess -- and that is what lets every verb except
-`render` work with no ffmpeg installed.
+argv, no filesystem, no subprocess -- and that is what lets the plan-building
+verbs work with no ffmpeg installed. (`recolor` is the exception: it samples
+frames while building, so it needs ffmpeg before `render`.)
 
 But `xfade` needs an ABSOLUTE offset measured from the start of its first input,
 and that offset is the running duration of the edit so far. Durations are a

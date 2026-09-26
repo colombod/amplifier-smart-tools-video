@@ -143,7 +143,7 @@ requires:
     install: https://github.com/github/copilot-cli#prerequisites
 ---
 
-Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass.
+Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — the plan-building verbs pass an edit plan, and one render compiles it to a single ffmpeg pass.
 
 **The library is the tool.** `vid.lib` holds every capability. The CLI is a thin
 wrapper over it, so anything you can do from the shell you can also do from Python.
@@ -194,7 +194,7 @@ Three rules that make chains predictable:
 
 ## When to reach for it
 
-- Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — every verb passes an edit plan, and one render compiles it to a single ffmpeg pass.
+- Edit and curate video: trim, retime, zoom, stitch, caption, and find moments by what was said or shown. Chainable — the plan-building verbs pass an edit plan, and one render compiles it to a single ffmpeg pass.
 
 ## When not to use vid
 
