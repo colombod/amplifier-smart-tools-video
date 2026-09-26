@@ -25,9 +25,89 @@ class CopilotIntelligence:
     def __init__(self) -> None:
         self.implementation = f"copilot-sdk {version('github-copilot-sdk')}"
         self._token: str | None = None
+        self._provider_reachable = False
 
     def preflight(self) -> None:
-        self._github_token()
+        """Establish that the provider will actually ANSWER, not just that a token exists.
+
+        This used to be `self._github_token()` alone, which checks exactly two
+        things: `gh` is on PATH, and `gh auth token` exits 0. Neither says the
+        credential is accepted by Copilot, and neither says this account is
+        entitled to it. So `index --vision` passed preflight, paid for shot
+        detection and transcription, WROTE THE INDEX, and only then failed at
+        the model call -- a preflight reporting "pass" for the one thing that
+        was going to fail.
+
+        MEASURED against the real service, both directions:
+
+            valid token      get_auth_status -> isAuthenticated=True
+                             list_models     -> 23 models in 1.22s
+            invalid token    get_auth_status -> isAuthenticated=False
+                             list_models     -> JsonRpcError -32603
+                                                "Not authenticated."
+
+        `start()` SUCCEEDED IN BOTH CASES, in 0.02s, so starting the client is
+        not a check at all -- which is why this asks the service something.
+
+        Roughly 1.2s, once per process and cached, against shot detection and
+        transcription measured in minutes. Paying it here is what stops the
+        expensive work from being spent on a run that cannot finish.
+        """
+        token = self._github_token()
+        if self._provider_reachable:
+            return
+        asyncio.run(self._verify_provider_answers(token))
+        self._provider_reachable = True
+
+    async def _verify_provider_answers(self, token: str) -> None:
+        """Ask the provider two questions whose answers are structured, not prose."""
+        client = CopilotClient(github_token=token)
+        try:
+            try:
+                await client.start()
+            except Exception as exc:
+                raise VidError(
+                    f"The GitHub Copilot provider could not be started: {exc}.\n"
+                    "Check that the copilot SDK is installed -- `vid check` reports what this "
+                    "installation can actually do."
+                ) from exc
+
+            # A STRUCTURED BOOLEAN, not a parsed message. Verified to be True
+            # for a working credential and False for a rejected one.
+            status = await client.get_auth_status()
+            if not getattr(status, "isAuthenticated", False):
+                detail = getattr(status, "statusMessage", None) or "not authenticated"
+                raise VidError(
+                    f"GitHub Copilot did not accept the credential from `gh auth token` ({detail}). "
+                    "Run `gh auth login` with an account that has a GitHub Copilot subscription "
+                    f"({_manifest_install('github-copilot-subscription')})."
+                )
+
+            try:
+                models = await client.list_models()
+            except Exception as exc:
+                # NAMES BOTH CAUSES, because this code cannot tell them apart
+                # and guessing would be the worse failure. An unentitled
+                # account and an unreachable service both land here, and
+                # telling someone to go buy a subscription they already have
+                # is exactly the wrong remedy -- the same defect as the
+                # prerequisite refusals that named the wrong binary.
+                raise VidError(
+                    f"GitHub Copilot accepted the credential but would not list its models ({exc}).\n"
+                    "Either this account has no GitHub Copilot subscription "
+                    f"({_manifest_install('github-copilot-subscription')}), or the service is "
+                    "unreachable from here. `vid check` reports what this installation can do."
+                ) from exc
+
+            if not models:
+                raise VidError(
+                    "GitHub Copilot accepted the credential but offers this account no models, "
+                    "so a model-backed capability has nothing to run on. Check the account has a "
+                    f"GitHub Copilot subscription ({_manifest_install('github-copilot-subscription')})."
+                )
+        finally:
+            with contextlib.suppress(Exception):
+                await client.stop()
 
     def run(self, request: AgentRequest) -> AgentResult:
         working_directory = str(request.workspace.path) if request.workspace is not None else None
