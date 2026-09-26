@@ -27,7 +27,7 @@ import math
 from pathlib import Path
 import subprocess
 
-from vid.core.writes import writing
+from vid.core.writes import writing_atomically
 from vid.probe import require_ffmpeg_tools
 from vid.schemas import VidError
 
@@ -296,9 +296,16 @@ def write_cube(source: ColorStats, reference: ColorStats, out: Path | str, stren
                 blended = tuple(lab[c] + (moved[c] - lab[c]) * strength for c in range(3))
                 nr, ng, nb = lab_to_rgb(*blended)
                 lines.append(f"{nr:.6f} {ng:.6f} {nb:.6f}")
-    # One rule for every write; see vid/core/writes.py for the class this
-    # belongs to. The destination is caller-chosen here, so the remedy names
-    # the path rather than an environment variable.
-    with writing(out, "The colour lookup table", "Choose a writable path for it, or free space on this one."):
-        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # ATOMIC, because the LUT cache tests EXISTENCE for validity:
+    #     cube = lut_cache_dir() / f"{key}.cube"
+    #     if not cube.is_file(): ... generate it ...
+    # A write that died halfway used to leave a truncated .cube at exactly the
+    # path that check tests, so every later recolor skipped regeneration and
+    # fed the truncated table to ffmpeg. The first failure was loud; the
+    # poisoned cache after it was silent and permanent. Writing through a
+    # temporary and replacing means a reader sees no file or a complete one.
+    with writing_atomically(
+        out, "The colour lookup table", "Choose a writable path for it, or free space on this one."
+    ) as staging:
+        staging.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

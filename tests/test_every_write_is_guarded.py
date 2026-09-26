@@ -68,9 +68,17 @@ def _inside_converting_try(tree: ast.AST, lineno: int) -> bool:
     return False
 
 
+#: Both shapes of the shared guard. `writing` converts the failure and leaves
+#: the partial file alone; `writing_atomically` additionally guarantees the
+#: destination never holds a partial artefact. A detector that knew only the
+#: first would flag every atomic site as unguarded -- which it did, the moment
+#: the second was added.
+GUARD_MARKERS = ("with writing(", "with writing_atomically(")
+
+
 def _inside_writing_block(source_lines: list[str], lineno: int) -> bool:
     start = max(0, lineno - WITHIN_LINES)
-    return any("with writing(" in line for line in source_lines[start:lineno])
+    return any(marker in line for line in source_lines[start:lineno] for marker in GUARD_MARKERS)
 
 
 def _write_sites() -> list[tuple[Path, int, str]]:
@@ -233,3 +241,118 @@ def test_writing_does_not_swallow_a_non_filesystem_error(tmp_path) -> None:
         writing(tmp_path / "x", "The thing", "remedy"),
     ):
         raise ValueError("not a filesystem problem")
+
+
+# ---------------------------------------------------------------------------
+# A PERSISTENT ARTEFACT MUST NEVER EXIST HALF-WRITTEN, because something later
+# treats its existence as validity. The LUT cache does exactly that:
+#
+#     cube = lut_cache_dir() / f"{key}.cube"
+#     if not cube.is_file():
+#         ... generate it ...
+#
+# so a write that died halfway left a truncated .cube at exactly the path that
+# check tests, and every later recolor skipped regeneration and fed the
+# truncated table to ffmpeg. The first failure is loud; the poisoned cache
+# after it is silent and permanent.
+# ---------------------------------------------------------------------------
+
+
+def _die_midway_through_writing(destination) -> None:
+    """A real partial write, then a failure -- the case that poisoned the cache."""
+    from vid.core.writes import writing_atomically
+
+    with writing_atomically(destination, "The table", "remedy") as staging:
+        staging.write_text("TITLE\n0.1 0.1 0.1\n")
+        raise RuntimeError("died halfway through generating the table")
+
+
+def test_a_failed_atomic_write_leaves_no_file_at_the_destination(tmp_path) -> None:
+    destination = tmp_path / "cache" / "abc123.cube"
+
+    with pytest.raises(RuntimeError, match="died halfway"):
+        _die_midway_through_writing(destination)
+
+    assert not destination.exists(), (
+        "a partial artefact was left at the destination, where the cache's is_file() check "
+        "will treat it as a complete one for every later run"
+    )
+
+
+def test_a_failed_atomic_write_leaves_no_temporary_behind(tmp_path) -> None:
+    """Cleaning the destination is not enough if the debris accumulates."""
+    destination = tmp_path / "cache" / "abc123.cube"
+
+    with pytest.raises(RuntimeError, match="died halfway"):
+        _die_midway_through_writing(destination)
+
+    leftovers = list(destination.parent.iterdir())
+    assert leftovers == [], f"temporary files were left behind: {[p.name for p in leftovers]}"
+
+
+def test_a_successful_atomic_write_lands_complete(tmp_path) -> None:
+    from vid.core.writes import writing_atomically
+
+    destination = tmp_path / "cache" / "abc123.cube"
+    with writing_atomically(destination, "The table", "remedy") as staging:
+        staging.write_text("TITLE\n1.0 1.0 1.0\n")
+
+    assert destination.read_text() == "TITLE\n1.0 1.0 1.0\n"
+    assert list(destination.parent.iterdir()) == [destination], "a temporary survived a SUCCESSFUL write"
+
+
+def test_an_atomic_write_replaces_an_existing_file_wholesale(tmp_path) -> None:
+    """Regeneration over a previously-poisoned entry must fully replace it."""
+    from vid.core.writes import writing_atomically
+
+    destination = tmp_path / "abc123.cube"
+    destination.write_text("TRUNCATED FROM AN EARLIER FAILED RUN\n")
+
+    with writing_atomically(destination, "The table", "remedy") as staging:
+        staging.write_text("COMPLETE\n")
+
+    assert destination.read_text() == "COMPLETE\n"
+
+
+def test_the_real_lut_writer_is_atomic(tmp_path) -> None:
+    """The property at the actual call site, not just on the helper.
+
+    `write_cube` is what the cache calls. A helper that is atomic and a caller
+    that does not use it would pass every test above.
+    """
+    from vid.color import ColorStats, write_cube
+
+    destination = tmp_path / "cache" / "real.cube"
+    write_cube(
+        ColorStats(mean=(50.0, 0.0, 0.0), std=(10.0, 5.0, 5.0)),
+        ColorStats(mean=(55.0, 2.0, 1.0), std=(12.0, 6.0, 5.0)),
+        destination,
+        strength=1.0,
+    )
+
+    assert destination.is_file()
+    assert list(destination.parent.iterdir()) == [destination], "write_cube left a temporary behind"
+
+    # CONTENT, NOT EXISTENCE. This test first asserted only `is_file()` and no
+    # leftovers -- and a mutation that made write_cube write to `out` instead
+    # of the staging path SURVIVED it. Under that mutation the real table went
+    # to the destination and was then replaced by the empty temporary, so the
+    # file existed, was zero bytes, and the test passed. A boolean is not a
+    # measurement; the table's own shape is.
+    from vid.color import LUT_SIZE
+
+    body = destination.read_text(encoding="utf-8")
+    assert f"LUT_3D_SIZE {LUT_SIZE}" in body, f"the written file carries no LUT header: {body[:120]!r}"
+
+    entries = [
+        line
+        for line in body.splitlines()
+        if line.strip() and not line.startswith("#") and not line.startswith("LUT_3D_SIZE")
+    ]
+    assert len(entries) == LUT_SIZE**3, (
+        f"the table holds {len(entries)} entries, not the {LUT_SIZE**3} a complete "
+        f"{LUT_SIZE}x{LUT_SIZE}x{LUT_SIZE} LUT needs -- a partial or empty file reached the destination"
+    )
+
+    source = (SOURCE_ROOT / "color.py").read_text(encoding="utf-8")
+    assert "writing_atomically(" in source, "write_cube no longer writes through the atomic path"

@@ -32,7 +32,7 @@ which is the whole requirement.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from vid.schemas import VidError
@@ -55,3 +55,54 @@ def writing(destination: Path | str, what: str, remedy: str) -> Iterator[None]:
         yield
     except OSError as exc:
         raise VidError(f"{what} could not be written to {destination}: {exc.strerror or exc}.\n{remedy}") from exc
+
+
+@contextmanager
+def writing_atomically(destination: Path | str, what: str, remedy: str) -> Iterator[Path]:
+    """As `writing`, but the destination NEVER holds a partial artefact.
+
+    FOR A PERSISTENT ARTEFACT SOMETHING LATER TREATS AS VALID. `writing` above
+    converts the failure and deliberately leaves the partial file alone, which
+    is right for a caller-named output the person can see and delete. It is
+    WRONG for a cache, and the LUT cache proved it:
+
+        cube = lut_cache_dir() / f"{key}.cube"
+        if not cube.is_file():
+            ... generate it ...
+
+    Existence IS the validity check. So a write that died halfway -- a full
+    disk, a killed process -- left a truncated `.cube` at exactly the path the
+    next run tests for, and every later recolor skipped regeneration and fed
+    that truncated table to ffmpeg. The first failure is loud; the poisoned
+    cache after it is silent and permanent.
+
+    The fix is structural rather than another message: write to a temporary
+    file beside the destination, then `os.replace` it into place. `os.replace`
+    is atomic within a filesystem, and the temporary sits in the destination's
+    OWN directory so it is always the same filesystem. A reader therefore sees
+    either no file or the complete one -- never a half-written one.
+
+    Yields the temporary path to write to. On any failure the temporary is
+    removed and the destination is left exactly as it was.
+    """
+    import os
+    import tempfile
+
+    destination = Path(destination)
+    temporary: Path | None = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        handle, raw = tempfile.mkstemp(dir=destination.parent, prefix=f".{destination.name}.", suffix=".partial")
+        os.close(handle)
+        temporary = Path(raw)
+        yield temporary
+        temporary.replace(destination)
+        temporary = None
+    except OSError as exc:
+        raise VidError(f"{what} could not be written to {destination}: {exc.strerror or exc}.\n{remedy}") from exc
+    finally:
+        # Covers the non-OSError paths too: an exception raised by the caller's
+        # own body must not leave a `.partial` behind either.
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
