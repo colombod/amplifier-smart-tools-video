@@ -122,11 +122,13 @@ def speech_preflight(voice: str | None) -> None:
     section = provider_profile("openai", profile, default_env_var=DEFAULT_API_KEY_ENV)
     env_var = section["api_key_env"]
     if not os.environ.get(env_var):
-        raise VidError(
-            f"--voice 'openai:{backend_voice}@{profile}' needs {env_var} set (profile "
-            f"{profile!r} reads it), and it is not. Export it, or point profile {profile!r} "
-            "at a different api_key_env in your vid config."
-        )
+        # ONE refusal, composed once. Both this preflight and
+        # `OpenAIBackend.__init__` check for the key, and writing the sentence
+        # twice is how one of them came to omit the manifest's provisioning
+        # reference while the other carried it.
+        from vid.speech.openai_tts import missing_api_key_error
+
+        raise missing_api_key_error(backend_voice, profile, env_var)
 
 
 def resolve_speech(voice: str | None) -> SpeechBackend:

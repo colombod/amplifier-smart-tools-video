@@ -15,9 +15,29 @@ CAPABILITIES = (
     Capability("cut", "Remove a time range, keeping what surrounds it.", model_backed=False),
     Capability("retime", "Change speed, constantly or along a curve.", model_backed=False),
     Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
-    Capability("stitch", "Join clips, with or without a transition.", model_backed=False),
+    Capability("overlay", "Lay another clip over the picture, at a stated place and time.", model_backed=False),
+    # NOT model_backed, for the same reason as `find` below: a NAMED transition
+    # resolves with no provider at all, and that is the common case. But a
+    # DESCRIPTIVE `--transition` routes through `resolve_transition`, which asks
+    # a model to pick or write the expression -- so the escalation is named here
+    # rather than left for a caller to discover after trusting the manifest.
     Capability(
-        "index", "Build a time-coded account of a video: shots, and speech as timed passages.", model_backed=False
+        "stitch",
+        "Join clips, with or without a transition. A named transition needs no provider; "
+        "describing one in words escalates to a model to choose or write it.",
+        model_backed=False,
+    ),
+    # NOT model_backed: shot detection is ffmpeg and speech is faster-whisper,
+    # BOTH LOCAL -- no provider, no network, no credentials. `--vision` is the
+    # one path that escalates, reaching `index.describe` -> `vision.describe_shots`,
+    # and it is opt-in and already gated behind `--yes` for spend. Named, because
+    # a caller reading this to decide "can I index without credentials" must get
+    # the true answer for the default invocation AND know what turns it on.
+    Capability(
+        "index",
+        "Build a time-coded account of a video: shots, and speech as timed passages. "
+        "Shots and speech are local and need no provider; --vision describes frames with a model.",
+        model_backed=False,
     ),
     # NOT model_backed: the literal tier answers any query using words the
     # speaker actually said, with no provider at all, and a DTU run showed that

@@ -29,6 +29,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from vid.core.writes import writing
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: Frames are described at this width. A description does not get better from
@@ -62,7 +63,8 @@ def extract_frames(video: str, shots: list[dict], into: Path) -> list[tuple[str,
     fails means a caller always gets either a complete set of frames or a
     named list of what went wrong; there is no third, ambiguous outcome.
     """
-    into.mkdir(parents=True, exist_ok=True)
+    with writing(into, "The extracted frames", "Choose a writable location, or free space on this one."):
+        into.mkdir(parents=True, exist_ok=True)
     written: list[tuple[str, Path]] = []
     failed: list[str] = []
     for position, shot in enumerate(shots):

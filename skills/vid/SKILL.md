@@ -29,26 +29,20 @@ render compiles it to a single ffmpeg pass.
 uv tool install git+https://github.com/colombod/amplifier-smart-tools-video
 ```
 
-With the optional extras — `speech` (local transcription, so moments can be
-found by what was said), `voice` (local speech, so narration can be spoken),
-and `voice-openai` (speaks narration through OpenAI's API instead, which needs
-an API key and sends the narration text over the network). `all` is all three:
+With the optional extras (`vid check` says which are present and what each one
+enables — do not rely on this file for that):
 
 ```bash
 uv tool install 'vid[all] @ git+https://github.com/colombod/amplifier-smart-tools-video'
 ```
 
-`vid check` reports which of these are present and configured.
-
-As a library from another project — the CLI is a thin wrapper, and `vid.lib`
-holds every capability:
+As a library from another project:
 
 ```bash
 uv add "vid @ git+https://github.com/colombod/amplifier-smart-tools-video"
 ```
 
-Already installed? `uv tool upgrade vid`. `vid --version` against the repository's
-latest tag says whether that is worth doing.
+Already installed? `uv tool upgrade vid`.
 
 ## Read this before running anything
 

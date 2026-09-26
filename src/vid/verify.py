@@ -92,7 +92,15 @@ def _rgb_at(path: str, at: float) -> tuple[int, int, int]:
     )
     pixel = result.stdout[:3]
     if result.returncode != 0:
-        raise VidError(f"ffmpeg frame analysis failed for {path!r}: {result.stderr.decode(errors='replace')}")
+        # The stderr alone told the caller WHAT broke and nothing about what to
+        # do next. Both remedies here are real: a file ffmpeg cannot decode, and
+        # a build missing the decoder for this container, look identical at this
+        # line and are distinguished by exactly these two commands.
+        raise VidError(
+            f"ffmpeg frame analysis failed for {path!r}: {result.stderr.decode(errors='replace')}\n"
+            f"Check the file decodes at all with `ffprobe {path}`, and confirm your ffmpeg build "
+            "has the decoder for this format with `vid check`."
+        )
     if len(pixel) < 3:
         raise VidError(
             f"There is no frame at {at}s in {path!r}. Check the video's actual duration "
@@ -153,7 +161,18 @@ def check_audio(path: str) -> Check:
     )
     mean = None
     if result.returncode != 0:
-        raise VidError(f"ffmpeg audio analysis failed for {path!r}: {result.stderr.strip()}")
+        # NAMES THE REMEDY, not just the failure. This raised the raw ffmpeg
+        # stderr and nothing else, so a caller meeting it had to infer both
+        # what broke and what to do -- and `cli.py` prints VidError verbatim
+        # as the caller-facing message, so the raw text WAS the whole report.
+        detail = result.stderr.strip().splitlines()
+        tail = " / ".join(line.strip() for line in detail[-3:]) if detail else "no stderr output"
+        raise VidError(
+            f"Could not measure the audio level of {path!r}. "
+            f"Check the file decodes with `ffprobe {path}`, and that this ffmpeg build has "
+            "the `volumedetect` filter (`ffmpeg -filters | grep volumedetect`). "
+            f"ffmpeg said: {tail}"
+        )
     for line in result.stderr.splitlines():
         if "mean_volume:" in line:
             mean = float(line.split("mean_volume:")[1].strip().split()[0])

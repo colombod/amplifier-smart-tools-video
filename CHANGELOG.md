@@ -9,6 +9,144 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
+## Unreleased
+
+`stitch` no longer emits a broken audio branch. It interpolated the running audio label
+into its `concat` entry without the `is not None` guard the rest of the compiler applies,
+so a silent source or a prior `audio remove` put the literal text `None` into the filter
+graph and ffmpeg rejected the whole command. `cut` already guarded this; `stitch` and the
+transition path now do too.
+
+It also assumed every stitched clip carried sound. Audio presence was probed on the plan's
+source alone, so stitching a silent clip emitted a stream specifier matching nothing. The
+render path now probes each stitch source, and a join where exactly one side has sound is
+refused by name rather than failing as `Stream specifier ... matches no streams`.
+
+Deliberate silence is distinguished from incidental silence: after `audio remove` the
+caller has already said what to do with sound, so dropping an incoming clip's audio carries
+out that instruction and is not refused. `vid stitch --help` documents the new refusal.
+
+Both faults were silent until render -- the plan validated and the compile succeeded.
+
+`stitch` can now join clips that are not the same size, which it previously could not do
+at all: it applied no normalization, and `concat` requires matching resolution and SAR, so
+a mixed-size join was rejected by ffmpeg rather than caught by `vid`. The reported case
+mixed 1280x720 animation with 1920x1080 recordings.
+
+`--fit fit` preserves aspect and pads the remainder with bars, so nothing leaves frame.
+`--fit fill` preserves aspect and crops the overflow centred, so nothing is letterboxed.
+Neither stretches. A size mismatch with no mode stated is refused, naming both sizes and
+both modes; there is deliberately no default, because resizing footage without being asked
+changes the framing without saying so.
+
+`fit` is a new optional field on the `stitch` operation, so `plan_format` stays `1`.
+
+New verb: `vid overlay` lays another clip over the picture at a stated place and time.
+Placement is in pixels of the edit's own frame; `--width`/`--height` resize the layer and
+must be given together, because with only one the other would have to be invented from an
+aspect ratio nobody stated. `--start`/`--end` bound the window it is on screen for.
+
+The layer is picture only. Its sound is not taken, because in the common
+picture-in-picture case the base already carries the narration and a second copy of it is
+the defect rather than the feature. Use `audio mix` or `audio replace` to lay a layer's
+sound on deliberately.
+
+`overlay` is a new operation, so `plan_format` stays `1`.
+
+An overlay can be cut to a shape. `--mask` takes `rect`, `rounded_rect`, `circle` or
+`ellipse`, built procedurally, or `image` and `video`, which read the matte from a file
+with `--mask-source`. A `video` matte is read per frame, so the cut-out can move.
+`--mask-invert` turns the window into a hole, `--mask-feather` softens the edge, and
+`--mask-radius` sets the corner radius for `rounded_rect`.
+
+`circle` and `ellipse` are not the same shape: the circle's diameter is the layer's
+shorter side, while the ellipse is inscribed and touches all four edges.
+
+The mask is applied at the layer's own size and merged into alpha BEFORE any
+`--width`/`--height` resize, so the shape and its feathering scale with the picture
+rather than being described twice and left free to drift apart.
+
+`mask` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
+An overlay can now MOVE. `--x`/`--y`/`--width`/`--height` are where it starts and the
+`--to-*` flags are where it ends, over a window set by `--move-at` and `--move-over`,
+with `--easing linear` or `ease_in_out`. The requested case, an inset recording growing
+to full screen, is one command.
+
+This animates presentation only. The layer is never retimed, so its own source timing is
+untouched: a moment two seconds into the recording still lands two seconds into the
+recording. Built on `scale` with `eval=frame` feeding `overlay`'s per-frame x/y, NOT on
+`zoompan`, whose `d` is output-frames-per-input-frame and which rendered 400 seconds from
+an 8-second source in 0.3.2.
+
+Animated sizes are rounded to even numbers, because `yuv420p` cannot encode an odd
+dimension and an animated size crosses odd values constantly. Without it a render dies
+partway through, on whichever frame happened to land wrong.
+
+`motion` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
+An overlay's own sound is now a stated choice. `--audio drop` (the default) contributes
+nothing, `keep` mixes it with the base, `only` replaces the base. `--audio-gain` and
+`--base-gain` set the balance in dB, and `--duck` dips the base under the layer,
+recovering after.
+
+`keep` SUMS the two rather than averaging them. `amix` defaults to `normalize=1`, scaling
+every input by 1/n: measured on a 440 Hz base, alone it reads max_volume -17.6 dB and
+through a default `amix` with a second input -18.5 dB. The base lost 3 dB because of
+nothing but a layer being present. This uses `normalize=0` and the gains you state.
+
+The layer's sound starts when the layer appears, is resampled to match the base's rate and
+layout, is bounded to the edit's length, and is faded 20 ms at each end so it does not
+click. Taking audio from a layer that has none is refused by name.
+
+`audio` is a new optional field on the `overlay` operation, so `plan_format` stays `1`.
+
+An overlay can be made transparent. `--opacity` scales the whole layer uniformly, and
+`--key` makes part of the layer's OWN picture transparent: `colorkey`, `chromakey` or
+`lumakey`, tuned by `--key-colour`, `--key-threshold`, `--key-similarity` and
+`--key-blend`. A key is distinct from a mask -- a key reads what the layer already
+contains, a mask imposes a shape from outside -- and the two combine by INTERSECTION.
+
+The order is a contract, not an implementation detail, because a different order looks
+different: key, then shape, then feather, then opacity. Feathering before the
+intersection would soften an edge the shape then cuts hard, and scaling opacity before
+the shape would make the shape's own border semi-transparent twice.
+
+At their defaults these are genuine no-ops, asserted by comparing a whole decoded row
+against the plain composite rather than a single pixel.
+
+`key` and `opacity` are new optional fields on the `overlay` operation, so `plan_format`
+stays `1`.
+
+**Fixed: a delayed overlay's picture and sound no longer disagree.** `--start` shifts
+the layer's picture as well as gating it, so at output time `start + d` both the frame
+and the tone come from the layer's own time `d`. Previously the picture was gated on
+output time while the sound was delayed, and a layer started at 2s showed content
+already 2s old. The contract is now stated in `contracts/plan.v1.md`.
+
+**Fixed: `--audio keep` no longer loses the base soundtrack's tail.** The base is held
+for the whole edit before mixing. `amix` ends an input when that input's stream ends,
+and a decoded base can finish tens of milliseconds short of its video, so the final
+moments played the layer alone. Seen on ffmpeg 6.1.1 and not on a newer nightly.
+
+**Fixed: `key.colour` can no longer inject a filter.** It is validated against a closed
+allowlist at the model, so a JSON plan is refused on the same terms as a CLI call.
+
+**Fixed: JSON plans are validated like CLI calls.** A size given on one axis only, a
+window that ends before it begins, and an opacity outside 0..1 were refused by the
+library and accepted from JSON. The rules now live on the models, enforced once.
+
+**Fixed: `audio remove` then `audio replace` no longer defeats the stitch guard.**
+
+**Fixed: an overlay no longer extends the edit.** A layer longer than the edit it was laid
+over ran to the LAYER's length, silently undoing a preceding `trim`, `cut` or `retime` --
+a 2.0s trimmed edit rendered 3.0s. The layer's picture is now bounded to the edit's length,
+exactly as its sound already was. A layer SHORTER than the edit is unaffected: `overlay`
+holds its last frame, which is what a picture-in-picture wants.
+
+The defect was invisible to every test that rendered an overlay on its own, because alone
+the two lengths agree. It took composing the verb with `trim` to see it.
+
 ## 0.3.3
 
 0.3.2's zoom fix failed on stable ffmpeg 6.1.1 (exit 234: `scale2ref`'s reference variables

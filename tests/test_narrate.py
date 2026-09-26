@@ -230,3 +230,84 @@ def test_the_report_shows_the_measurement_beside_the_budget():
     assert "4.25" in rendered, "the report omits what was MEASURED"
     assert "2.00" in rendered, "the report omits the BUDGET it was measured against"
     assert "OVER" in rendered, "the report does not say it failed to fit"
+
+
+# ---------------------------------------------------------------------------
+# A narration that did not fit is not a success carrying a note.
+#
+# The unfitted lines used to be appended to `lib.narrate`'s report and that
+# report returned normally, so a caller received a STRING and had to remember
+# to read it. A programmatic caller had nothing to branch on at all.
+#
+# Tested on real Script/Line objects rather than through `lib.narrate`, which
+# needs an index, a provider for script writing and a speech engine. The
+# decision was extracted to `refuse_unfitted` precisely so the contract could
+# be reached without any of them.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_script() -> Script:
+    """One line that fitted, one that did not -- the partial-success case."""
+    script = Script(
+        source="x.mp4",
+        prompt="p",
+        lines=[
+            Line(index=0, start=0.0, budget=5.0, text="short enough"),
+            Line(index=1, start=5.0, budget=1.0, text="far too many words for the slot it was given"),
+        ],
+    )
+    script.lines[0].fitted = True
+    script.lines[1].fitted = False
+    script.lines[1].note = "still 1.40s over after 2 rewrite(s)"
+    return script
+
+
+def test_an_unfitted_line_stops_the_run_rather_than_being_reported():
+    from vid.narrate import refuse_unfitted
+
+    with pytest.raises(VidError) as refusal:
+        refuse_unfitted(_mixed_script(), allow_unfitted=False)
+
+    message = str(refusal.value)
+    assert "1 of 2" in message, f"the refusal does not say how much did not fit: {message}"
+    assert "5.00s" in message, "the refusal does not locate the line that failed"
+    assert "1.40s over" in message, "the refusal drops the measurement the note carried"
+    assert "--allow-unfitted" in message, (
+        "the refusal does not name the remedy, so a caller is stopped without being told how to proceed"
+    )
+
+
+def test_asking_for_the_partial_is_how_you_get_it():
+    """The escape hatch must exist -- a narration 0.2s over on one line is
+    often still what the caller wants. It must be ASKED for."""
+    from vid.narrate import refuse_unfitted
+
+    refuse_unfitted(_mixed_script(), allow_unfitted=True)  # must not raise
+
+
+def test_a_fully_fitted_narration_is_not_refused():
+    """The control. Without it, a guard that refused EVERYTHING would pass the
+    test above while breaking every working narration."""
+    from vid.narrate import refuse_unfitted
+
+    script = Script(source="x.mp4", prompt="p", lines=[Line(index=0, start=0.0, budget=5.0, text="fine")])
+    script.lines[0].fitted = True
+
+    refuse_unfitted(script, allow_unfitted=False)  # must not raise
+
+
+def test_a_slot_deliberately_left_silent_is_not_an_unfitted_line():
+    """`fit` marks an empty line fitted with note 'left silent'. Treating that
+    as a failure would refuse every script the model chose to leave quiet."""
+    from vid.narrate import refuse_unfitted
+
+    script = Script(
+        source="x.mp4",
+        prompt="p",
+        lines=[Line(index=0, start=0.0, budget=5.0, text=""), Line(index=1, start=5.0, budget=5.0, text="words")],
+    )
+    script.lines[0].fitted = True
+    script.lines[0].note = "left silent"
+    script.lines[1].fitted = True
+
+    refuse_unfitted(script, allow_unfitted=False)  # must not raise

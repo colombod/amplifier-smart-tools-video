@@ -20,6 +20,7 @@ import subprocess
 import sys
 import wave
 
+from vid.core.writes import writing
 from vid.schemas import VidError
 
 #: The default voice. Medium quality is the honest middle: `low` sounds
@@ -96,7 +97,12 @@ def ensure_voice(name: str = DEFAULT_VOICE) -> Path:
     if model.is_file():
         return model
 
-    directory.mkdir(parents=True, exist_ok=True)
+    with writing(
+        directory,
+        "The voice model directory",
+        "That location comes from VID_VOICES_DIR when it is set. Point it at a writable directory.",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [sys.executable, "-m", "piper.download_voices", name, "--download-dir", str(directory)],
         capture_output=True,
@@ -119,11 +125,30 @@ class Speaker:
     def __init__(self, name: str = DEFAULT_VOICE) -> None:
         if not available():
             raise VidError(INSTALL_HINT)
-        from piper import PiperVoice
+        # `available()` proves the piper PACKAGE imports. This name is a
+        # separate import that a partial or version-skewed install can still
+        # fail, and `main()` catches only VidError -- so it is guarded rather
+        # than trusted, like every other third-party name in this file.
+        try:
+            from piper import PiperVoice
+        except Exception as exc:
+            raise VidError(f"{INSTALL_HINT}\n(piper is present but would not load: {exc})") from exc
 
         model = ensure_voice(name)
-        with _quiet_stderr():
-            self._voice = PiperVoice.load(str(model))
+        # `available()` above proves piper is IMPORTABLE. It does not prove the
+        # voice model loads: a truncated download, an onnxruntime built for
+        # another architecture, or a model from an incompatible piper all fail
+        # HERE. `main()` catches only VidError, so every one of those reached
+        # the user as a Python traceback.
+        try:
+            with _quiet_stderr():
+                self._voice = PiperVoice.load(str(model))
+        except Exception as exc:
+            raise VidError(
+                f"The voice {name!r} is installed but would not load: {exc}\n"
+                f"Delete {model} and let it download again, or pick another voice with "
+                "`--voice`. `vid check` reports whether the speech backend is working."
+            ) from exc
         self.name = name
 
     def say(self, text: str, out: Path | str, *, rate: float = 1.0) -> float:
@@ -134,9 +159,8 @@ class Speaker:
         the render. The file exists; its length is a fact.
         """
         out = Path(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        from piper import SynthesisConfig
+        with writing(out, "The synthesised speech", "Choose a writable --out path, or free space on this one."):
+            out.parent.mkdir(parents=True, exist_ok=True)
 
         # piper expresses rate as a length scale: >1 is SLOWER. A caller
         # asking for 1.2x speed wants a scale of 1/1.2. Passed as an explicit
@@ -144,10 +168,24 @@ class Speaker:
         # still a value type that could apply to ANY of synthesize_wav's other
         # keyword parameters, which is exactly what made this unpack-checkable
         # as `bool` in one place and `SynthesisConfig` in another.
-        syn_config = SynthesisConfig(length_scale=1.0 / rate) if rate != 1.0 else None
+        # SIBLING OF THE LOAD WRAP ABOVE. Synthesis reaches the same native
+        # stack, so an onnxruntime fault or an unwritable output path surfaced
+        # here as a traceback too. Found by sweeping for bare third-party
+        # calls rather than fixing only the line a review cited.
+        try:
+            from piper import SynthesisConfig
 
-        with _quiet_stderr(), wave.open(str(out), "wb") as handle:
-            self._voice.synthesize_wav(text, handle, syn_config=syn_config)
+            syn_config = SynthesisConfig(length_scale=1.0 / rate) if rate != 1.0 else None
+            with _quiet_stderr(), wave.open(str(out), "wb") as handle:
+                self._voice.synthesize_wav(text, handle, syn_config=syn_config)
+        except VidError:
+            raise
+        except Exception as exc:
+            raise VidError(
+                f"The voice {self.name!r} could not speak that line: {exc}\n"
+                f"Check {out.parent} is writable, or run `vid check` to confirm the speech "
+                "backend is working."
+            ) from exc
         return duration_of(out)
 
 

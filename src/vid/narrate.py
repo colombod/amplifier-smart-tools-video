@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
+from vid.core.writes import writing
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 #: How many times a model may rewrite one overrunning line before the tool stops
@@ -197,6 +198,54 @@ def write_script(
             "Retry, or narrow the prompt so it is unambiguous that a numbered line per segment is wanted."
         )
 
+    # OMITTED IS NOT THE SAME AS DELIBERATELY SILENT, and this used to collapse
+    # the two. `written.get(i, "")` gave an absent segment the same empty text
+    # as one the model explicitly marked `-`, and `fit` then stamps every empty
+    # line `fitted = True, note = "left silent"` -- so `refuse_unfitted` could
+    # never see them. A model that answered 2 of 20 segments produced a
+    # SUCCESSFUL narration that was silent for eighteen, reported as intentional.
+    #
+    # The prompt asks for one numbered line per segment and documents `-` as the
+    # way to say nothing. An absent ID is therefore an incomplete answer, not a
+    # quiet one, and the spec is explicit that a partial result is a failure
+    # unless the capability documents it as valid. This one does not.
+    missing = [i for i in range(len(slots)) if i not in written]
+    if missing:
+        shown = ", ".join(str(i) for i in missing[:12]) + ("..." if len(missing) > 12 else "")
+        raise VidError(
+            f"The model answered {len(written)} of {len(slots)} narration segments, omitting "
+            f"{len(missing)}: {shown}.\n"
+            "An omitted segment is an incomplete answer, not a silent one -- a line that should "
+            "say nothing is written `N: -`, and those are kept. Retry, or shorten the video's "
+            "indexed span so fewer segments are asked for at once."
+        )
+
+    # ANSWERED EMPTILY IS NOT ANSWERED EITHER, and the check above cannot see
+    # it. The fix that added it closed the OMITTED case only: `3:` and
+    # `3:` followed by spaces both parse -- `head` is a digit, so the index
+    # lands IN `written` with an empty tail, walks past the missing-index test,
+    # becomes `text = ""`, and `fit` stamps it `fitted = True, note = "left
+    # silent"`. The result is indistinguishable from the model deliberately
+    # writing `3: -`, which is the one thing the distinction exists to prevent.
+    #
+    # A duplicate index reaches the same place by another road: `written` is a
+    # dict, so a later blank `3:` overwrites an earlier real answer for 3.
+    # Checking the STORED value rather than the input lines catches both.
+    #
+    # `-` and `--` still mean deliberate silence and are still kept -- that is
+    # the documented marker in the prompt above, and the whole point is that
+    # silence has to be SAID.
+    blank = [i for i in range(len(slots)) if i in written and not written[i]]
+    if blank:
+        shown = ", ".join(str(i) for i in blank[:12]) + ("..." if len(blank) > 12 else "")
+        raise VidError(
+            f"The model left {len(blank)} of {len(slots)} narration segments blank -- it wrote the "
+            f"number and then nothing: {shown}.\n"
+            "An empty answer is an incomplete one, not a silent one. A segment that should say "
+            "nothing is written `N: -`, and those are kept. Retry, or shorten the video's indexed "
+            "span so fewer segments are asked for at once."
+        )
+
     for i, (start, length) in enumerate(slots):
         text = written.get(i, "").strip()
         script.lines.append(Line(index=i, start=start, budget=length, text="" if text in {"", "-", "--"} else text))
@@ -247,7 +296,8 @@ def fit(
     report. Every step is decided by a measured duration, never by a model's
     opinion of its own output.
     """
-    workdir.mkdir(parents=True, exist_ok=True)
+    with writing(workdir, "The narration working directory", "Free space on this filesystem, or set TMPDIR."):
+        workdir.mkdir(parents=True, exist_ok=True)
 
     for line in script.lines:
         if not line.text:
@@ -283,6 +333,35 @@ def fit(
         if not line.fitted:
             line.note = f"still {line.overrun:.2f}s over after {line.attempts} rewrite(s)"
     return script
+
+
+def refuse_unfitted(script: Script, *, allow_unfitted: bool) -> None:
+    """Stop when a line could not be fitted, unless the caller asked for it.
+
+    A NARRATION THAT DID NOT FIT IS NOT A SUCCESS CARRYING A NOTE. The unfitted
+    lines used to be appended to `narrate`'s report and that report returned
+    normally, so a caller received a string and had to remember to read it. A
+    report the caller must remember to read is not a failure -- and `lib.narrate`
+    returns a string, so a programmatic caller had nothing to branch on at all.
+
+    `vision.describe_shots` already refuses to return a partial set and
+    `index.describe` enforces that again explicitly. This is the same rule
+    reaching the one capability that was exempt from it.
+
+    Lives here, beside `fit`, rather than inline in `lib.narrate`: the decision
+    is the contract, and a contract buried in a 60-line function is one no test
+    can reach without a provider and a speech engine.
+    """
+    unfitted = script.unfitted()
+    if not unfitted or allow_unfitted:
+        return
+    detail = "\n".join(f"    {line.start:.2f}s -- {line.note}" for line in unfitted)
+    raise VidError(
+        f"{len(unfitted)} of {len(script.lines)} narration line(s) could not be fitted to "
+        f"the time available:\n{detail}\n"
+        "Shorten the prompt so the script has less to say, give the narration more room by "
+        "trimming less, or pass --allow-unfitted to accept the overrun and lay it on anyway."
+    )
 
 
 def assemble(script: Script, out: Path | str, total: float) -> Path:

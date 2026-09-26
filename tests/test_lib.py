@@ -270,7 +270,14 @@ def test_index_vision_with_no_provider_fails_before_any_index_file_is_written(mo
 
     from vid.index import index_path
 
-    with pytest.raises(VidError, match="model"):
+    # MATCHES THE PROVIDER'S OWN WORDS, not the word "model". This used to
+    # assert `match="model"`, which pinned the GENERIC "needs a model, and none
+    # is configured" message -- and that message was the defect: it replaced
+    # the provider's precise diagnosis (gh missing, gh not signed in, with the
+    # manifest's install reference) with advice to configure something the
+    # caller had already configured. The refusal now carries the real reason
+    # through, so this asserts the reason survives.
+    with pytest.raises(VidError, match="no provider configured, for this test"):
         lib.index(video, vision=True)
 
     assert not index_path(video).is_file(), "a missing provider left a new index file behind on disk"

@@ -27,8 +27,8 @@ import math
 from pathlib import Path
 import subprocess
 
-from vid.core.manifest import manifest_install
-from vid.probe import have_ffmpeg, have_ffprobe
+from vid.core.writes import writing_atomically
+from vid.probe import require_ffmpeg_tools
 from vid.schemas import VidError
 
 #: Frames sampled from a video to measure its colour. Nine, spread evenly and
@@ -114,16 +114,15 @@ def _require_ffmpeg_tools() -> None:
 
     Recolor samples frames to measure a palette while a plan is still being
     BUILT, unlike every other plan-building capability -- so it needs its own
-    preflight rather than relying on `render`'s. The install reference comes
-    from the manifest (`vid.core.manifest`) rather than a second, hand-copied
-    string, so the two can never disagree.
+    preflight rather than relying on `render`'s.
+
+    NAMING THE ABSENT BINARY IS NOT THIS FUNCTION'S BUSINESS ANY MORE. Four
+    call sites guarded on the same two binaries and each wrote its own
+    sentence; three of the four named the wrong one or named neither. That is
+    a property of the class, so it lives in `probe.require_ffmpeg_tools` and
+    this passes only the half of the sentence that is its own.
     """
-    if not have_ffmpeg() or not have_ffprobe():
-        raise VidError(
-            "ffmpeg is not on PATH, and recolor needs it to sample colour from a frame before the "
-            f"plan can even be built. Install it ({manifest_install('ffmpeg')}) -- see `vid check` "
-            "for the command for your system."
-        )
+    require_ffmpeg_tools("recolor needs them to sample colour from a frame before the plan can even be built")
 
 
 def _raw_rgb(command: list[str]) -> bytes:
@@ -297,5 +296,16 @@ def write_cube(source: ColorStats, reference: ColorStats, out: Path | str, stren
                 blended = tuple(lab[c] + (moved[c] - lab[c]) * strength for c in range(3))
                 nr, ng, nb = lab_to_rgb(*blended)
                 lines.append(f"{nr:.6f} {ng:.6f} {nb:.6f}")
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # ATOMIC, because the LUT cache tests EXISTENCE for validity:
+    #     cube = lut_cache_dir() / f"{key}.cube"
+    #     if not cube.is_file(): ... generate it ...
+    # A write that died halfway used to leave a truncated .cube at exactly the
+    # path that check tests, so every later recolor skipped regeneration and
+    # fed the truncated table to ffmpeg. The first failure was loud; the
+    # poisoned cache after it was silent and permanent. Writing through a
+    # temporary and replacing means a reader sees no file or a complete one.
+    with writing_atomically(
+        out, "The colour lookup table", "Choose a writable path for it, or free space on this one."
+    ) as staging:
+        staging.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

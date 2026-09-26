@@ -12,14 +12,123 @@ it is what falls out of not touching pixels until the end.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from vid.schemas import VidError
 
 PLAN_FORMAT = 1
+
+#: Ceilings that are OURS, not ffmpeg's, and are labelled as such wherever they
+#: are enforced. Each was placed by rendering the field through vid's real graph
+#: until it stopped behaving, then sitting below that edge -- never by picking a
+#: round number and asserting it in a comment. The measurements are recorded on
+#: the validators that use them.
+#:
+#: WHY A SHARED CONSTANT. `Overlay.width` and `Motion.to_width` compile to the
+#: same `scale`, and `Retime.speed` and `RampPoint.speed` to the same `setpts`.
+#: Two copies of a bound drift apart, and a reviewer then has to measure which
+#: copy is the real one.
+
+#: The longest offset into an edit any of these fields may name. A larger number
+#: is a unit error -- milliseconds passed as seconds, or an epoch timestamp --
+#: far more often than it is an intention.
+MAX_OFFSET_SECONDS = 3600.0
+
+#: Speed multipliers. Past these the render either stops terminating (slow) or
+#: collapses every frame onto one timestamp (fast). See `Retime`.
+MIN_SPEED = 0.01
+MAX_SPEED = 100.0
+
+#: The largest picture dimension an overlay may be scaled to.
+MAX_DIMENSION = 16384
+
+
+def _check_speed(speed: float, subject: str) -> None:
+    """One speed rule, for the two fields that compile to the same `setpts`.
+
+    MEASURED through vid's real graph on the 6.0s base fixture. Upward, with
+    the source's audio present:
+
+        speed=100      rc=0     0.133s out
+        speed=1e5      rc=0     but 0.067s out -- already a degenerate stub
+        speed=1e7      rc=234   Conversion failed!
+        speed=1e9      rc=234   Conversion failed!
+
+    And on a source with NO audio stream, where `setpts` alone decides and
+    ffmpeg therefore never objects:
+
+        speed=1e6      rc=0     setpts=0.000001*PTS
+        speed=2e6      rc=0     setpts=0.000000*PTS   <-- the literal string
+        speed=1e9      rc=0     setpts=0.000000*PTS   1657 bytes, 0.067s
+
+    That last group is the dangerous one, and it is why this bound exists.
+    `compile` emits `setpts={1/speed:.6f}*PTS`, so once `1/speed` falls below
+    5e-7 the format rounds it to the literal `"0.000000"`: every frame is
+    multiplied onto timestamp zero, the whole clip collapses to a single frame,
+    and ffmpeg reports SUCCESS. A caller computing speed as a ratio over a
+    near-zero interval reaches this without doing anything exotic.
+
+    Downward the failure is a hang rather than a lie:
+
+        speed=0.5      rc=0     12.0s out
+        speed=0.01     rc=0     600.0s out, 14.6s of wall clock
+        speed=0.001    NEVER RETURNED  (killed at 40s, output still growing)
+
+    WHY %.6f IS LEFT ALONE. With the ceiling at 100, `1/speed` is at least
+    0.01, which `%.6f` carries to four significant figures. The collapse needs
+    speed above 2e6, which this bound now makes unreachable -- so widening the
+    format would buy precision only in a region no plan may enter.
+    """
+    if not MIN_SPEED <= speed <= MAX_SPEED:
+        raise ValueError(
+            f"{subject} must be between {MIN_SPEED:g}x and {MAX_SPEED:g}x, and {speed:g} is not. "
+            "Faster than that, every frame collapses onto one timestamp and the render reports "
+            "success on a clip one frame long; slower, it stops terminating."
+        )
+
+
+def _check_dimension(pixels: int | None, subject: str) -> None:
+    """One size rule, for the two pairs that compile to the same `scale`.
+
+    THIS PAIR WAS CERTIFIED GUARDED WHILE UNGUARDED. `width`/`height` and
+    `to_width`/`to_height` are legal only when set together, and the ratchet's
+    probe sets one field at a time -- so the paired guard refused the probe's
+    single-field attempt, the probe read that refusal as "guarded", and the
+    fields never appeared on the debt list at all. Absence from that list is a
+    positive claim, which made this the one live false certificate rather than
+    a gap.
+
+    Measured through vid's real graph, a 640x360 base with a 320x180 layer:
+
+        width=height=8192     rc=0     1.3s
+        width=height=16384    rc=0     5.7s
+        width=height=32768    rc=0     10.2s
+        width=height=65534    rc=234   Conversion failed!
+        width=height=1e9      rc=234   Conversion failed!
+
+    and through the animated path, which fails worse -- it writes a PARTIAL
+    file and then dies, so the wreckage looks like a real output:
+
+        motion to=4096        rc=0     6.0s out
+        motion to=65536       rc=244   11129 bytes, 1.51s out, Conversion failed!
+
+    THE CEILING IS OURS, NOT FFMPEG'S, and is deliberately below the edge. The
+    exact failure point sits somewhere between 32768 and 65534 and moves with
+    available memory, because what fails there is an allocation -- so pinning
+    the bound to it would encode this machine's RAM as a contract. 16384 is
+    twice the width of 8K, renders in seconds, and is measured good here.
+    """
+    if pixels is None:
+        return
+    if not 0 < pixels <= MAX_DIMENSION:
+        raise ValueError(
+            f"{subject} must be between 1 and {MAX_DIMENSION} pixels, and {pixels} is not. "
+            "Past that ffmpeg fails the render outright, or writes a partial file and then fails."
+        )
 
 
 class Trim(BaseModel):
@@ -37,12 +146,75 @@ class Cut(BaseModel):
     start: float
     end: float
 
+    @model_validator(mode="after")
+    def _range_removes_something(self) -> Cut:
+        """A cut whose end is not after its start removes nothing -- and does
+        not fail. It renders a LONGER file than the source: measured, 10.0s out
+        of a 6.0s input, duplicating footage rather than removing any. Exit 0,
+        a playable file, content the caller never asked for.
+
+        `lib.cut` does NOT guard this. It parses timecodes and constructs the
+        model, so the CLI reaches it too -- this is not a JSON-only defect, and
+        a review filing that said otherwise (including mine) was wrong.
+        """
+        if self.start < 0:
+            raise ValueError(f"A cut cannot start before the file does, and {self.start:g} is negative.")
+        # STRICTLY LESS THAN, not <=. Measured on a 6.0s source, pre-guard:
+        #     end < start  (5 -> 2)   renders 9.0s -- the duplication defect
+        #     end == start (5 -> 5)   renders 6.0s -- removes nothing, harms nothing
+        # An empty range is a no-op that plan_format 1 has always accepted, so
+        # refusing it would break a stored plan without a format bump. Only the
+        # REVERSED range invents footage, and only that is refused.
+        if self.end < self.start:
+            raise ValueError(
+                f"A cut must not end before it starts, and {self.start:g} -> {self.end:g} does. "
+                "A reversed range removes nothing and duplicates footage instead."
+            )
+        return self
+
 
 class RampPoint(BaseModel):
     """One `speed@time` control point on a speed curve."""
 
     at: float
     speed: float
+
+    @model_validator(mode="after")
+    def _control_point_is_reachable(self) -> RampPoint:
+        """UNLIKE the other bounds on this model, this ceiling is OURS, not
+        ffmpeg's -- there is no declared range to read, so it is a judgment and
+        is labelled as one.
+
+        `at` is a time offset into the source, and the ramp expression grows
+        with it. Measured on a 6-SECOND source:
+
+            at=1000     rc=0, 0.9s
+            at=10000    rc=0, 6.9s
+            at=100000   never returned
+
+        That last one is worse than the errors this sweep found elsewhere: it
+        does not fail, it hangs, so a caller waits forever with no diagnosis.
+        3600 (one hour) sits well inside the well-behaved region and is longer
+        than any single clip this tool is meant to edit.
+
+        `speed` carries the SAME bounds as `Retime.speed`, and for the same
+        measured reasons -- a ramp reaches the identical `setpts` expression.
+        Measured on the 6.0s base fixture, through vid's own graph:
+
+            ramp [1x@0, 100x@3]   rc=0     setpts=0.108108*PTS
+            ramp [1x@0, 1e7x@3]   rc=234   Conversion failed!
+
+        An earlier review round exempted this field from the upper-bound probe
+        on the strength of a comment saying it had been rendered. It had not.
+        """
+        if not 0.0 <= self.at <= MAX_OFFSET_SECONDS:
+            raise ValueError(
+                f"A ramp control point must sit between 0 and {MAX_OFFSET_SECONDS:g} seconds, "
+                f"and {self.at:g} does not. "
+                "Beyond that the retime expression grows until the render stops terminating."
+            )
+        _check_speed(self.speed, "A ramp control point's speed")
+        return self
 
 
 class Retime(BaseModel):
@@ -58,6 +230,30 @@ class Retime(BaseModel):
     ramp: list[RampPoint] = Field(default_factory=list)
     pitch: bool = True
 
+    @model_validator(mode="after")
+    def _one_kind_of_retime(self) -> Retime:
+        """`lib.retime` enforces this XOR; the model did not.
+
+        A plan carrying BOTH `speed` and `ramp` was accepted and the ramp
+        SILENTLY DROPPED, rendering a constant-speed result. The caller stated
+        two intentions, one was discarded, and nothing said so.
+        """
+        if self.speed is not None and self.ramp:
+            raise ValueError(
+                "A retime is either a constant speed or a ramp, not both. "
+                "Given both, the ramp would be silently discarded."
+            )
+        if self.speed is None and not self.ramp:
+            raise ValueError("A retime needs either a constant speed or a ramp, and has neither.")
+        # BOUNDED AT BOTH ENDS, not merely above zero. `speed > 0` admitted
+        # 1e9, which the ratchet's ONE_SIDED table exempted from the
+        # upper-bound probe on the strength of a hand-written claim that it had
+        # been rendered. Rendering it showed otherwise; `_check_speed` carries
+        # the measurements.
+        if self.speed is not None:
+            _check_speed(self.speed, "A retime speed")
+        return self
+
 
 class Zoom(BaseModel):
     """Animated zoom (Ken Burns) centred on a moment."""
@@ -66,8 +262,399 @@ class Zoom(BaseModel):
     to: float = 1.3
     at: float | None = None
     duration: float = 3.0
+
+    @model_validator(mode="after")
+    def _zoom_is_a_zoom(self) -> Zoom:
+        """A negative duration silently clamped into a different mode.
+
+        `lib.zoom` does NOT guard this either -- it constructs the model
+        directly, so the CLI reaches it. `to=0` was accepted too, which is not
+        a zoom at any speed.
+        """
+        # STRICTLY NEGATIVE, not <=, for the same reason as `Cut` above. Measured
+        # on a 6.0s source, pre-guard, every one of these rendered rc=0 at 6.0s:
+        # to=0, to=1.0, to=-2, duration=0, duration=-3. So none of them CRASHED,
+        # and refusing the zero cases would reject plans plan_format 1 accepted.
+        # A negative factor or duration is still refused: `duration < 0` silently
+        # clamps into a different kind of zoom, which is a wrong result rather
+        # than a no-op.
+        if self.to < 0:
+            raise ValueError(f"A zoom factor cannot be negative, and {self.to:g} is.")
+        if self.duration < 0:
+            raise ValueError(
+                f"A zoom cannot last less than no time at all, and {self.duration:g} does. "
+                "A negative duration silently becomes a different kind of zoom."
+            )
+        if self.at is not None and self.at < 0:
+            raise ValueError(f"A zoom cannot be centred before the file starts, and {self.at:g} is negative.")
+        return self
+
     x: str = "iw/2-(iw/zoom/2)"
     y: str = "ih/2-(ih/zoom/2)"
+
+
+class Mask(BaseModel):
+    """What shape an overlay is cut to, and where that shape comes from.
+
+    Polymorphic on `kind` rather than a fixed set of shape flags, so the same
+    field covers a procedural cut-out, a piece of supplied art, and a matte
+    driven per frame by another clip. A caller who outgrows the built-in shapes
+    reaches for `image` or `video` instead of waiting for a new enum member.
+
+    Geometry is described relative to the layer, never in absolute pixels, so a
+    mask survives the layer being resized.
+    """
+
+    kind: Literal["rect", "rounded_rect", "circle", "ellipse", "image", "video"]
+    # The matte file, for `image` and `video`. Ignored by the procedural shapes.
+    source: str | None = None
+    # Corner radius in pixels, for `rounded_rect` only.
+    radius: int = 40
+    # Swap keep for drop: the shape becomes a hole rather than a window.
+    invert: bool = False
+    # Soften the matte's edge, in pixels. 0 is a hard edge.
+    feather: float = 0.0
+
+    @model_validator(mode="after")
+    def _shape_is_usable(self) -> Mask:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        THIS CLASS WAS THE SIBLING I MISSED. An earlier round moved `Overlay`'s
+        and `Motion`'s guards onto the models and described it as "one rule,
+        enforced once, on every path in". `Mask` sits in this same file,
+        reachable through the same JSON door, and kept none of them -- so a
+        negative radius arrived from a plan file and rendered a plain
+        rectangle, silently ignoring the rounding the caller asked for.
+
+        Fixing the reported site and not sweeping the class is how that
+        sentence became false while reading as true.
+        """
+        if self.kind in ("image", "video") and not self.source:
+            raise ValueError(
+                f"A {self.kind} mask needs a file to take its shape from. The procedural shapes "
+                "(rect, rounded_rect, circle, ellipse) need no file."
+            )
+        if self.radius < 0:
+            raise ValueError(f"A rounded rectangle's radius cannot be negative, and {self.radius} is.")
+        # BOUNDED ABOVE TOO, and the ceiling is ffmpeg's, not ours. `feather`
+        # compiles to `gblur=sigma=`, whose range `ffmpeg -h filter=gblur`
+        # gives as "from 0 to 1024"; rendering confirms 1024 passes and 1024.1
+        # is refused. A guard on the lower end only let feather=1e9 through
+        # this validator and into ffmpeg, which failed the whole render with
+        # rc=222 "Numerical result out of range" -- exactly the raw error this
+        # guard exists to convert into vid's own message.
+        if not 0.0 <= self.feather <= 1024.0:
+            raise ValueError(
+                f"A mask's feather must be between 0 and 1024, and {self.feather:g} is not. "
+                "That ceiling is ffmpeg's own limit on the blur it compiles to, not ours."
+            )
+        return self
+
+
+#: A hex literal (`0xRRGGBB`, `#RRGGBBAA`) or a bare colour name, each with an
+#: optional `@alpha`. Anything carrying a filtergraph metacharacter is refused.
+_COLOUR = re.compile(r"(?:(?:0x|#)[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?|[A-Za-z]+)(?:@[0-9]*\.?[0-9]+)?")
+
+
+class Key(BaseModel):
+    """Make part of the layer's OWN picture transparent, by colour or brightness.
+
+    Distinct from a mask: a mask is a shape imposed from outside, a key is a
+    property of what the layer already contains. A caller may key a green
+    screen AND cut the result to a circle in the same operation, and the two
+    combine by intersection.
+    """
+
+    kind: Literal["colorkey", "chromakey", "lumakey"] = "colorkey"
+    #: The colour to remove, for `colorkey` and `chromakey`. Ignored by `lumakey`.
+    #:
+    #: VALIDATED, because this is the ONE caller-supplied free-form string that
+    #: reaches ffmpeg's filter text. Everything else the compiler interpolates
+    #: is a number or a closed Literal, and mask sources become `-i` inputs
+    #: rather than filter arguments. An independent review showed a colour of
+    #: `0x00FF00,negate` emitting
+    #:     [1:v]colorkey=color=0x00FF00,negate:similarity=...
+    #: which inserted a whole extra filter and visibly turned blue to yellow.
+    #: A comma, colon, quote or bracket is a filtergraph metacharacter, so the
+    #: field is checked against a closed shape instead of being escaped.
+    colour: str = "0x00FF00"
+    #: The brightness to remove, 0..1, for `lumakey` only.
+    threshold: float = 0.9
+    #: How close a pixel must be to count. Higher takes more.
+    similarity: float = 0.3
+    #: Softness at the edge of what was taken.
+    blend: float = 0.0
+
+    @model_validator(mode="after")
+    def _key_values_are_in_ffmpegs_range(self) -> Key:
+        """Bounds read from `ffmpeg -h filter=colorkey`, not invented here:
+        similarity "(from 1e-05 to 1)", blend "(from 0 to 1)".
+
+        Found by sweeping the ratchet's debt list rather than from a report.
+        `similarity=1e9` rendered rc=222 "Numerical result out of range" --
+        the same shape as `Mask.feather` and `duck_threshold` before it: vid
+        accepted the value and ffmpeg killed the whole render.
+
+        `threshold` IS bounded here, and the claim that it was not is the
+        reason this round happened. The note above used to say 1e9 "rendered
+        rc=0 -- it clamps rather than failing". Rendering it says the opposite:
+
+            [1:v]lumakey=threshold=1e+09:tolerance=0.3:softness=0,...
+            rc=222   Error : Numerical result out of range
+
+        Same range, same source, same wording as `similarity` and `blend`
+        above: `ffmpeg -h filter=lumakey` gives threshold as "(from 0 to 1)".
+        """
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError(
+                f"A key's threshold must be between 0 and 1, and {self.threshold:g} is not. "
+                "That range is ffmpeg's own limit on the luma key it compiles to."
+            )
+        if not 1e-05 <= self.similarity <= 1.0:
+            raise ValueError(
+                f"A key's similarity must be between 1e-05 and 1, and {self.similarity:g} is not. "
+                "That range is ffmpeg's own limit on the colour key it compiles to."
+            )
+        if not 0.0 <= self.blend <= 1.0:
+            raise ValueError(
+                f"A key's blend must be between 0 and 1, and {self.blend:g} is not. "
+                "That range is ffmpeg's own limit on the colour key it compiles to."
+            )
+        return self
+
+    @field_validator("colour")
+    @classmethod
+    def _colour_is_a_colour(cls, value: str) -> str:
+        """Either a hex literal or a bare colour name, with an optional alpha.
+
+        Deliberately a closed allowlist rather than a blocklist of dangerous
+        characters: a blocklist has to anticipate every metacharacter ffmpeg's
+        parser treats specially, and being wrong once reopens the hole.
+        """
+        if not _COLOUR.fullmatch(value):
+            raise ValueError(
+                f"Unusable colour {value!r}. Use a hex literal like `0x00FF00` or `#00FF00`, "
+                "or a colour name like `green`, either optionally followed by `@` and an "
+                "alpha such as `green@0.5`."
+            )
+        return value
+
+
+class LayerAudio(BaseModel):
+    """What happens to the overlay layer's own sound.
+
+    Absent from an overlay means `drop`, and that default is the point: in the
+    common picture-in-picture case the base already carries the narration, so a
+    layer that quietly added its own would duplicate it. Inclusion is stated.
+
+    The compressor settings are fields rather than constants so a plan records
+    what it actually did. The CLI exposes only `--duck`; a caller who needs to
+    tune the shape edits the plan, which is the contract, where the CLI is
+    ergonomics.
+    """
+
+    policy: Literal["drop", "keep", "only"] = "drop"
+    #: Applied to the LAYER before mixing, in dB. 0 leaves it alone.
+    gain_db: float = 0.0
+    #: Applied to the BASE before mixing, in dB.
+    base_gain_db: float = 0.0
+    #: Dip the base under the layer, recovering after. Off by default.
+    duck: bool = False
+    duck_threshold: float = 0.05
+    duck_ratio: float = 8.0
+    duck_attack: float = 20.0
+    duck_release: float = 250.0
+
+    @model_validator(mode="after")
+    def _duck_settings_actually_duck(self) -> LayerAudio:
+        """Refuse settings that render a duck that does not duck.
+
+        These fields reach `sidechaincompress` directly and the CLI exposes
+        only `--duck`, so they arrive ONLY from a JSON plan -- the same
+        unreachable-by-the-library shape as `Mask.radius`.
+
+        The dangerous values are INSIDE ffmpeg's accepted range, so ffmpeg is
+        happy and says nothing. Measured against a plain no-duck render at
+        2047.2, an honest duck reaching 1344.6:
+
+            duck_ratio=1.0       base 2047.2  -- identical to no duck at all
+            duck_threshold=1.0   base 2047.2  -- identical to no duck at all
+
+        Exit 0, a normal-looking file, no diagnostic: the caller asked to duck
+        and got nothing. A ratio of 1:1 is by definition no compression, and a
+        threshold of 1.0 is a ceiling nothing reaches.
+
+        Out-of-range values are refused here too, so the caller gets a sentence
+        naming the field instead of a raw AVOption error.
+        """
+        if not 1.0 < self.duck_ratio <= 20.0:
+            raise ValueError(
+                f"A duck ratio must be above 1 and at most 20, and {self.duck_ratio:g} is not. "
+                "A ratio of 1 is no compression at all, so the base would never dip."
+            )
+        # 0.000976563 is ffmpeg's ACTUAL floor for sidechaincompress `threshold`,
+        # not 0. A guard of `0.0 <` admitted 0.0001, which this validator passed
+        # and ffmpeg then rejected with a raw AVOption error -- precisely the
+        # failure the guard exists to convert into a named one.
+        # SAME CEILING AS `AudioMix.level`, and the same measurement: both
+        # compile to `volume={n}dB`, and past 100 dB the render dies with
+        # rc=234 "Conversion failed!" rather than producing loud audio.
+        for label, value in (("gain_db", self.gain_db), ("base_gain_db", self.base_gain_db)):
+            if not -100.0 <= value <= 100.0:
+                raise ValueError(
+                    f"A layer's {label} must be between -100 and 100 dB, and {value:g} is not. "
+                    "Past that the track overflows and ffmpeg fails the render outright."
+                )
+        if not 0.000976563 <= self.duck_threshold < 1.0:
+            raise ValueError(
+                f"A duck threshold must be at least 0.000976563 and below 1, and "
+                f"{self.duck_threshold:g} is not. That floor is ffmpeg's own, not ours; "
+                "at 1 nothing ever crosses it, so the base would never dip."
+            )
+        if not 0.01 <= self.duck_attack <= 2000.0:
+            raise ValueError(f"A duck attack must be between 0.01 and 2000 ms, and {self.duck_attack:g} is not.")
+        if not 0.01 <= self.duck_release <= 9000.0:
+            raise ValueError(f"A duck release must be between 0.01 and 9000 ms, and {self.duck_release:g} is not.")
+        return self
+
+
+class Motion(BaseModel):
+    """Where the overlay travels to, and over what window.
+
+    The overlay's own `x`/`y`/`width`/`height` are where the motion STARTS;
+    these fields are where it ends. One geometry is stated twice rather than a
+    list of keyframes, because the requested case is a single move -- an inset
+    growing to full screen -- and a keyframe list would be a larger promise than
+    anything has asked for.
+
+    This animates PRESENTATION only. The layer is never retimed, so its own
+    source timing is untouched by construction.
+    """
+
+    to_x: int = 0
+    to_y: int = 0
+    # None means "stay the size it already was", so a pure move needs no size.
+    to_width: int | None = None
+    to_height: int | None = None
+    start: float = 0.0
+    duration: float = 1.0
+    easing: Literal["linear", "ease_in_out"] = "linear"
+
+    @model_validator(mode="after")
+    def _geometry_is_complete(self) -> Motion:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        A JSON plan reaches these classes directly, never passing through the
+        library function, so every guard that lived only in `lib` was a guard
+        the JSON door did not have. An independent review walked straight
+        through it: a width-only animation the library refuses was accepted
+        from JSON and rendered horizontally stretched.
+        """
+        if (self.to_width is None) != (self.to_height is None):
+            raise ValueError(
+                "An animated overlay needs both --to-width and --to-height, or neither. "
+                "One alone would have to invent the other from an aspect ratio nobody stated."
+            )
+        _check_dimension(self.to_width, "An overlay's target width")
+        _check_dimension(self.to_height, "An overlay's target height")
+        if self.duration <= 0:
+            raise ValueError(f"An overlay's move must take positive time, not {self.duration:g}.")
+        if self.start < 0:
+            raise ValueError(f"An overlay's move cannot start before the edit, and {self.start:g} does.")
+        return self
+
+
+class Overlay(BaseModel):
+    """Lay another clip over the picture, at a stated place and time.
+
+    Placement is in PIXELS of the edit's own frame. Percentages and an animated
+    geometry track are deliberately not here yet: an inset that grows to full
+    screen is a property of a MOTION over time, and inventing a syntax for it
+    before that lands would mean two ways to say the same thing.
+
+    Sound is not taken from the layer. An overlay that quietly added a second
+    audio track would duplicate narration in the common picture-in-picture case,
+    where the base already carries it.
+    """
+
+    op: Literal["overlay"] = "overlay"
+    source: str
+    x: int = 0
+    y: int = 0
+    # None means the layer's own size, untouched. Both must be given together:
+    # one alone would have to invent the other from an aspect ratio nobody
+    # stated, which is how footage gets silently reshaped.
+    width: int | None = None
+    height: int | None = None
+    # The window the layer is on screen for, in seconds. None for either end
+    # means "from the beginning" and "until the end" respectively.
+    start: float | None = None
+    end: float | None = None
+    # What the layer is cut to. None is the whole rectangle.
+    mask: Mask | None = None
+    # Where the layer travels to. None holds the stated geometry throughout.
+    motion: Motion | None = None
+    # What happens to the layer's own sound. None means `drop`.
+    audio: LayerAudio | None = None
+    # Make part of the layer's own picture transparent. None keys nothing.
+    key: Key | None = None
+    # Uniform transparency, 0..1. 1.0 is fully opaque and a genuine no-op.
+    opacity: float = 1.0
+
+    @model_validator(mode="after")
+    def _geometry_and_window_are_sane(self) -> Overlay:
+        """The SAME rules `lib.overlay` enforces, applied at the model.
+
+        Review found three that the JSON door did not have: a size given on one
+        axis only, a window running backwards (start=5, end=1), and an opacity
+        outside 0..1. Each is refused by the library and each was accepted from
+        JSON, so a plan file could reach the compiler in a state the CLI cannot
+        produce.
+
+        Putting them here rather than duplicating them in `lib` means one rule,
+        enforced once, on every path in.
+        """
+        if (self.width is None) != (self.height is None):
+            raise ValueError(
+                "An overlay needs both a width and a height, or neither. One alone would have "
+                "to invent the other from an aspect ratio nobody stated."
+            )
+        _check_dimension(self.width, "An overlay's width")
+        _check_dimension(self.height, "An overlay's height")
+        # THE WORST OF THE FALSE EXEMPTIONS. The ratchet recorded `start` as
+        # open above, on a written claim that 1e9 had been rendered rc=0.
+        # Rendering it, on the 6.0s base fixture:
+        #
+        #     start=3600    rc=0                0.3s, renders
+        #     start=1e7     rc=0                0.3s, renders
+        #     start=1e8     NEVER RETURNED      killed at 25s
+        #     start=1e9     NEVER RETURNED      killed at 20s, ~250% CPU
+        #
+        # It compiles to `tpad=start_duration=1000000000.000000`, and `tpad`
+        # PREPENDS REAL FRAMES -- so ffmpeg sets about generating a thousand
+        # million seconds of transparent video and never comes back. No error,
+        # no diagnostic, no output: the render simply wedges.
+        #
+        # The ceiling is ours and sits far below the hang, because the values
+        # in between are not meaningful either. A `start` past an hour is a
+        # unit error -- milliseconds handed over as seconds, or an epoch
+        # timestamp (~1.7e9, squarely in the hanging region) -- so the message
+        # names that cause rather than only the number.
+        if self.start is not None and not 0.0 <= self.start <= MAX_OFFSET_SECONDS:
+            raise ValueError(
+                f"An overlay must start between 0 and {MAX_OFFSET_SECONDS:g} seconds, and "
+                f"{self.start:g} does not. A number this large is usually milliseconds passed "
+                "as seconds, or a wall-clock timestamp; rendered literally it pads the layer "
+                "with silence-frames until the render stops terminating."
+            )
+        if self.start is not None and self.end is not None and self.end <= self.start:
+            raise ValueError(
+                f"An overlay's window runs from {self.start:g}s to {self.end:g}s, which ends before "
+                "it begins. Give an end later than the start."
+            )
+        if not 0.0 <= self.opacity <= 1.0:
+            raise ValueError(f"An overlay's opacity runs from 0 to 1, and {self.opacity:g} is outside that.")
+        return self
 
 
 class Stitch(BaseModel):
@@ -75,13 +662,54 @@ class Stitch(BaseModel):
 
     op: Literal["stitch"] = "stitch"
     sources: list[str]
+    # How a clip that is not the target size is resolved. `concat` requires
+    # matching resolution and SAR, so a mismatch is otherwise rejected by ffmpeg
+    # at render time. None means the caller has not chosen, and a mismatch is
+    # refused rather than normalised: auto-fitting would change someone's
+    # framing without saying so, which is the failure this field exists to
+    # prevent. Aspect ratio is preserved by both modes.
+    #   fit   pad the remainder with bars; nothing leaves frame
+    #   fill  crop the overflow centred; nothing is letterboxed
+    fit: Literal["fit", "fill"] | None = None
     transition: str | None = None
     transition_duration: float = 0.5
-    # Where the blend begins, measured from the start of the running edit. xfade
-    # needs an absolute offset and cannot compute one, so whoever appends the
-    # operation resolves it -- by probing durations, which is why this is on the
-    # plan rather than invented at compile time.
-    transition_offset: float = 0.0
+    # REMOVED: `transition_offset`. It was declared here, defaulted to 0.0, and
+    # READ NOWHERE -- `compile.stitch` derives the offset itself from the
+    # running `elapsed`, which is the only value that can be correct, because
+    # xfade measures from the start of the FIRST input. Rendering a plan with
+    # `transition_offset=1e9` emitted `xfade=...:offset=2.5`: the number never
+    # reached the graph at all.
+    #
+    # It was carried on the ratchet's exemption list as "1e9 rendered rc=0",
+    # which was true and meaningless -- a dead field renders rc=0 at every
+    # value. Wiring it in was the alternative and was rejected: a
+    # caller-supplied offset is exactly the "guessed offset [that] blends in
+    # the wrong place and looks like a bug" that `compile.stitch` already
+    # refuses to accept.
+    #
+    # NOT a plan_format bump. The format rule protects MEANING, and this field
+    # had none: `contracts/plan.v1.md` already listed it under "What is NOT
+    # promised" and told callers not to compute it. A stored plan still
+    # carrying the key loads unchanged -- pydantic's default is to ignore an
+    # unknown key, verified by loading one.
+
+    @model_validator(mode="after")
+    def _transition_fits_ffmpegs_crossfade(self) -> Stitch:
+        """The ceiling is ffmpeg's own. `xfade` refuses a duration outside
+        [0 - 60] and names that range itself:
+
+            Value 100.000000 for parameter 'duration' out of range [0 - 60]
+
+        `transition_duration=1e9` reached ffmpeg and killed the render with
+        rc=222.
+        """
+        if self.transition is not None and not 0.0 <= self.transition_duration <= 60.0:
+            raise ValueError(
+                f"A transition must last between 0 and 60 seconds, and {self.transition_duration:g} "
+                "does not. That ceiling is ffmpeg's own limit on the crossfade it compiles to."
+            )
+        return self
+
     # PROVENANCE, and it is what keeps a model out of the render path. When a
     # caller describes a transition instead of naming one, a model resolves the
     # description ONCE, here, and the plan stores both what was asked and what
@@ -146,6 +774,25 @@ class AudioMix(BaseModel):
     level: float = -18.0
     start: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
+    @model_validator(mode="after")
+    def _level_is_a_survivable_gain(self) -> AudioMix:
+        """`volume=` takes any dB ffmpeg will parse, so the ceiling here is
+        MEASURED through vid's own graph rather than read off a filter:
+
+            level=100   rc=0    renders
+            level=300   rc=234  "Conversion failed!"
+
+        100 dB is already 100,000x amplitude, far past any real mix, and it is
+        the last value that survives. Found by sweeping the ratchet's debt
+        list, not from a report.
+        """
+        if not -100.0 <= self.level <= 100.0:
+            raise ValueError(
+                f"A mix level must be between -100 and 100 dB, and {self.level:g} is not. "
+                "Past that the summed track overflows and ffmpeg fails the render outright."
+            )
+        return self
+
 
 class Recolor(BaseModel):
     """Map the video's colour onto a reference image's.
@@ -197,6 +844,7 @@ Operation = Annotated[
     | Retime
     | Zoom
     | Stitch
+    | Overlay
     | Caption
     | AudioRemove
     | AudioReplace

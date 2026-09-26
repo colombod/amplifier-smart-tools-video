@@ -22,7 +22,8 @@ import json
 from pathlib import Path
 import subprocess
 
-from vid.probe import have_ffmpeg, have_ffprobe
+from vid.core.writes import writing_atomically
+from vid.probe import require_ffmpeg_tools
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
 INDEX_FORMAT = 1
@@ -36,11 +37,7 @@ def _require_ffmpeg_tools() -> None:
     entry for ffmpeg (`SMART_TOOL.md`): ffmpeg ships ffprobe, so one message
     covers both.
     """
-    if not have_ffmpeg() or not have_ffprobe():
-        raise VidError(
-            "ffmpeg is not on PATH, and indexing needs it to detect shots and read durations. "
-            "Install ffmpeg (it ships ffprobe) -- see `vid check` for the command for your system."
-        )
+    require_ffmpeg_tools("indexing needs them to detect shots and read durations")
 
 
 def index_dir() -> Path:
@@ -83,15 +80,34 @@ def fingerprint(video: str) -> str:
     which does not happen to encoded video in practice.
     """
     path = Path(video)
-    if not path.is_file():
+    # THE FOURTH SIBLING, and it was found by a test rather than by reading:
+    # monkeypatching `Path.is_file` to refuse surfaced this site alongside the
+    # one in `load`. "No such video" is the WRONG sentence for a file that
+    # exists and cannot be read, and without the guard a video inside an
+    # unreadable directory escaped as a raw PermissionError traceback from
+    # whichever of `is_file`, `stat` or `open` reached the filesystem first.
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        raise VidError(
+            f"The video at {video} could not be read: {exc.strerror or exc}. "
+            "Check the permissions on the file and on every directory above it."
+        ) from exc
+    if not present:
         raise VidError(f"No such video: {video!r}. Check the path is correct and relative to the current directory.")
-    size = path.stat().st_size
-    digest = hashlib.sha256(str(size).encode())
-    with path.open("rb") as handle:
-        digest.update(handle.read(1 << 20))
-        if size > (1 << 21):
-            handle.seek(-(1 << 20), 2)
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256(str(size).encode())
+        with path.open("rb") as handle:
             digest.update(handle.read(1 << 20))
+            if size > (1 << 21):
+                handle.seek(-(1 << 20), 2)
+                digest.update(handle.read(1 << 20))
+    except OSError as exc:
+        raise VidError(
+            f"The video at {video} could not be read: {exc.strerror or exc}. "
+            "Check the permissions on the file and on every directory above it."
+        ) from exc
     return digest.hexdigest()[:16]
 
 
@@ -99,12 +115,52 @@ def index_path(video: str) -> Path:
     return index_dir() / f"{fingerprint(video)}.json"
 
 
+def _unreadable(path: Path, exc: OSError) -> str:
+    """The same sentence `save` gives, for the read side.
+
+    One wording for one cause: whichever end refused, the location came from
+    the same place and the caller has the same one knob.
+    """
+    return (
+        f"The index at {path} could not be read: {exc.strerror or exc}.\n"
+        "That location comes from VID_INDEX_DIR when it is set, and a cache "
+        "directory beside the video otherwise. Point VID_INDEX_DIR at a "
+        "readable directory, or fix the permissions on this one."
+    )
+
+
 def load(video: str) -> dict | None:
+    """The stored index for this video, or None when there is not one yet.
+
+    THE THIRD SIBLING OF A CLASS FIXED TWICE ON THIS BRANCH. `save` already
+    names `VID_INDEX_DIR` when the filesystem refuses a write, and the corrupt
+    JSON case below already names the file and its remedy -- but the two
+    filesystem calls in the READ path were bare. An unreadable index directory
+    (a chmod 000 mount point, a VID_INDEX_DIR pointing inside one) came out of
+    `is_file` as a raw traceback:
+
+        PermissionError: [Errno 13] Permission denied:
+            '/tmp/vidperm/locked/bf6781c471cbcf0d.json'
+
+    `cli.main` only translates `VidError` into a named, non-zero exit, so
+    anything else reaches the user as a stack trace naming neither the setting
+    that chose the location nor anything they could do about it.
+
+    NOT MERGED INTO ONE `try`. A refusal to look and a refusal to read are the
+    same remedy, but "does it exist" must still answer None rather than raising
+    when the answer is honestly no.
+    """
     path = index_path(video)
-    if not path.is_file():
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        raise VidError(_unreadable(path, exc)) from exc
+    if not present:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise VidError(_unreadable(path, exc)) from exc
     except json.JSONDecodeError as exc:
         # A corrupt or truncated index must never escape as a bare traceback --
         # `cli.main` only translates `VidError` into a named, non-zero exit.
@@ -216,8 +272,19 @@ def transcribe(video: str, model_size: str = "base") -> list[Chunk]:
             "Every mechanical verb keeps working without it -- `vid check` shows what you have."
         ) from exc
 
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(video, beam_size=1)
+    # The ImportError above is handled; CONSTRUCTING the model was not. An
+    # unknown `--model` size, a failed weight download and an onnxruntime built
+    # for another architecture all fail here, and `main()` catches only
+    # VidError -- so each reached the user as a traceback.
+    try:
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(video, beam_size=1)
+    except Exception as exc:
+        raise VidError(
+            f"The speech model {model_size!r} could not transcribe {video!r}: {exc}\n"
+            "Sizes are tiny, base, small and medium -- check the spelling, and confirm the "
+            "machine can reach the model download. `vid check` reports the speech backend."
+        ) from exc
     return [
         Chunk(id=f"c{i}", start=round(segment.start, 3), end=round(segment.end, 3), text=segment.text.strip())
         for i, segment in enumerate(segments)
@@ -278,10 +345,40 @@ def build(video: str, *, speech: bool = True, shots: bool = True, model_size: st
     if speech and "speech" not in record:
         record["speech"] = [asdict(chunk) for chunk in transcribe(video, model_size)]
 
-    path = index_path(video)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    save(video, record)
     return record
+
+
+def save(video: str, record: dict) -> Path:
+    """Persist the index, naming the remedy when the filesystem refuses.
+
+    THE ONE WRITE PATH FOR THE INDEX, because there were two. `build` wrote it
+    here and `lib.index` wrote it again after `describe`, both with a bare
+    `mkdir` + `write_text`. An unwritable or non-existent `VID_INDEX_DIR` -- a
+    read-only mount, a typo in the variable, a full disk -- therefore escaped
+    as a raw `OSError` traceback from whichever of the two happened to run,
+    naming no remedy and pointing at no setting.
+
+    `VID_INDEX_DIR` is the thing to name: it is the only reason the location is
+    ever surprising, and it is the only knob the caller has.
+    """
+    # ATOMIC, like the LUT cache and for a weaker version of the same reason.
+    # A write that died halfway used to leave a TRUNCATED index at this path.
+    # `load` does catch that -- it names the file and says to rebuild it, which
+    # is why this was never as sharp as the LUT, whose cache read existence as
+    # validity. But a recoverable corruption the caller has to clean up by hand
+    # is still worse than no corruption, and this is the same one-line fix:
+    # write beside the destination, then replace.
+    path = index_path(video)
+    with writing_atomically(
+        path,
+        "The index",
+        "That location comes from VID_INDEX_DIR when it is set, and a cache "
+        "directory beside the video otherwise. Point VID_INDEX_DIR at a "
+        "writable directory, or free space on this one.",
+    ) as staging:
+        staging.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return path
 
 
 def chunks_of(record: dict) -> list[Chunk]:

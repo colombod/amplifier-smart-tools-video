@@ -103,6 +103,7 @@ def test_the_scrubbed_environment_really_has_no_ffmpeg():
         ["stitch", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4"],
         ["stitch", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4", "--transition", "dissolve"],
         ["caption", "tests/fixtures/alpha.mp4", "--subtitles", "talk.srt"],
+        ["overlay", "tests/fixtures/bravo.mp4", "tests/fixtures/alpha.mp4", "--x", "20", "--y", "20"],
         ["plan"],
         ["check"],
         ["transitions"],

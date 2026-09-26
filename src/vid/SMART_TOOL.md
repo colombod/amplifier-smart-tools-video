@@ -3,12 +3,14 @@ smart_tool_format: 1
 name: vid
 version: 0.3.3
 description: >-
-  Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
+  Anything to do with a video file the user has — .mp4, .mov, .mkv, .webm. Reach for it when the ask sounds like "cut this down to the bit where she explains pricing", "add captions to this", "make this shorter", "stick these three clips together", "speed up the boring middle", "put some music under it", "put the webcam in the corner and grow it to full screen", "where does he mention the deadline?", or "make this match our brand colours". Trims and cuts, joins clips with transitions, retimes and ramps speed, zooms, lays one clip over another as a picture-in-picture (shaped, keyed, animated), burns in captions, removes/replaces/mixes audio, grades colour or matches a reference image, vignettes, writes and speaks a narration fitted to the video's own timing, finds a moment by what was SAID or SHOWN, and verifies a finished render. Chain the verbs with pipes — the whole edit is one ffmpeg pass. Do NOT use for images, audio-only files, or downloading video.
 use_cases:
   - Trim a video down to one section, or cut a section out of the middle
   - Join several clips together, with or without a transition between them
   - Speed a recording up, slow it down, or ramp the speed across a stretch
   - Burn captions into the picture from a subtitle file
+  - Lay one clip over another as a webcam inset, a logo or a reaction shot
+  - Grow an inset to full screen, cut it to a circle, or key out its background
   - Find the moment someone said something, or the moment something appeared on screen
   - Replace, remove or mix the audio, or lay a music bed under a demo
   - Match a video's colour to a reference image, or apply a named look
@@ -39,7 +41,37 @@ requires:
       fontconfig, so a brew install that leaves its dependencies unconfigured can render
       captions with no text. `brew postinstall ca-certificates fontconfig gnutls glib
       openssl@3` is what fixed it on a real machine.
-    optional: false
+
+      OPTIONAL: TRUE, and the flag has to match the paragraphs above it. This
+      said `false` while the same entry stated that trim, cut, retime, zoom,
+      stitch, caption, plan and transitions all run WITHOUT ffmpeg -- so the
+      manifest contradicted itself, and a caller trusting the flag would think a
+      tool that works is broken. `false` means "nothing works without this",
+      which is not true of vid: a plan is JSON and nothing touches a frame until
+      render. What is genuinely unavailable without it is render, verify, index
+      and recolor -- named above, and reported by `vid check`.
+    optional: true
+    install: https://ffmpeg.org/download.html
+  - name: ffprobe
+    purpose: >-
+      Reads container metadata -- duration, resolution, stream presence. Declared
+      SEPARATELY from ffmpeg because the code checks for it separately: `probe.have_ffprobe`
+      is preflighted in its own right by `probe.duration`, `probe`'s stream reads,
+      `lib.stitch`, `index` and `recolor`, each of which refuses by name when it is absent.
+      A manifest that named only ffmpeg would leave a caller meeting a refusal for
+      something the manifest never admitted existed.
+
+      It ships WITH ffmpeg in every mainstream distribution and in the official builds, so
+      installing ffmpeg almost always satisfies both and this is rarely a separate action.
+      The exception is a minimal container image that installs an `ffmpeg` binary alone:
+      there, every verb that only builds a plan still works, and everything that needs to
+      know how long a clip is does not. `vid check` reports each one separately.
+
+      OPTIONAL: TRUE, for the same reason as ffmpeg above and measured the same
+      way: `probe.have_ffprobe` is preflighted by the operations that need
+      duration data, NOT by the tool generally, so every verb that only builds a
+      plan still runs without it.
+    optional: true
     install: https://ffmpeg.org/download.html
   - name: faster-whisper
     purpose: >-
@@ -79,6 +111,24 @@ requires:
       this file works around.
     optional: true
     install: https://github.com/colombod/amplifier-smart-tools-video#voice-openai
+
+  - name: openai-api-key
+    purpose: >-
+      The CREDENTIAL the `openai-tts` extra needs, declared separately because
+      installing the package and having an account are different prerequisites
+      and fail at different moments. `narrate --voice openai:<voice>[@profile]`
+      reads it from the environment variable named by `api_key_env` in
+      $XDG_CONFIG_HOME/vid/config.toml, defaulting to OPENAI_API_KEY when there
+      is no config file at all. The key is never sent anywhere but OpenAI's TTS
+      API, never written to a plan, and never logged.
+
+      Declared because the code preflights it: `speech.interface` refuses
+      before any synthesis when the named variable is unset, and the spec
+      requires that refusal and this manifest to agree. Nothing else in the
+      tool needs it -- every deterministic capability, and narration through
+      the local piper backend, runs without any credential at all.
+    optional: true
+    install: https://platform.openai.com/api-keys
   - name: gh
     purpose: >-
       Generates the token that signs in to GitHub Copilot. Without it, the model-backed
@@ -100,9 +150,15 @@ wrapper over it, so anything you can do from the shell you can also do from Pyth
 
 ## Read this first: chain the verbs, do not orchestrate them
 
-**Every verb except `render` reads an edit plan on stdin, appends one operation,
-and writes the plan to stdout.** Nothing decodes a frame until `render`, which
-compiles the whole plan into ONE ffmpeg pass.
+**The plan-building verbs read an edit plan on stdin, append one operation, and
+write the plan to stdout.** `render` compiles the whole plan into ONE ffmpeg pass.
+
+Two exceptions, both stated because an agent that assumes otherwise gets them
+wrong. `index`, `find`, `narrate`, `verify`, `check`, `manifest`, `transitions`
+and `audio extract` report or read rather than appending to a plan. And
+`recolor`, which does append an operation, still needs ffmpeg *while building*
+-- it samples real frames to measure the palette. Every other plan-building
+verb decodes nothing until `render`.
 
 ```bash
 vid trim talk.mp4 --from 0:10 --to 2:30 \
