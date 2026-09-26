@@ -356,3 +356,33 @@ def test_the_real_lut_writer_is_atomic(tmp_path) -> None:
 
     source = (SOURCE_ROOT / "color.py").read_text(encoding="utf-8")
     assert "writing_atomically(" in source, "write_cube no longer writes through the atomic path"
+
+
+def test_the_index_writer_is_atomic_too(tmp_path, monkeypatch) -> None:
+    """The LUT's sibling, and I left it behind when I fixed the LUT.
+
+    Weaker version of the same bug: `index.load` DOES catch truncated JSON and
+    tell the caller to rebuild, which is why this was never as sharp as the LUT
+    cache, whose read treated existence as validity. But a corruption the
+    caller has to clear by hand is still worse than no corruption, and it was
+    the same one-line fix.
+    """
+    import json
+
+    from vid.index import index_path, save
+
+    monkeypatch.setenv("VID_INDEX_DIR", str(tmp_path / "store"))
+    # `index_path` fingerprints the real file, so it has to exist.
+    source_video = tmp_path / "clip.mp4"
+    source_video.write_bytes(b"stand-in bytes; nothing decodes this")
+    video = str(source_video)
+    record = {"video": video, "duration": 5.0, "shots": [], "speech": []}
+
+    path = save(video, record)
+
+    assert path == index_path(video)
+    assert json.loads(path.read_text(encoding="utf-8")) == record
+    assert list(path.parent.iterdir()) == [path], "index.save left a temporary behind"
+
+    source = (SOURCE_ROOT / "index.py").read_text(encoding="utf-8")
+    assert "writing_atomically(" in source, "index.save no longer writes through the atomic path"

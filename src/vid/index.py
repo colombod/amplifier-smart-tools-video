@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from vid.core.writes import writing_atomically
 from vid.probe import require_ffmpeg_tools
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
 
@@ -361,17 +362,22 @@ def save(video: str, record: dict) -> Path:
     `VID_INDEX_DIR` is the thing to name: it is the only reason the location is
     ever surprising, and it is the only knob the caller has.
     """
+    # ATOMIC, like the LUT cache and for a weaker version of the same reason.
+    # A write that died halfway used to leave a TRUNCATED index at this path.
+    # `load` does catch that -- it names the file and says to rebuild it, which
+    # is why this was never as sharp as the LUT, whose cache read existence as
+    # validity. But a recoverable corruption the caller has to clean up by hand
+    # is still worse than no corruption, and this is the same one-line fix:
+    # write beside the destination, then replace.
     path = index_path(video)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    except OSError as exc:
-        raise VidError(
-            f"The index could not be written to {path}: {exc.strerror or exc}.\n"
-            "That location comes from VID_INDEX_DIR when it is set, and a cache "
-            "directory beside the video otherwise. Point VID_INDEX_DIR at a "
-            "writable directory, or free space on this one."
-        ) from exc
+    with writing_atomically(
+        path,
+        "The index",
+        "That location comes from VID_INDEX_DIR when it is set, and a cache "
+        "directory beside the video otherwise. Point VID_INDEX_DIR at a "
+        "writable directory, or free space on this one.",
+    ) as staging:
+        staging.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return path
 
 
