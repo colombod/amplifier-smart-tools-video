@@ -430,7 +430,7 @@ class Compiler:
             # exactly how this behaved before anything probed the sources.
             known = self.source_audio.get(source)
             if known is not None:
-                self._refuse_audio_mismatch(source, known)
+                other_a = self._reconcile_audio(source, known, other_a)
             other_v = self._normalised(source, other_v, op)
             if op.transition:
                 self._transition(other_v, other_a, op)
@@ -904,6 +904,93 @@ class Compiler:
         else:
             chain = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
         return self._step(chain, label, "v")
+
+    #: The format synthesised silence is generated at, and the format a real
+    #: track is conformed to when it is concatenated with silence.
+    #:
+    #: STEREO 48 kHz BECAUSE IT WAS MEASURED, not because it is conventional.
+    #: #22's reporter was doing this synthesis by hand and wrote down what went
+    #: wrong: "The silent track must be stereo 48 kHz. A mono or slightly long
+    #: AAC bed made the picture drift by up to 5 frames and pushed the final
+    #: mix's true peak up." Both halves of that are addressed here -- the format
+    #: is fixed, and the length comes from the probed duration rather than from
+    #: `-shortest` guessing.
+    SILENCE_RATE: ClassVar[int] = 48000
+    SILENCE_LAYOUT: ClassVar[str] = "stereo"
+
+    def _silence(self, seconds: float) -> str:
+        """A finite silent stream, generated IN the graph rather than as an input.
+
+        `anullsrc` is a source filter, so it needs no `-i` and no temporary
+        file. It runs forever on its own, hence the `atrim`: an unbounded
+        silence concatenated onto an edit is a render that never ends, which is
+        the failure mode `_bound_audio` exists to prevent elsewhere in this file.
+        """
+        out = self._next("a")
+        self.filters.append(
+            f"anullsrc=r={self.SILENCE_RATE}:cl={self.SILENCE_LAYOUT},"
+            f"atrim=duration={seconds:.6f},asetpts=PTS-STARTPTS[{out}]"
+        )
+        return out
+
+    def _conformed(self, label: str) -> str:
+        """Put a real track into the same format as the silence beside it.
+
+        `concat` requires matching sample rate and channel layout across its
+        inputs. Without this, a 44.1 kHz mono clip beside 48 kHz stereo silence
+        either refuses or resamples somewhere the caller cannot see.
+        """
+        return self._step(
+            f"aformat=sample_rates={self.SILENCE_RATE}:channel_layouts={self.SILENCE_LAYOUT}",
+            label,
+            "a",
+        )
+
+    def _reconcile_audio(self, source: str, incoming_has_audio: bool, other_a: str) -> str:
+        """Make both sides of a join carry sound, or refuse for a stated reason.
+
+        SYNTHESISING SILENCE FOR A CLIP THAT HAS NONE INVENTS NOTHING. The clip
+        really is silent; a silent track is its honest representation, and no
+        information is created or destroyed. DISCARDING an existing track is the
+        act that loses something, and that is still refused below.
+
+        This file previously refused both, on the grounds that a join "would
+        have to invent a track or discard one". That conflated the two. #22's
+        reporter was doing the synthesis by hand, per segment, and getting drift
+        and true-peak errors for it -- the refusal did not prevent the work, it
+        moved it to the one party with less information. The compiler already
+        knows every source's duration.
+        """
+        running_has_audio = self.audio is not None
+        if running_has_audio == incoming_has_audio:
+            return other_a
+        if self.audio_removed:
+            # `audio remove` already said what to do with sound in this edit.
+            # Honouring that instruction beats synthesising silence the caller
+            # explicitly asked not to have.
+            return other_a
+
+        if incoming_has_audio:
+            # The EDIT is silent. Give it silence for everything rendered so far.
+            if self.elapsed <= 0:
+                raise VidError(
+                    f"Cannot stitch {source!r}, which has sound, onto an edit whose length is "
+                    "not known, so the silence to put beside it cannot be measured. Render "
+                    "through `vid render`, which probes durations."
+                )
+            self.audio = self._silence(self.elapsed)
+            return self._conformed(other_a)
+
+        # The INCOMING clip is silent. Give it silence for its own duration.
+        incoming_seconds = self.durations.get(source, 0.0)
+        if incoming_seconds <= 0:
+            raise VidError(
+                f"Cannot stitch {source!r}: it carries no audio stream, and its duration is "
+                "not known, so a matching-length silence cannot be built. Render through "
+                "`vid render`, which probes durations."
+            )
+        self.audio = self._conformed(self.audio) if self.audio else self.audio
+        return self._silence(incoming_seconds)
 
     def _refuse_audio_mismatch(self, source: str, incoming_has_audio: bool) -> None:
         """Refuse a join where exactly one side carries sound.

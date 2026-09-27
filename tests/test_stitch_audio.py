@@ -16,7 +16,6 @@ import pytest
 from tests.fixtures import ensure_clips, ensure_silent_clip, has_audio_stream, have_ffmpeg, probe_duration
 from vid.compile import compile_plan
 from vid.plan import AudioRemove, Plan, Stitch
-from vid.schemas import VidError
 
 pytestmark = pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg is required")
 
@@ -71,23 +70,37 @@ def test_audio_remove_then_stitch_renders_and_has_no_sound(clips, tmp_path):
     )
 
 
-def test_stitching_a_silent_clip_onto_a_sounded_one_names_the_file(clips, silent, tmp_path):
-    """A mismatch is refused BY NAME, not passed to ffmpeg to fail obscurely.
+def test_stitching_a_silent_clip_onto_a_sounded_one_synthesises_silence(clips, silent, tmp_path):
+    """A mismatch is RECONCILED, not refused. Changed by #22.
 
-    The base has sound and the incoming clip has none. concat cannot take a
-    stream that does not exist, and `Stream specifier ... matches no streams`
-    tells a caller nothing about which of their files was the problem.
+    This asserted a named refusal until #22's reporter pointed out that the
+    refusal did not remove the work -- it moved it to him, per segment, where he
+    built the silent track by hand and got picture drift for it. Synthesising
+    silence for a clip that genuinely has none invents nothing; the clip really
+    is silent. Discarding an existing track is the act that loses something, and
+    that is still refused.
+
+    The original property this test protected -- that ffmpeg's opaque
+    `Stream specifier ... matches no streams` never reaches a caller -- still
+    holds, and more strongly: the graph is now valid rather than merely refused
+    before it could fail.
     """
     from vid.lib import render
 
     plan = Plan(source=str(clips["alpha"].path)).with_operation(Stitch(sources=[str(silent.path)]))
+    out = tmp_path / "mismatch.mp4"
 
-    with pytest.raises(VidError) as failure:
-        render(plan, str(tmp_path / "mismatch.mp4"))
+    render(plan, str(out))
 
-    message = str(failure.value)
-    assert "silent.mp4" in message, f"the failure does not name the offending file: {message}"
-    assert "audio" in message.lower(), f"the failure does not say what is missing: {message}"
+    assert out.is_file(), "the join #22 asked for did not render"
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(out)],
+        capture_output=True,
+        text=True,
+    )
+    assert len([line for line in probe.stdout.splitlines() if line.strip()]) == 1, (
+        "the reconciled result should carry exactly one audio track"
+    )
 
 
 def test_two_silent_clips_stitch_cleanly_into_a_silent_result(silent, tmp_path):

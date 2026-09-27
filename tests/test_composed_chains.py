@@ -391,26 +391,24 @@ def _compile(plan):
     )
 
 
-def test_replacing_audio_after_removing_it_restores_the_stitch_guard():
-    """`audio remove -> audio replace -> stitch <silent>` must be refused.
+def test_replacing_audio_after_removing_it_clears_the_audio_removed_flag():
+    """`audio remove -> audio replace -> stitch <silent>` must RECONCILE.
 
-    The guard short-circuits on an `audio_removed` flag, reading it as "the
-    caller already said what to do with sound here". True right after a remove;
-    FALSE once a track has been put back. Left stale, this chain walked through
-    the guard and emitted a specifier for an audio stream the silent file does
-    not have -- ffmpeg's own `Stream specifier ... matches no streams`, which
-    names neither the file nor the reason.
+    Same property as the parametrised test below, same reason the assertion
+    changed with #22: a stale `audio_removed` used to show up as a missing
+    refusal and now shows up as missing silence. Either way it is the flag
+    outliving the condition it describes.
     """
-    from vid.schemas import VidError
-
     plan = lib.audio_remove(Plan(source="a.mp4"))
     plan = lib.audio_replace(plan, "music.mp3")
     plan = lib.stitch(plan, ["silent.mp4"])
 
-    with pytest.raises(VidError) as refusal:
-        _compile(plan)
+    graph = " ".join(_compile(plan))
 
-    assert "silent.mp4" in str(refusal.value), "the refusal does not name the file the caller meant"
+    assert "anullsrc" in graph, (
+        "the audio_removed flag is stale after audio replace: no silence was synthesised for the silent clip"
+    )
+    assert "None" not in graph, "the literal None reached the graph"
 
 
 def test_removing_audio_still_permits_stitching_a_silent_clip():
@@ -475,24 +473,32 @@ def _compile_full(plan):
 
 
 @pytest.mark.parametrize(("label", "restore"), RESTORATIONS, ids=[case[0] for case in RESTORATIONS])
-def test_every_way_of_regaining_sound_restores_the_stitch_guard(label, restore):
-    """`audio remove` -> <regain sound> -> `stitch <silent>` must be refused.
+def test_every_way_of_regaining_sound_clears_the_audio_removed_flag(label, restore):
+    """`audio remove` -> <regain sound> -> `stitch <silent>` must RECONCILE.
 
-    The guard short-circuits on `audio_removed`, which means "the caller
-    already said what to do with sound here". True right after a remove; FALSE
-    the moment any path puts a track back. Left stale, the chain emits a
-    specifier for an audio stream the silent file does not have, and ffmpeg
-    rejects the whole command with `Stream specifier ... matches no streams` --
-    naming neither the file nor the reason.
+    THE PROPERTY IS UNCHANGED; ITS SYMPTOM MOVED. `audio_removed` means "the
+    caller already said what to do with sound here". True right after a remove;
+    FALSE the moment any path puts a track back. Left stale, this chain takes
+    the short-circuit and emits a specifier for an audio stream the silent file
+    does not have -- ffmpeg's `Stream specifier ... matches no streams`, naming
+    neither the file nor the reason.
+
+    Until #22 the stale flag showed up as a MISSING REFUSAL, so this asserted
+    one. Now a mismatch is reconciled with synthesised silence instead, so the
+    flag being stale shows up as MISSING SILENCE. Asserting `anullsrc` is in the
+    graph tests the same thing: that reconciliation ran, rather than the
+    short-circuit letting a bad specifier through.
     """
-    from vid.schemas import VidError
-
     plan = lib.stitch(restore(lib.audio_remove(Plan(source="base.mp4"))), ["silent.mp4"])
 
-    with pytest.raises(VidError) as refusal:
-        _compile_full(plan)
+    command = _compile_full(plan)
 
-    assert "silent.mp4" in str(refusal.value), f"after {label} the refusal does not name the file"
+    graph = " ".join(command)
+    assert "anullsrc" in graph, (
+        f"after {label} the audio_removed flag is stale: no silence was synthesised for the "
+        "silent clip, so the graph carries a specifier for a stream it does not have"
+    )
+    assert "None" not in graph, f"after {label} the literal None reached the graph"
 
 
 def test_regaining_sound_does_not_break_an_ordinary_stitch():
