@@ -1171,6 +1171,24 @@ def overlay(
     shape = None
     if mask is not None:
         allowed = ("rect", "rounded_rect", "circle", "ellipse", "image", "video")
+        if not isinstance(mask, str):
+            # A `Mask` OBJECT, not a kind. Without this branch the membership
+            # test below compares an object against strings, always fails, and
+            # emits a refusal that CONTRADICTS ITSELF:
+            #
+            #   Unknown mask Mask(kind='video', ...). Use one of: ... video.
+            #
+            # -- naming `video` as unavailable and available in one sentence.
+            # Hit while writing the `vid mask` round-trip test, where it read
+            # as a library fault rather than a caller mistake.
+            kind = getattr(mask, "kind", None)
+            source = getattr(mask, "source", None)
+            hint = f'mask="{kind}"' + (f', mask_source="{source}"' if source else "")
+            raise VidError(
+                f"`mask` is the KIND as a string, not a Mask object. Pass {hint} instead. "
+                "The matte file belongs in `mask_source`, which is what keeps one shape "
+                "description rather than two that can drift apart."
+            )
         if mask not in allowed:
             raise VidError(f"Unknown mask {mask!r}. Use one of: {', '.join(allowed)}.")
         if mask in ("image", "video") and not mask_source:

@@ -269,3 +269,33 @@ def test_the_format_guard_fires_when_the_encoder_does_not_honour_gray(tmp_path, 
     message = str(failure.value)
     assert "yuvj420p" in message, f"the refusal does not name what came back instead: {message!r}"
     assert MATTE_PIX_FMT in message, f"the refusal does not name what was required: {message!r}"
+
+
+def test_passing_a_mask_object_says_what_to_pass_instead() -> None:
+    """The refusal used to contradict itself, and I hit it writing this file.
+
+    `lib.overlay` takes the mask KIND as a string, with the matte file in
+    `mask_source`. Passing a `Mask` object fell through to a membership test
+    against strings, which always failed, and produced:
+
+        Unknown mask Mask(kind='video', ...). Use one of: ... video.
+
+    -- naming `video` as unavailable and available in one sentence. It reads as
+    a library fault rather than a caller mistake, which is how I first read it.
+    """
+    from vid.lib import overlay
+    from vid.plan import Mask, Plan
+
+    with pytest.raises(VidError) as failure:
+        # DELIBERATELY the wrong type: this asserts the RUNTIME guard, and the
+        # type checker is correct that a caller should never write this. Both
+        # are true at once -- static typing does not reach a caller passing
+        # through `Any`, an untyped notebook, or a dict-driven wrapper, which is
+        # exactly where the self-contradictory message was hit.
+        overlay(Plan(source="a.mp4"), "b.mp4", mask=Mask(kind="video", source="m.mkv"))  # ty: ignore[invalid-argument-type]
+
+    message = str(failure.value)
+    assert "not a Mask object" in message, message
+    assert 'mask="video"' in message, f"the refusal does not show the string to pass: {message!r}"
+    assert 'mask_source="m.mkv"' in message, f"the refusal does not say where the file goes: {message!r}"
+    assert "Use one of" not in message, "the self-contradictory wording is back"
