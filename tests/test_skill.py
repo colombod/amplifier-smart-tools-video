@@ -84,7 +84,12 @@ def test_short_help_and_no_arguments_print_the_terse_summary() -> None:
 
 def test_every_command_answers_its_own_help() -> None:
     for capability in CAPABILITIES:
-        result = runner.invoke(app, [capability.name, "--help"])
+        # SPLIT, because a capability name may be a SUBCOMMAND path. Every row
+        # was one word until `mask wipe` and `mask from-video` arrived, and
+        # passing "mask wipe" as a single argv element is one unknown command,
+        # which exits 2. The name is what a caller types after `vid`, so it is
+        # split the way a shell would split it.
+        result = runner.invoke(app, [*capability.name.split(), "--help"])
 
         assert result.exit_code == 0
         assert result.stdout.strip()

@@ -367,3 +367,34 @@ def test_narrate_without_ffmpeg_refuses_before_a_model_is_even_asked(tmp_path, m
     )
     assert "model" not in result.stderr.lower(), reason
     assert "provider" not in result.stderr.lower(), reason
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["mask", "--help"],
+        ["mask", "wipe", "--help"],
+        ["mask", "from-video", "--help"],
+    ],
+    ids=lambda a: " ".join(a) if isinstance(a, list) else str(a),
+)
+def test_the_mask_verb_documents_itself_with_nothing_installed(args):
+    """`mask` RENDERS, so it is not in the all-succeed list above -- but it must
+    still be able to say what it is.
+
+    The smart-tool contract is that a caller can discover the surface before
+    committing to the prerequisites. A verb that cannot answer `--help` without
+    ffmpeg is a verb an agent cannot even find out it needs ffmpeg for.
+    """
+    result = _run(args)
+
+    assert result.returncode == 0, f"`vid {' '.join(args)}` could not document itself.\nstderr: {result.stderr}"
+    assert result.stdout.strip(), "a help with no text is not a help"
+
+
+def test_the_mask_verb_refuses_cleanly_when_it_cannot_render():
+    """With no ffmpeg, a matte cannot be written -- so say so, do not crash."""
+    result = _run(["mask", "wipe", "/tmp/unreachable-matte.mkv"])
+
+    assert result.returncode != 0
+    assert result.stderr.strip(), "a refusal with no message at all is worse than a crash"

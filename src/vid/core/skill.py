@@ -16,6 +16,13 @@ CAPABILITIES = (
     Capability("retime", "Change speed, constantly or along a curve.", model_backed=False),
     Capability("zoom", "Animated zoom (Ken Burns), with the jitter fix applied.", model_backed=False),
     Capability("overlay", "Lay another clip over the picture, at a stated place and time.", model_backed=False),
+    # PRODUCING verbs: they write a file and end a chain, like `audio extract`.
+    Capability("mask wipe", "Write an animated reveal as a matte you can inspect and reuse.", model_backed=False),
+    Capability(
+        "mask from-video",
+        "Derive a per-frame matte from footage by colour, chroma, luma or alpha key.",
+        model_backed=False,
+    ),
     # NOT model_backed, for the same reason as `find` below: a NAMED transition
     # resolves with no provider at all, and that is the common case. But a
     # DESCRIPTIVE `--transition` routes through `resolve_transition`, which asks

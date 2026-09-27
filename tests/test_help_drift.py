@@ -94,6 +94,9 @@ _DOC_KEY: dict[tuple[str, ...], str | None] = {
     ("audio", "replace"): "audio_replace",
     ("audio", "mix"): "audio_mix",
     ("audio", "extract"): "audio_extract",
+    ("mask",): "mask",
+    ("mask", "wipe"): "mask_wipe",
+    ("mask", "from-video"): "mask_from_video",
 }
 
 _ARGUMENTS_SECTION = re.compile(r"\*\*Arguments\.\*\*(.*?)\*\*Result\.\*\*", re.DOTALL)
@@ -137,7 +140,7 @@ def test_the_command_tree_actually_has_commands_in_it() -> None:
     fixed floor (20 capabilities + 4 audio subcommands, see `core/skill.py`)
     means that failure mode fails loudly here instead.
     """
-    assert len(_registered_commands()) >= 25
+    assert len(_registered_commands()) >= 28
 
 
 def test_every_registered_command_is_mapped_to_a_document() -> None:

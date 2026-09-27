@@ -1315,3 +1315,224 @@ def transitions(describe: bool = False) -> str:
 
 
 # endregion
+
+
+# ---------------------------------------------------------------------------
+# `vid mask` -- a PRODUCING verb, per issue #17.
+#
+# Writes a matte and ENDS a chain, exactly like `audio_extract` above, which is
+# the documented precedent for this shape. It does not invent a new category.
+#
+# It composes with the overlay op rather than duplicating it: `vid mask` writes
+# a matte, `overlay --mask video --mask-source <file>` consumes one. The
+# consumer contract already exists as `Mask(kind="video", source=...)`, so there
+# is exactly ONE matte format and ONE consumer.
+#
+# DELIBERATELY DETERMINISTIC. Every derivation below is a threshold or a channel
+# extraction. No subject segmentation, no rotoscoping: ffmpeg has no such filter
+# and pretending otherwise would put a quality claim behind a capability that
+# cannot meet it.
+# ---------------------------------------------------------------------------
+
+#: The one canonical matte format, stated once and enforced in `_write_matte`.
+#: Single channel, 8-bit. WHITE KEEPS, BLACK DROPS.
+#:
+#: MEASURED, because the obvious choice does not work. Asking for `gray` on the
+#: mp4/h264 path returns `yuvj420p` with exit code 0 -- with the flag as an
+#: output option, with `format=gray` in the filter chain, with libx264 named
+#: explicitly, and in mkv too. libx264 advertises `gray` support and still
+#: normalises it away. Only ffv1 actually wrote a single-channel file:
+#:
+#:     mp4 / default        -> h264, yuvj420p
+#:     mp4 / libx264        -> h264, yuvj420p
+#:     mkv / libx264        -> h264, yuvj420p
+#:     mkv / ffv1           -> ffv1, gray
+#:
+#: Lossless is the right answer for a matte anyway: a lossy matte carries
+#: compression ringing on precisely the edges it exists to define.
+MATTE_PIX_FMT = "gray"
+MATTE_CODEC = "ffv1"
+MATTE_SUFFIX = ".mkv"
+
+MASK_WIPES = ("linear", "radial", "barn_door")
+MASK_DIRECTIONS = ("left", "right", "up", "down")
+MASK_KEYS = ("colorkey", "chromakey", "lumakey", "alpha")
+
+
+def _write_matte(filter_chain: str, inputs: list[str], output: str, what: str) -> str:
+    """Run one ffmpeg pass, then PROVE the canonical format rather than claim it.
+
+    EVERY matte goes through here, so `gray` is asserted in one place rather
+    than repeated at each call site where one copy could drift. That is the same
+    reasoning the plan compiler uses for its single `filter_complex`.
+
+    THE FORMAT IS FORCED IN THE FILTER CHAIN AND THEN READ BACK, and the first
+    version of this function did neither properly. It passed `-pix_fmt gray` as
+    an output option and trusted it. Measured: the file came back `yuvj420p`
+    with EXIT CODE 0, because filter-chain format negotiation had already
+    settled on a yuv format before the encoder saw the request. libx264 supports
+    `gray` perfectly well -- the flag was simply being lost, silently, and a
+    docstring one line above promised a guarantee that did not hold.
+
+    So `format=gray` is appended to the chain, where negotiation cannot ignore
+    it, and the written file is then probed. A matte that is not single-channel
+    is refused rather than returned, because the whole point of this verb is an
+    artifact a caller can trust without re-deriving it.
+    """
+    import subprocess
+
+    from vid.probe import require_ffmpeg
+
+    require_ffmpeg(f"{what} decodes and re-encodes frames")
+
+    destination = Path(output)
+    if destination.suffix.lower() != MATTE_SUFFIX:
+        raise VidError(
+            f"A matte is written as {MATTE_SUFFIX} ({MATTE_CODEC}), so {output!r} will not do. "
+            f"Name it {destination.with_suffix(MATTE_SUFFIX).name!r} instead.\n"
+            "MEASURED, not a preference: h264 in mp4 re-encodes a grayscale matte to yuvj420p "
+            "whatever pixel format is requested, so the single-channel contract cannot hold "
+            f"there. {MATTE_CODEC} in {MATTE_SUFFIX} keeps it, and being lossless also keeps "
+            "compression ringing off the very edges the matte exists to define."
+        )
+
+    resolved_output = str(destination.resolve())
+    chain = f"{filter_chain},format={MATTE_PIX_FMT}"
+    command = ["ffmpeg", "-y", "-v", "error", *inputs, "-vf", chain]
+    command += ["-c:v", MATTE_CODEC, "-pix_fmt", MATTE_PIX_FMT, "-an", resolved_output]
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        reason = detail[-1] if detail else "ffmpeg gave no reason"
+        raise VidError(
+            f"Could not write the matte to {resolved_output}: {reason}\n"
+            "Check the destination is writable, and run `vid check` to confirm ffmpeg is working."
+        )
+
+    written = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt",
+            "-of",
+            "csv=p=0",
+            resolved_output,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    actual = (written.stdout or "").strip()
+    if actual != MATTE_PIX_FMT:
+        raise VidError(
+            f"The matte at {resolved_output} came back as {actual!r}, not {MATTE_PIX_FMT!r}. "
+            "Every mask this tool writes is single-channel grayscale, white keeps and black "
+            "drops, so a matte in another format would disagree with the overlay that consumes "
+            "it. This is an ffmpeg build difference worth reporting rather than working around."
+        )
+    return f"wrote {resolved_output}"
+
+
+def _even(value: int, name: str) -> int:
+    """Round down to even. Encoders reject odd dimensions; say so once, here."""
+    if value < 2:
+        raise VidError(f"{name} must be at least 2 pixels, not {value}.")
+    return value - (value % 2)
+
+
+def mask_wipe(
+    shape: str,
+    output: str,
+    width: int = 640,
+    height: int = 360,
+    seconds: float = 2.0,
+    fps: float = 30.0,
+    direction: str = "left",
+) -> str:
+    """Write an animated reveal as a matte: a wipe that opens over `seconds`.
+
+    Useful well beyond picture-in-picture -- a matte animation is a transition,
+    a reveal, or a spotlight, and this writes one you can look at before you
+    trust it. That inspectability is the whole reason this is a verb and not
+    another inline field.
+
+    `geq` is the mechanism because it is the only filter here that exposes TIME.
+    `drawbox` cannot do this: its `t` is thickness and it has no time variable
+    at all -- measured while designing #13's fixtures, and recorded there.
+    """
+    if shape not in MASK_WIPES:
+        raise VidError(f"Unknown wipe {shape!r}. Available: {', '.join(MASK_WIPES)}.")
+    if direction not in MASK_DIRECTIONS:
+        raise VidError(f"Unknown direction {direction!r}. Available: {', '.join(MASK_DIRECTIONS)}.")
+    if seconds <= 0:
+        raise VidError(f"A wipe needs a positive duration, not {seconds}.")
+    if fps <= 0:
+        raise VidError(f"A matte needs a positive frame rate, not {fps}.")
+
+    w = _even(width, "width")
+    h = _even(height, "height")
+
+    # `min(T/D,1)` clamps the last frame: without it a float rate can evaluate
+    # one frame PAST the duration and the wipe reads as not-quite-finished.
+    progress = f"min(T/{seconds:.6f},1)"
+
+    if shape == "linear":
+        travel = {
+            "left": f"lt(X,{w}*{progress})",
+            "right": f"gt(X,{w}*(1-{progress}))",
+            "up": f"lt(Y,{h}*{progress})",
+            "down": f"gt(Y,{h}*(1-{progress}))",
+        }[direction]
+    elif shape == "radial":
+        # hypot(w/2,h/2) is the corner distance, so the reveal is complete only
+        # when it reaches the FURTHEST pixel rather than the nearest edge.
+        travel = f"lt(hypot(X-{w}/2,Y-{h}/2),hypot({w}/2,{h}/2)*{progress})"
+    else:  # barn_door -- opens from the centre outwards, both ways at once.
+        travel = f"lt(abs(X-{w}/2),({w}/2)*{progress})"
+
+    chain = f"geq=lum='if({travel},255,0)'"
+    inputs = ["-f", "lavfi", "-i", f"color=black:s={w}x{h}:r={fps}:d={seconds}"]
+    return _write_matte(chain, inputs, output, "writing a wipe")
+
+
+def mask_from_video(
+    video: str,
+    output: str,
+    key: str = "colorkey",
+    colour: str = "0x00FF00",
+    similarity: float = 0.3,
+    blend: float = 0.0,
+) -> str:
+    """Derive a per-frame matte from footage, by key or by alpha channel.
+
+    WHITE IS WHAT SURVIVES THE KEY. `colorkey` makes the named colour
+    transparent, so `alphaextract` returns black where the colour was and white
+    on everything else -- which is the subject. That matches the canonical
+    contract (white keeps) without inverting anything, and inverting it here to
+    "look right" would silently disagree with every other matte the tool emits.
+    """
+    if key not in MASK_KEYS:
+        raise VidError(f"Unknown key {key!r}. Available: {', '.join(MASK_KEYS)}.")
+    if not 0.0 <= similarity <= 1.0:
+        raise VidError(f"similarity is a 0..1 fraction, not {similarity}.")
+    if not 0.0 <= blend <= 1.0:
+        raise VidError(f"blend is a 0..1 fraction, not {blend}.")
+
+    if key == "colorkey":
+        keying = f"colorkey={colour}:{similarity:.6f}:{blend:.6f}"
+    elif key == "chromakey":
+        keying = f"chromakey={colour}:{similarity:.6f}:{blend:.6f}"
+    elif key == "lumakey":
+        keying = f"lumakey={similarity:.6f}:{blend:.6f}"
+    else:  # alpha -- the source already carries one; take it as it is.
+        keying = None
+
+    # `format=rgba` FIRST, always. The key filters need somewhere to write
+    # alpha, and on a yuv420p source without it they are a no-op that produces
+    # a uniformly white matte -- a silent wrong answer rather than an error.
+    chain = "format=rgba," + (f"{keying},alphaextract" if keying else "alphaextract")
+    return _write_matte(chain, ["-i", video], output, "deriving a matte")
