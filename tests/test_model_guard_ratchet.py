@@ -21,11 +21,12 @@ drift out of date.
 """
 
 from collections.abc import Callable
+from decimal import Decimal
 import inspect
 import json
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Optional, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 import pytest
@@ -88,10 +89,71 @@ KNOWN_UNGUARDED: dict[str, set[str]] = {
 #: not do -- the guard is real, the probe cannot see it.
 
 
-def _is_numeric_tuple(annotation) -> bool:
-    """A fixed-width tuple of numbers, e.g. `tuple[float, float, float]`."""
-    text = str(annotation)
-    return text.startswith("tuple[") and all(part.strip() in ("int", "float") for part in text[6:-1].split(","))
+#: Leaf types that carry a number a caller can put 1e9 into.
+#: `Decimal` is here because it is numeric and NOTHING in the old predicate
+#: could see it -- it is not `int`, not `float`, and its string form matches no
+#: pattern that was being tested for.
+NUMERIC_LEAVES: tuple[type, ...] = (int, float, Decimal)
+
+
+def _numeric_tuple_width(annotation: Any) -> int:
+    """How many slots, if this is a fixed-width tuple of numbers. 0 if it is not.
+
+    A DIFFERENT QUESTION FROM `_carries_numbers`, and kept separate for that
+    reason. Discovery asks "is there a number in here to probe at all"; this
+    asks "how wide a payload do I build". Folding them together is what made
+    the old predicate answer both with one string prefix check.
+
+    Structural via `get_args`, so `tuple[float, float, float]` and any
+    equivalent spelling give the same answer.
+    """
+    if get_origin(annotation) is not tuple:
+        return 0
+    args = get_args(annotation)
+    if not args or Ellipsis in args:
+        return 0
+    return len(args) if all(isinstance(a, type) and a in NUMERIC_LEAVES for a in args) else 0
+
+
+def _carries_numbers(annotation: Any) -> bool:
+    """Does this annotation carry a number anywhere inside it?
+
+    RECURSIVE, VIA `typing.get_args`, AND THAT IS THE WHOLE POINT. The predicate
+    this replaces matched SPELLINGS: `int`, `float`, and the literal strings
+    `"int | None"` and `"float | None"`, plus a string-prefix check for tuples.
+    Four common SPELLINGS of the same numeric types were invisible to it,
+    confirmed by injecting one scratch model per spelling and running the
+    new-model guard against each:
+
+        typing.Optional[float]   detected=False   ratchet PASSED (invisible)
+        list[float]              detected=False   ratchet PASSED (invisible)
+        Decimal                  detected=False   ratchet PASSED (invisible)
+        int | float              detected=False   ratchet PASSED (invisible)
+        float (control)          detected=True    ratchet FAILED (caught)
+
+    `Optional[float]` MEANS `float | None`. A contributor writing the first
+    spelling in a codebase that uses the second would have added an unguarded
+    numeric field and seen the ratchet stay green -- no verdict at all,
+    presented as a clean one.
+
+    Matching structure rather than text fixes the whole class instead of the
+    four instances. A fifth spelling nobody has thought of yet decomposes to
+    the same leaves.
+
+    NESTED MODELS ARE NOT DESCENDED INTO. `Retime.ramp` is `list[RampPoint]`,
+    and RampPoint is swept as a model in its own right, so its numbers are
+    already covered. Descending would double-report them and make the debt
+    list disagree with itself about who owns a field.
+    """
+    if isinstance(annotation, type):
+        if issubclass(annotation, BaseModel):
+            return False
+        return any(annotation is leaf for leaf in NUMERIC_LEAVES)
+
+    args = get_args(annotation)
+    if not args:
+        return False
+    return any(_carries_numbers(arg) for arg in args if arg is not type(None))
 
 
 def _numeric_models() -> dict[str, list[str]]:
@@ -102,18 +164,12 @@ def _numeric_models() -> dict[str, list[str]]:
             continue
         if obj.__module__ != "vid.plan":
             continue
-        # FOUR SPELLINGS PLUS TUPLES. The scalar list misses a numeric tuple,
-        # and `Recolor`'s four `tuple[float, float, float]` colour statistics
-        # carry twelve floats that nothing was looking at. `Retime.ramp` is
-        # `list[RampPoint]` and needs no special case: RampPoint is swept as a
-        # model in its own right, so its numbers are already covered.
-        numeric = [
-            field
-            for field, info in obj.model_fields.items()
-            if info.annotation in (int, float)
-            or str(info.annotation) in ("int | None", "float | None")
-            or _is_numeric_tuple(info.annotation)
-        ]
+        # STRUCTURE, NOT SPELLING -- see `_carries_numbers`. This used to be a
+        # list of literal spellings plus a tuple prefix check, and four equally
+        # ordinary ways of writing the same types went unseen. (Not to be
+        # confused with the four MODELS an earlier proxy miscertified -- see
+        # `test_no_numeric_field_is_invisible_to_the_ratchet`.)
+        numeric = [field for field, info in obj.model_fields.items() if _carries_numbers(info.annotation)]
         if numeric:
             found[name] = numeric
     return found
@@ -279,10 +335,10 @@ def _unguarded_fields(name: str) -> list[str]:
 def _rejects(model: type[BaseModel], base: dict, field: str, value: float) -> bool:
     payload = value
     annotation = model.model_fields[field].annotation
-    if _is_numeric_tuple(annotation):
+    width = _numeric_tuple_width(annotation)
+    if width:
         # One absurd element among valid ones: a guard that checks only the
         # first slot must not read as guarding the whole tuple.
-        width = str(annotation)[6:-1].count(",") + 1
         payload = tuple([1.0] * (width - 1) + [value])
     try:
         model(**{**base, field: payload})
@@ -758,3 +814,227 @@ def test_every_one_sided_exemption_is_re_rendered(name, field, tmp_path):
         "containing NO STREAMS. That is worse than an error: the caller is told the render "
         "succeeded. Refuse the value by name instead."
     )
+
+
+#: Fields that carry numbers but are deliberately NOT swept here, each with the
+#: reason. A dict rather than a set so the reason travels with the entry and
+#: cannot rot into an unexplained name.
+#:
+#: This list is the ONLY sanctioned way for a numeric field to be invisible to
+#: the ratchet. Anything else that goes unseen fails
+#: `test_no_numeric_field_is_invisible_to_the_ratchet` below.
+DOCUMENTED_INVISIBLE: dict[tuple[str, str], str] = {}
+
+
+def _nested_models(annotation: Any, _depth: int = 0) -> list[type[BaseModel]]:
+    """Every plan model reachable through this annotation."""
+    if _depth > 6:
+        return []
+    if isinstance(annotation, type):
+        return [annotation] if issubclass(annotation, BaseModel) else []
+    found: list[type[BaseModel]] = []
+    for arg in get_args(annotation):
+        if arg is not type(None):
+            found.extend(_nested_models(arg, _depth + 1))
+    return found
+
+
+def _numbers_anywhere(annotation: Any, _depth: int = 0) -> bool:
+    """An INDEPENDENT sweep: does a number live anywhere under this annotation?
+
+    DELIBERATELY NOT `_carries_numbers`, and the difference is what stops the
+    test below from being a tautology. That one is the ratchet's own discovery
+    rule and STOPS at nested models on purpose. This one descends into them,
+    so it finds strictly more. The test then demands that everything this finds
+    is either swept or named in `DOCUMENTED_INVISIBLE` with a reason.
+
+    Written this way because the defect it guards against is a SPECIAL CASE
+    quietly added to the discovery rule. If both sides shared a code path, such
+    a case would remove a field from both at once and the test would stay green
+    -- which is precisely the failure mode the ratchet exists to prevent, one
+    level up.
+    """
+    if _depth > 6:
+        return False
+    if isinstance(annotation, type):
+        if issubclass(annotation, BaseModel):
+            return any(_numbers_anywhere(f.annotation, _depth + 1) for f in annotation.model_fields.values())
+        return any(annotation is leaf for leaf in NUMERIC_LEAVES)
+    args = get_args(annotation)
+    return any(_numbers_anywhere(a, _depth + 1) for a in args if a is not type(None))
+
+
+def test_no_numeric_field_is_invisible_to_the_ratchet() -> None:
+    """THE GUARD THE UNSEEN-SPELLINGS FINDING ACTUALLY NEEDED.
+
+    NOTE FOR READERS: this file contains two unrelated counts of four, and
+    conflating them wastes a reading. The FOUR MODELS elsewhere here are `Key`,
+    `LayerAudio`, `Overlay` and `Motion` -- wrongly certified as guarded by an
+    earlier appearance-based proxy. The UNSEEN SPELLINGS below are four ways of
+    WRITING a numeric type that the discovery rule could not recognise. Same
+    number, different subject, different defect.
+
+
+    The old discovery rule matched SPELLINGS -- `int`, `float`, and the literal
+    strings `"int | None"` and `"float | None"`, plus a string prefix for
+    tuples. Four equally ordinary ways of writing those same types were
+    invisible to it, each confirmed by injecting a scratch model and watching
+    the new-model guard stay green:
+
+        typing.Optional[float]   list[float]   Decimal   int | float
+
+    `Optional[float]` MEANS `float | None`. A contributor writing it in a
+    codebase that uses the other spelling would have added an unguarded numeric
+    field and seen nothing fail.
+
+    No field on `main` used an unseen spelling when this was found, so the gap
+    was latent rather than live. That is exactly why it needs a test: a latent
+    gap has no failing instance to keep it honest, and the next contributor is
+    the one who finds it. "Nobody would write that" is the same reasoning that
+    already failed four times on this branch.
+    """
+    invisible = []
+    swept = _numeric_models()
+    for name, obj in vars(plan_module).items():
+        if not (inspect.isclass(obj) and issubclass(obj, BaseModel) and obj is not BaseModel):
+            continue
+        if obj.__module__ != "vid.plan":
+            continue
+        for field, info in obj.model_fields.items():
+            if not _numbers_anywhere(info.annotation):
+                continue
+            if field in swept.get(name, []):
+                continue
+            if (name, field) in DOCUMENTED_INVISIBLE:
+                continue
+
+            # COMPOSITION IS NOT A GAP -- BUT IT IS VERIFIED, NOT ASSUMED.
+            # `Overlay.mask` is `Mask | None`, and Mask is swept as a model in
+            # its own right, so its numbers ARE covered; descending would
+            # double-report them and make the debt list disagree with itself
+            # about who owns a field. The same holds for `Retime.ramp`,
+            # `Overlay.motion/audio/key`, and `Plan.operations`.
+            #
+            # Expressed as a checked RULE rather than a list of names, because
+            # the first version of this test DID list names -- and listed only
+            # `Retime.ramp`, missing five siblings of the identical kind. An
+            # enumeration of exemptions is itself something that goes stale.
+            # Only nested models that THEMSELVES carry numbers need sweeping.
+            # The first version demanded every nested model be swept and
+            # flagged `Plan.operations`, because `Caption`, `AudioRemove`,
+            # `Grade` and `Lut` are unswept -- correctly, since they hold only
+            # `Literal` and `str`. A model with no numbers has nothing to bound.
+            nested = [
+                model
+                for model in _nested_models(info.annotation)
+                if any(_carries_numbers(f.annotation) for f in model.model_fields.values())
+            ]
+            if nested:
+                uncovered = [m.__name__ for m in nested if m.__name__ not in swept]
+                if not uncovered:
+                    continue
+                invisible.append(f"{name}.{field}: nested {uncovered} carry numbers but are never swept")
+                continue
+            invisible.append(f"{name}.{field}: {info.annotation}")
+
+    assert not invisible, (
+        "these fields carry numbers the ratchet cannot see, so they are exempt from every "
+        "bound check without appearing in the debt list -- no verdict at all, presented as a "
+        "clean one:\n  " + "\n  ".join(invisible)
+    )
+
+
+def test_every_documented_exclusion_still_exists_and_is_still_invisible() -> None:
+    """An exemption list that outlives its entries is how debt goes stale.
+
+    If `Retime.ramp` is renamed, or starts being swept directly, its entry here
+    must go -- otherwise the list quietly grants an exemption to nothing, and
+    the next reader trusts it.
+    """
+    swept = _numeric_models()
+    for (name, field), reason in DOCUMENTED_INVISIBLE.items():
+        model = getattr(plan_module, name, None)
+        assert model is not None, f"{name} is named in DOCUMENTED_INVISIBLE but no longer exists"
+        assert field in model.model_fields, f"{name}.{field} is exempted but no longer exists"
+        assert field not in swept.get(name, []), (
+            f"{name}.{field} IS swept now, so its exemption is stale and should be deleted. "
+            f"It was excluded because: {reason}"
+        )
+
+
+#: The exact spellings the old string-matching discovery could not see, each
+#: confirmed invisible on `4ed2c5b` by injecting a scratch model and watching
+#: the new-model guard stay green. `float` is the control that WAS caught.
+#:
+#: These are written as live annotations rather than prose because a comment
+#: recording "Decimal is covered" is the kind of claim this whole file exists
+#: to stop people making.
+SPELLINGS_THAT_MUST_BE_SEEN: dict[str, Any] = {
+    "typing.Optional[float]": Optional[float],  # noqa: UP045 -- the point is the OLD spelling
+    "list[float]": list[float],
+    "Decimal": Decimal,
+    "int | float": int | float,
+    "float (control)": float,
+    "tuple[float, float, float]": tuple[float, float, float],
+}
+
+
+@pytest.mark.parametrize("spelling", list(SPELLINGS_THAT_MUST_BE_SEEN), ids=lambda s: s)
+def test_a_numeric_field_is_seen_however_it_is_spelled(spelling: str) -> None:
+    """THE TEST A SURVIVING MUTATION DEMANDED.
+
+    Deleting `Decimal` from `NUMERIC_LEAVES` left every other test in this file
+    green, because no field in `vid.plan` uses `Decimal` today. The coverage
+    was real and untested -- a guard whose failure condition has no instance is
+    invisible to every test that only looks at what currently exists.
+
+    So this injects a scratch model carrying one field of each spelling and
+    asserts the ratchet discovers it, which is the reviewer's own method for
+    proving the gap in the first place, kept as a standing test rather than a
+    one-off measurement.
+
+    `Optional[float]` MEANS `float | None`. A contributor writing it in a
+    codebase that uses the other spelling would have added an unguarded numeric
+    field and seen nothing fail.
+    """
+    annotation = SPELLINGS_THAT_MUST_BE_SEEN[spelling]
+    scratch = type(
+        "ScratchNumericModel",
+        (BaseModel,),
+        {"__annotations__": {"value": annotation}},
+    )
+    scratch.__module__ = "vid.plan"
+
+    assert _carries_numbers(annotation), (
+        f"a field spelled {spelling} carries a number the ratchet cannot see, so it would be "
+        "exempt from every bound check without appearing in the debt list"
+    )
+
+    # Injected by name at runtime, so the type checker cannot see it -- which
+    # is exactly the point: the sweep discovers models by walking `vars()`, and
+    # this proves it finds one nothing ever declared.
+    plan_module.ScratchNumericModel = scratch  # ty: ignore[unresolved-attribute]
+    try:
+        assert "ScratchNumericModel" in _numeric_models(), (
+            f"a model whose only numeric field is spelled {spelling} is invisible to the sweep"
+        )
+    finally:
+        delattr(plan_module, "ScratchNumericModel")
+
+
+def test_a_model_with_no_numbers_is_correctly_not_swept() -> None:
+    """The other direction: don't sweep what has nothing to bound.
+
+    `Caption`, `AudioRemove`, `Grade` and `Lut` hold only `Literal` and `str`.
+    An over-eager predicate that swept them would demand bounds on strings and
+    make the debt list meaningless -- and the first draft of
+    `test_no_numeric_field_is_invisible_to_the_ratchet` did exactly that,
+    flagging `Plan.operations` because those four are unswept.
+    """
+    swept = _numeric_models()
+    for name in ("Caption", "AudioRemove", "Grade", "Lut"):
+        model = getattr(plan_module, name)
+        assert not any(_carries_numbers(f.annotation) for f in model.model_fields.values()), (
+            f"{name} has gained a numeric field and must now be swept"
+        )
+        assert name not in swept, f"{name} carries no numbers but is being swept"
