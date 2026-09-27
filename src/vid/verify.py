@@ -183,6 +183,59 @@ def check_audio(path: str) -> Check:
     return Check("audio", mean > -90.0, "present, not silent", f"mean {mean:.1f} dB")
 
 
+def check_transition_direction(path: str, start: float, end: float) -> Check:
+    """Does the blend run A -> B, or backwards?
+
+    `check_transition_at` samples before, middle and after, so it proves
+    something MIXED the two sides. It cannot prove which way round: a reversed
+    transition is just as blended at its midpoint as a correct one, and reads
+    as a pass.
+
+    THIS IS NOT HYPOTHETICAL. ffmpeg's xfade counts P DOWN, from 1.0 at the
+    start to 0.0 at the end (`1 - elapsed/duration`, libavfilter/vf_xfade.c),
+    which is the opposite of every other progress variable. An expression
+    written for a counting-UP P compiles, blends, and plays the transition in
+    reverse. Measured with white A and black B:
+
+        A*(1-P)+B*P   ->   26, 125, 224   (starts on B -- backwards)
+        A*P+B*(1-P)   ->   224, 125, 26   (starts on A -- correct)
+
+    Both pass a midpoint check. Only this one tells them apart.
+    """
+    outgoing = _rgb_at(path, max(0.0, start - 0.15))
+    incoming = _rgb_at(path, end + 0.15)
+    early = _rgb_at(path, start + (end - start) * 0.15)
+    late = _rgb_at(path, start + (end - start) * 0.85)
+
+    separation = _distance(outgoing, incoming)
+    if separation < 30:
+        return Check(
+            "transition direction",
+            False,
+            "a blend running from the first clip to the second",
+            f"sides differ by only {separation:.0f}",
+            "the two clips look too alike here for direction to be detectable",
+        )
+
+    # Correct: the early frame sits nearer the OUTGOING clip than the late one
+    # does, and the late frame sits nearer the INCOMING clip.
+    early_to_out, late_to_out = _distance(early, outgoing), _distance(late, outgoing)
+    forward = early_to_out < late_to_out
+    return Check(
+        "transition direction",
+        forward,
+        "a blend running from the first clip to the second",
+        f"early frame {early_to_out:.0f} from the outgoing clip, late frame {late_to_out:.0f}",
+        ""
+        if forward
+        else (
+            "the blend runs BACKWARDS -- it starts on the incoming clip. xfade's P counts "
+            "DOWN from 1.0 to 0.0, so an expression written for a counting-up P plays in "
+            "reverse. Swap P and (1-P)."
+        ),
+    )
+
+
 def check_transition_at(path: str, at: float, window: float = 0.5) -> Check:
     """A real blend, or a hard cut dressed as one.
 

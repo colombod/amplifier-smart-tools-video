@@ -289,7 +289,7 @@ EXPRESSION_GUIDE = """\
 `xfade` with `transition=custom` takes an `expr` evaluated for every pixel.
 
 Variables available:
-  P       progress through the transition, 0.0 at the start to 1.0 at the end
+  P       progress, 1.0 at the START counting DOWN to 0.0 at the END
   X, Y    pixel coordinates; X is 0 at the left, Y is 0 at the TOP
   W, H    width and height of the frame
   A       the pixel value from the OUTGOING clip
@@ -299,22 +299,38 @@ Variables available:
 Functions: if(cond,a,b), lt, gt, lte, gte, eq, min, max, abs, hypot, sin, cos,
 sqrt, pow, floor, between(x,lo,hi).
 
-CRITICAL, AND MOST EXPRESSIONS GET THIS WRONG:
+CRITICAL, AND IT IS THE OPPOSITE OF WHAT EVERY OTHER TOOL DOES:
+P COUNTS DOWN. It is 1.0 on the first frame of the transition and 0.0 on the
+last. ffmpeg computes it as `1 - elapsed/duration` (libavfilter/vf_xfade.c) and
+hands that straight to the expression.
+
+So the familiar `A*(1-P)+B*P` is BACKWARDS here: at the start P is 1, so it
+renders the INCOMING clip immediately and runs the blend in reverse. Measured
+with a white A and a black B, mean luma across the transition:
+
+  A*(1-P)+B*P   ->   26, 125, 224   (starts on B -- wrong)
+  A*P+B*(1-P)   ->   224, 125, 26   (starts on A -- correct)
+
+Anywhere you would normally write P, write (1-P), and vice versa.
+
+ALSO CRITICAL, AND MOST EXPRESSIONS GET THIS WRONG:
 The expression is evaluated ONCE PER YUV PLANE, not over RGB. PLANE 0 is luma
 (brightness, 0 = black). PLANES 1 and 2 are chroma, where NEUTRAL IS 128, not 0.
 
-So `A*(1-P)` does NOT fade to black. It drives luma toward black AND chroma
-toward extreme colour. To fade toward black you must treat the planes
-differently:
+So `A*P` does NOT fade to black. It drives luma toward black AND chroma toward
+extreme colour. To fade toward black you must treat the planes differently:
 
-  if(eq(PLANE,0), A*(1-P), 128+(A-128)*(1-P))
+  if(eq(PLANE,0), A*P, 128+(A-128)*P)
 
 A plain crossfade is unaffected by this, because blending two pixels is linear
-in every plane:  A*(1-P)+B*P
+in every plane:  A*P+B*(1-P)
 
 Geometric transitions -- wipes, slides, reveals -- are also unaffected, because
 they CHOOSE between A and B rather than scaling either:
-  a wipe from the right:  if(gt(X, W*(1-P)), B, A)
+  a wipe from the right:  if(gt(X, W*P), B, A)
+
+Every example above is written for the counting-DOWN P and was rendered to
+confirm it moves A -> B, not B -> A.
 """
 
 
@@ -440,11 +456,20 @@ def probe(expression: str, first: str, second: str, duration: float) -> tuple[bo
             reason = tail[-1][:200] if tail else "ffmpeg gave no reason"
             return False, f"it does not compile -- ffmpeg said: {reason}"
 
-        midpoint = max(0.0, PROBE_SECONDS - duration) + duration / 2
+        begins = max(0.0, PROBE_SECONDS - duration)
+        midpoint = begins + duration / 2
         blend = checks.check_transition_at(out, midpoint, window=duration / 2 + 0.25)
         if not blend.held:
             return False, f"it compiles but does not blend -- {blend.measured}. {blend.note}".strip()
-        return True, blend.measured
+
+        # A midpoint check cannot see DIRECTION: a reversed blend is just as
+        # mixed in the middle as a correct one. Checked separately because
+        # xfade's P counts down, so getting this backwards is the single most
+        # likely way a generated expression is wrong while looking right.
+        direction = checks.check_transition_direction(out, begins, begins + duration)
+        if not direction.held:
+            return False, f"it blends, but {direction.note or direction.measured}".strip()
+        return True, f"{blend.measured}; {direction.measured}"
 
 
 def resolve_with_clips(
