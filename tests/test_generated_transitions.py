@@ -26,16 +26,50 @@ def clips():
 
 
 def test_a_real_blend_passes_the_gate(clips):
+    """CORRECTED BY #21. This asserted `A*(1-P)+B*P` -- the backwards form.
+
+    xfade counts P DOWN from 1.0 to 0.0, so that expression starts on the
+    INCOMING clip and plays the blend in reverse. It compiles and it blends, so
+    the midpoint-only gate passed it, and this test enshrined that as correct.
+    """
     first, second = clips
-    passed, detail = probe("A*(1-P)+B*P", first, second, 0.8)
+    passed, detail = probe("A*P+B*(1-P)", first, second, 0.8)
     assert passed, detail
 
 
-def test_a_geometric_wipe_passes_too(clips):
-    """Wipes CHOOSE between inputs rather than mixing them, and must still count."""
+def test_the_backwards_crossfade_is_now_rejected(clips):
+    """The expression this file used to assert as CORRECT.
+
+    Kept as a live case rather than deleted: it is the exact shape a model
+    writes when it assumes P counts up, which is what every other progress
+    variable does.
+    """
     first, second = clips
-    passed, _ = probe("if(gt(X,W*(1-P)),B,A)", first, second, 0.8)
-    assert passed
+    passed, detail = probe("A*(1-P)+B*P", first, second, 0.8)
+
+    assert not passed, "a blend that runs backwards was accepted"
+    assert "BACKWARDS" in detail, f"the refusal does not say what is wrong: {detail!r}"
+
+
+def test_a_geometric_wipe_passes_too(clips):
+    """Wipes CHOOSE between inputs rather than mixing them, and must still count.
+
+    Also corrected by #21: the direction error is not specific to blends. A wipe
+    written for a counting-up P sweeps the wrong way, and no midpoint check can
+    see it -- half the frame is each clip either way.
+    """
+    first, second = clips
+    passed, detail = probe("if(gt(X,W*P),B,A)", first, second, 0.8)
+    assert passed, detail
+
+
+def test_the_backwards_wipe_is_now_rejected(clips):
+    """A wipe is just as reversible as a blend, and just as invisible at the midpoint."""
+    first, second = clips
+    passed, detail = probe("if(gt(X,W*(1-P)),B,A)", first, second, 0.8)
+
+    assert not passed, "a wipe that sweeps backwards was accepted"
+    assert "BACKWARDS" in detail, f"the refusal does not say what is wrong: {detail!r}"
 
 
 def test_the_exact_expression_a_model_got_wrong_is_caught(clips):
