@@ -76,7 +76,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     import subprocess
 
     from vid.compile import compile_plan, validate_video_codec
-    from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Zoom
+    from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Trim, Zoom
     from vid.plan import Retime as _Retime
     from vid.probe import dimensions, frame_rate, has_audio, video_duration
 
@@ -97,7 +97,23 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # silence IS the clip's duration, so probing is no longer a transition-only
     # concern -- and without this the compiler refuses a join it could have
     # made, naming a duration it was never given.
-    needs_durations = any(isinstance(op, (Stitch, _Retime, AudioReplace, AudioMix, Overlay)) for op in plan.operations)
+    # `Trim` IS IN THIS LIST AND THE GUARD WAS DEAD WITHOUT IT. A trim starting
+    # past the end of the material is refused by the compiler -- and that
+    # refusal was tested, and passed, while the shipped CLI still wrote a
+    # 261-byte MP4 with nb_streams=0 and exited 0. The test supplied durations
+    # by hand; `render` supplied none, so the check saw an unknown length and
+    # correctly skipped itself. A guard tested one layer above where it runs.
+    #
+    # AND `print_command` SKIPS ALL OF IT, which the first version of this fix
+    # got wrong. `--print-command` is a PURE compile: it exists so the graph can
+    # be inspected on a machine with no ffmpeg and no media on disk, and adding
+    # `Trim` here made it demand ffprobe for the commonest plan there is. The
+    # guard is about what a RENDER would produce, so it belongs on the path that
+    # actually renders. An unprobed compile falls back to the documented
+    # unknown-duration behaviour: skip the check rather than refuse everything.
+    needs_durations = not print_command and any(
+        isinstance(op, (Trim, Stitch, _Retime, AudioReplace, AudioMix, Overlay)) for op in plan.operations
+    )
     durations: dict[str, float] = {}
     if needs_durations:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
