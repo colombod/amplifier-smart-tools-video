@@ -5,6 +5,7 @@ leave a shot indistinguishable from one nobody tried to describe.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,128 @@ def test_load_with_a_corrupt_index_raises_a_named_vid_error_not_a_traceback(monk
     message = str(failure.value)
     assert str(path) in message, "the failure must name WHICH index file is corrupt"
     assert f"vid index {video}" in message, "the failure must name the remedy: rebuild it"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_load_from_an_unreadable_index_dir_names_the_setting_not_a_traceback(monkeypatch, tmp_path):
+    """THE THIRD SIBLING of a class already fixed twice on this branch.
+
+    `save` names VID_INDEX_DIR when a write is refused, and the corrupt-JSON
+    case above names the file and its remedy. The READ path's two filesystem
+    calls were bare, so an unreadable index directory escaped `is_file` as:
+
+        PermissionError: [Errno 13] Permission denied: '.../bf6781c471cbcf0d.json'
+
+    `cli.main` translates only `VidError`, so that reached the user as a stack
+    trace naming neither the setting that chose the location nor a remedy.
+    """
+    store = tmp_path / "index-store"
+    store.mkdir()
+    monkeypatch.setenv("VID_INDEX_DIR", str(store))
+    video = str(tmp_path / "clip.mp4")
+    Path(video).write_bytes(b"stand-in bytes -- fingerprint() only needs a real file to hash")
+
+    store.chmod(0o000)
+    try:
+        with pytest.raises(VidError) as failure:
+            load(video)
+    finally:
+        store.chmod(0o700)
+
+    message = str(failure.value)
+    assert "VID_INDEX_DIR" in message, "the failure must name the setting that chose the location"
+    assert "Permission denied" in message, f"the failure must carry the real cause: {message!r}"
+
+
+def test_an_unreadable_index_is_translated_even_where_chmod_does_not_bite(monkeypatch, tmp_path):
+    """The same guard, provable in CI, which runs as root and ignores chmod.
+
+    THE SUBSTITUTION IS THE OS REFUSAL AND NOTHING ELSE. The test above is the
+    real thing -- a real chmod 000, a real `PermissionError` out of a real
+    `stat` -- and it is what establishes that this is the error the filesystem
+    actually raises. It cannot run as root, so it is skipped in the container,
+    and a guard whose only test never executes in CI is a guard nobody is
+    watching.
+
+    So this one raises that exact exception from `is_file` and checks only the
+    translation. It asserts nothing about what the OS does; the test above
+    already measured that.
+    """
+    monkeypatch.setenv("VID_INDEX_DIR", str(tmp_path / "index-store"))
+    video = str(tmp_path / "clip.mp4")
+    Path(video).write_bytes(b"stand-in bytes -- fingerprint() only needs a real file to hash")
+
+    # SCOPED TO THE INDEX FILE. A blanket refusal also hits `fingerprint`,
+    # which reads the VIDEO -- a different site, with a different remedy, and
+    # this test would then pass on the wrong guard. (That blanket version is
+    # what exposed `fingerprint`'s own unguarded `is_file` in the first place;
+    # it has its own test below.)
+    real_is_file = Path.is_file
+
+    def refuse(self, *args, **kwargs):
+        if self.suffix == ".json":
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", refuse)
+
+    with pytest.raises(VidError) as failure:
+        load(video)
+
+    message = str(failure.value)
+    assert "VID_INDEX_DIR" in message
+    assert "Permission denied" in message
+
+
+def test_an_unreadable_video_is_named_rather_than_called_missing(monkeypatch, tmp_path):
+    """`fingerprint` reads the VIDEO, and had the same bare `is_file`.
+
+    Found by the blanket monkeypatch the test above now scopes: refusing every
+    `is_file` surfaced this fourth site. "No such video" would be the wrong
+    sentence here -- the file exists, it cannot be read -- and unguarded it
+    escaped as a raw PermissionError traceback instead.
+    """
+    monkeypatch.setenv("VID_INDEX_DIR", str(tmp_path / "index-store"))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stand-in bytes")
+
+    def refuse(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "is_file", refuse)
+
+    with pytest.raises(VidError) as failure:
+        load(str(video))
+
+    message = str(failure.value)
+    assert "could not be read" in message, f"an unreadable video must not be reported as missing: {message!r}"
+    assert "No such video" not in message, f"an unreadable video must not be reported as missing: {message!r}"
+    assert "Permission denied" in message
+
+
+def test_a_video_that_refuses_to_open_is_named_too(monkeypatch, tmp_path):
+    """`fingerprint` touches the filesystem three times, not once.
+
+    ADDED BECAUSE MUTATION TESTING CAUGHT IT: breaking the `stat`/`open` half
+    of that guard left the whole suite green, because the test above refuses at
+    `is_file` and never reaches the read. A file whose DIRECTORY is traversable
+    but which is itself unreadable takes exactly that second path.
+    """
+    monkeypatch.setenv("VID_INDEX_DIR", str(tmp_path / "index-store"))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stand-in bytes")
+
+    def refuse(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", refuse)
+
+    with pytest.raises(VidError) as failure:
+        load(str(video))
+
+    message = str(failure.value)
+    assert "could not be read" in message, f"an unopenable video must be named, not raw: {message!r}"
+    assert "Permission denied" in message
 
 
 def _scrub_path(monkeypatch, tmp_path) -> None:

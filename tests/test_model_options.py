@@ -1,5 +1,6 @@
 """Public overrides must reach real AgentRequest objects, without live providers."""
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -99,6 +100,20 @@ def test_public_vision_index_overrides_and_whisper_size_stay_separate(monkeypatc
     monkeypatch.setattr("vid.intelligence.interface.default_intelligence", lambda: provider)
     monkeypatch.setattr("vid.index.build", build)
     monkeypatch.setattr("vid.index.index_path", lambda _: tmp_path / "index.json")
+    # THE SPEECH EXTRA IS DECLARED PRESENT, because this test asserts option
+    # PLUMBING (that the whisper size reaches `build` and stays separate from
+    # the vision model options) with `build` itself mocked out. `index` now
+    # preflights faster-whisper when the stored index has no speech, and this
+    # box has no extra installed -- so without this the test would exercise the
+    # refusal rather than the plumbing. Mocked-`build`-with-speech-requested
+    # cannot occur in real use: there, `build` would transcribe and the backend
+    # really would be required.
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "faster_whisper" else real_find_spec(name, *a, **k),
+    )
     lib.index(video, vision=True, yes=True, model_size="tiny", **options)
     assert built["model_size"] == "tiny"
     assert_options(provider, options, 1)

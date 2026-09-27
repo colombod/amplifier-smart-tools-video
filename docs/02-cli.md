@@ -23,6 +23,28 @@ vid manifest
 
 `lib.load_manifest()`, printed as JSON.
 
+## Per-command reference
+
+**It is `vid <command> --help`, and deliberately not this page.**
+
+All 25 capabilities carry a full agent-facing document -- arguments, defaults, a worked
+invocation, the result, and the failures -- generated at runtime by `vid.verbdoc`. The
+library signatures in it are produced from `inspect.signature`, so they cannot drift from
+the functions they describe, and tests assert that every exposed command has one and that
+the rendered text matches the real signature.
+
+This page used to claim "each command gets a section here". One of twenty-five did. The
+honest fix is not to write the other twenty-four: a hand-maintained second copy of
+generated, tested documentation is a copy that rots, and this repository has spent a
+release learning that. So the per-command reference lives where it is checked, and this
+page says where to find it.
+
+```bash
+vid --help             the tool's skill, for an agent driving it
+vid <command> --help   one capability in full
+```
+
 ## Adding a command
 
-Each command gets a section here: the invocation shape with its options and defaults, which library function it calls, and what it prints and exits with. Argument meanings belong in the library reference, not here.
+Give it an entry in `vid.verbdoc`, which is where its `--help` comes from. Nothing needs
+to be added to this page.

@@ -1,7 +1,15 @@
 """The property this design exists to have, asserted rather than assumed.
 
-Every verb except `render` must work with no ffmpeg binary and no provider
-credentials, because a plan is JSON and nothing decodes a frame until the end.
+The PLAN-BUILDING verbs must work with no ffmpeg binary and no provider
+credentials, because a plan is JSON and, with one exception, nothing decodes a
+frame until the end.
+
+The exception is `recolor`: it appends an operation like any plan-building verb,
+but measures the source palette by sampling real frames WHILE BUILDING, so it
+needs ffmpeg before `render`. It is therefore absent from the all-succeed list
+below, on the same principle as `narrate` -- see the note on that test. Saying
+"every verb except `render`" here was simply wrong, and the same sentence was
+wrong in four other places.
 
 That is easy to believe and easy to break: one import of a media library at
 module scope, one eager provider handshake in a constructor, and it is gone --
@@ -103,6 +111,7 @@ def test_the_scrubbed_environment_really_has_no_ffmpeg():
         ["stitch", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4"],
         ["stitch", "tests/fixtures/alpha.mp4", "tests/fixtures/bravo.mp4", "--transition", "dissolve"],
         ["caption", "tests/fixtures/alpha.mp4", "--subtitles", "talk.srt"],
+        ["overlay", "tests/fixtures/bravo.mp4", "tests/fixtures/alpha.mp4", "--x", "20", "--y", "20"],
         ["plan"],
         ["check"],
         ["transitions"],
@@ -110,7 +119,7 @@ def test_the_scrubbed_environment_really_has_no_ffmpeg():
     ],
     ids=lambda a: a[0] if isinstance(a, list) else str(a),
 )
-def test_every_verb_but_render_runs_with_nothing_installed(args):
+def test_the_plan_building_verbs_run_with_nothing_installed(args):
     result = _run(args)
     assert result.returncode == 0, (
         f"`vid {' '.join(args)}` failed with no ffmpeg and no credentials.\nstderr: {result.stderr}"

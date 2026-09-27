@@ -28,6 +28,29 @@ def skill() -> str:
     return skill_module.skill()
 
 
+def capability_skill(capability: str) -> str:
+    """One capability's skill: its worked invocation, arguments, result and failures.
+
+    THE FACADE WAS COMPLETE FOR THE TOOL AND EMPTY FOR THE CAPABILITY. `skill()`
+    returned the tool-level document, but nothing here returned an INDIVIDUAL
+    capability's, so `cli._doc` reached past the library into `vid.verbdoc`
+    directly. That put domain content on the CLI's side of the seam: a library
+    caller could get the whole tool's skill but not one verb's, and `vid <verb>
+    --help` was the only way to read it.
+
+    Raises `VidError` naming the known capabilities when asked for one that does
+    not exist, rather than a KeyError -- this is reachable from a library caller
+    passing a bad name.
+    """
+    from vid.verbdoc import verb_doc, verbs
+
+    try:
+        return verb_doc(capability)
+    except KeyError:
+        known = ", ".join(sorted(verbs()))
+        raise VidError(f"No capability named {capability!r}. This tool's capabilities are: {known}.") from None
+
+
 def skill_directory() -> Path:
     """The installed package root, where the files the skill names can be read."""
     return skill_module.skill_directory()
@@ -53,9 +76,9 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     import subprocess
 
     from vid.compile import compile_plan, validate_video_codec
-    from vid.plan import AudioMix, AudioReplace, Stitch, Zoom
+    from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import dimensions, frame_rate, has_audio, have_ffmpeg, video_duration
+    from vid.probe import dimensions, frame_rate, has_audio, video_duration
 
     validate_video_codec(plan, output, video_codec)
 
@@ -66,8 +89,11 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # video is right now", and without a known length that bound silently
     # becomes "no bound at all", padding the incoming track's silence forever
     # rather than to the video's actual length.
+    # An overlay needs the edit's length: BOTH its picture and its sound are
+    # bounded back to it, and without that a layer longer than the edit
+    # extends the edit to the layer's own length.
     needs_durations = any(
-        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix))
+        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix, Overlay))
         for op in plan.operations
     )
     durations: dict[str, float] = {}
@@ -83,6 +109,28 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # has sound is a property of the FILE, not of the plan, and keeping that out
     # of the compiler is what lets every other verb run with no ffmpeg at all.
     source_has_audio = has_audio(plan.source) if plan.source else True
+
+    # The same question, asked of every clip a stitch pulls in. It used to be
+    # asked only of `plan.source`, so stitching a silent clip emitted a stream
+    # specifier for a stream that does not exist and ffmpeg refused the command
+    # with a message naming neither the file nor the reason.
+    stitch_sources = [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources if s and s != "-"]
+    overlay_layers = [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
+    source_audio = {path: has_audio(path) for path in dict.fromkeys([*stitch_sources, *overlay_layers])}
+
+    # Sizes, for the same reason and on the same terms: `concat` needs matching
+    # resolution and SAR, and which size a file is cannot be read from the plan.
+    # The plan's own source is included because it IS the target every stitched
+    # clip is resolved to.
+    # Overlay layers are sized for the same reason: an image or video matte
+    # has to be scaled to the layer it cuts, and that size is a fact about
+    # the file rather than anything the plan can state.
+    overlay_sources = overlay_layers
+    source_sizes: dict[str, tuple[int, int]] = {}
+    if stitch_sources or overlay_sources:
+        sized = [*stitch_sources, *overlay_sources]
+        sized = [plan.source, *sized] if plan.source else sized
+        source_sizes = {path: size for path in dict.fromkeys(sized) if (size := dimensions(path)) is not None}
     from vid.plan import Retime
 
     # Retime needs the source's frame rate to put retimed frames back on a
@@ -106,6 +154,8 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
         has_audio=source_has_audio,
         frame_rate=rate,
         dimensions=dims,
+        source_audio=source_audio,
+        source_sizes=source_sizes,
         video_codec=video_codec,
     )
 
@@ -114,12 +164,12 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
 
         return " ".join(shlex.quote(part) for part in command)
 
-    if not have_ffmpeg():
-        raise VidError(
-            "ffmpeg is not on PATH, and rendering is the one thing that needs it. "
-            "Run `vid check` for the install command for your system, or re-run with "
-            "--print-command to see the invocation without running it."
-        )
+    from vid.probe import require_ffmpeg
+
+    require_ffmpeg(
+        "rendering is the one thing that needs it -- or re-run with --print-command to see "
+        "the invocation without running it"
+    )
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-12:])
@@ -312,6 +362,15 @@ def resolve_transition(
 
             intelligence = default_intelligence()
             intelligence.preflight()
+        except VidError:
+            # STRAIGHT THROUGH. `preflight()` already said exactly what is
+            # wrong -- gh not installed, or gh not signed in -- WITH the
+            # manifest's install reference. Collapsing that into "none is
+            # configured" below tells a caller to go configure a provider they
+            # have already configured, and drops the one line that would have
+            # fixed it. Swallowed only where a model is genuinely OPTIONAL
+            # (`find`, which falls back to literal search); here it is required.
+            raise
         except Exception:
             # Left as None so the resolver can explain the situation properly --
             # it knows whether a model was needed, and this does not.
@@ -341,13 +400,19 @@ def verify(
     model produced.
     """
     from vid import verify as checks
-    from vid.probe import have_ffmpeg
+    from vid.probe import require_ffmpeg_tools
 
-    if not have_ffmpeg():
-        raise VidError(
-            "verify reads actual frames, so it needs ffmpeg on PATH. "
-            "Run `vid check` for the install command for your system."
-        )
+    # BOTH EXECUTABLES, not just ffmpeg. `check_duration` and the resolution
+    # and stream checks read container metadata through `_ffprobe`, so a
+    # stripped installation carrying ffmpeg alone -- the minimal container
+    # image the manifest's ffprobe entry describes -- passed this guard and
+    # then failed inside an unguarded subprocess call, well outside this
+    # tool's own remedial error path.
+    #
+    # The manifest declares ffmpeg and ffprobe SEPARATELY because the code
+    # checks for them separately; a guard naming only one of them put the
+    # refusal and the manifest back out of agreement.
+    require_ffmpeg_tools("verify reads actual frames and the container's own metadata, so it needs both")
 
     results = []
     if expect_duration is not None:
@@ -376,22 +441,22 @@ def index(
     reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Build (or extend) a video's index and report what it holds."""
-    import json
+    import importlib.util
 
     from vid.index import build, describe, index_path
-    from vid.probe import have_ffmpeg, have_ffprobe
+    from vid.index import load as index_load
+    from vid.index import save as index_save
+    from vid.probe import require_ffmpeg_tools
 
     # PREFLIGHT BEFORE ANY WORK STARTS. Shot detection shells out to ffmpeg and
     # the duration read shells out to ffprobe; both used to be discovered
     # missing only when one of those subprocess calls failed, well outside this
     # tool's own remedial error path. Checking first means the caller learns
     # what to install before any indexing work has spent time on the file.
-    if not (have_ffmpeg() and have_ffprobe()):
-        raise VidError(
-            "Indexing reads the file directly -- shot detection needs ffmpeg and the duration "
-            "read needs ffprobe, both on PATH before any indexing work starts. "
-            "Run `vid check` for the install command for your system."
-        )
+    require_ffmpeg_tools(
+        "indexing reads the file directly -- shot detection needs ffmpeg and the duration read "
+        "needs ffprobe, both before any indexing work starts"
+    )
 
     # THE PROVIDER IS CONFIRMED BEFORE `build()` EVER RUNS, not after. `build()`
     # writes the index to disk unconditionally -- on a video with no prior
@@ -407,6 +472,15 @@ def index(
 
             intelligence = default_intelligence()
             intelligence.preflight()
+        except VidError:
+            # STRAIGHT THROUGH. `preflight()` already said exactly what is
+            # wrong -- gh not installed, or gh not signed in -- WITH the
+            # manifest's install reference. Collapsing that into "none is
+            # configured" below tells a caller to go configure a provider they
+            # have already configured, and drops the one line that would have
+            # fixed it. Swallowed only where a model is genuinely OPTIONAL
+            # (`find`, which falls back to literal search); here it is required.
+            raise
         except Exception:
             intelligence = None
         if intelligence is None:
@@ -415,6 +489,31 @@ def index(
                 "Shot detection and speech indexing keep working without one -- "
                 "`vid check` says how to configure a provider."
             )
+
+    # THE SPEECH BACKEND IS CONFIRMED BEFORE `build()` TOO, for the same reason
+    # as the provider above: `transcribe()` used to discover a missing
+    # faster-whisper only after the duration read and shot detection had run.
+    #
+    # GATED ON WHETHER TRANSCRIPTION WILL ACTUALLY HAPPEN, not on the `speech`
+    # flag. `speech` defaults to True, so testing the flag alone refused every
+    # index on a box without the extra -- including the cases `build()` would
+    # have completed without transcribing at all, because the stored index
+    # already carries speech. That is the same over-correction as refusing a
+    # value that renders: a guard that fires where nothing would have broken.
+    # The condition below mirrors `build()`'s own (`speech and "speech" not in
+    # record`), so the two cannot disagree about when the backend is needed.
+    #
+    # It sits AFTER the provider check so that `--vision` with no provider
+    # still reports the provider, which is the more specific thing the caller
+    # asked for; both refusals leave no new index behind either way.
+    if speech and "speech" not in (index_load(video) or {}) and importlib.util.find_spec("faster_whisper") is None:
+        raise VidError(
+            "Indexing speech needs a speech backend, and none is installed:\n"
+            "  uv tool install --force 'vid[speech] @ "
+            "git+https://github.com/colombod/amplifier-smart-tools-video'\n"
+            "Pass `--no-speech` to index shots only, which needs no backend at all. "
+            "`vid check` shows what you have."
+        )
 
     record = build(video, speech=speech, model_size=model_size)
 
@@ -433,10 +532,41 @@ def index(
             "to one frame per shot."
         )
         if not _confirm_before_spending(notice, yes):
-            return "Nothing described. The index is unchanged."
+            # NOT "the index is unchanged" -- that was false. `build()` above
+            # writes the index unconditionally (index.py: path.write_text), so
+            # on a video with no prior index, declining here still left a NEW
+            # file on disk while reporting that nothing had happened. The
+            # shots and speech genuinely succeeded; only the vision pass was
+            # declined, so this reports the real outcome and names the part
+            # that was skipped, rather than a reassuring sentence that the
+            # filesystem contradicts.
+            return _index_report(video, record, note="vision descriptions skipped at your request")
 
-        record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
-        index_path(video).write_text(json.dumps(record, indent=2), encoding="utf-8")
+        # THE DECLINE PATH ABOVE ALREADY REPORTS THE RETAINED INDEX; THE FAILURE
+        # PATH DID NOT. `build()` writes the shots-and-speech index
+        # unconditionally, so when `describe()` raises -- a model refusal, a
+        # partial reply, a dead provider -- the expensive work was already on
+        # disk and the error said only "None were applied -- re-run". A caller
+        # reading that reasonably concludes nothing happened, and re-runs the
+        # whole index including the shot detection and transcription they had
+        # already paid for.
+        #
+        # The vision error keeps its own diagnosis; this only adds the state it
+        # could not know about, since `vision` has no idea whether anything was
+        # persisted.
+        try:
+            record = describe(video, record, intelligence, model=model, reasoning_effort=reasoning_effort)
+        except VidError as exc:
+            raise VidError(
+                f"{exc}\n"
+                f"The shots and speech index WAS saved, at {index_path(video)} -- that work is not "
+                "lost and does not need redoing. Only the vision descriptions failed. Resume just "
+                f"that step with `vid index {video} --vision --yes`."
+            ) from exc
+        # THE SAME GUARDED WRITER `build` uses -- this was the second, unguarded
+        # copy of the write, so an unwritable VID_INDEX_DIR raised a raw OSError
+        # here even once `build`'s own write had been made to name the remedy.
+        index_save(video, record)
 
     return _index_report(video, record)
 
@@ -572,13 +702,9 @@ def audio_extract(video: str, output: str) -> str:
     """
     import subprocess
 
-    from vid.probe import have_ffmpeg
+    from vid.probe import require_ffmpeg
 
-    if not have_ffmpeg():
-        raise VidError(
-            "Extracting audio decodes the file, so it needs ffmpeg on PATH. "
-            "Run `vid check` for the install command for your system."
-        )
+    require_ffmpeg("extracting audio decodes the file")
 
     resolved_output = str(Path(output).resolve())
     result = subprocess.run(
@@ -632,10 +758,15 @@ def narrate(
     script_only: bool = False,
     voice: str | None = None,
     mix: bool | None = None,
+    allow_unfitted: bool = False,
     model: str = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: ReasoningEffort = "low",
 ) -> str:
     """Write a narration for a video, fit it to the timing, and lay it on.
+
+    REFUSES when a line could not be fitted, unless `allow_unfitted` is set.
+    An overrunning line used to come back inside a success report, which the
+    caller had to remember to read.
 
     Returns a human-readable report. The script is always printed before any
     audio is synthesised, because narration is the most expensive thing here to
@@ -647,10 +778,8 @@ def narrate(
     import subprocess
     import tempfile
 
-    from vid.core.manifest import manifest_install
     from vid.index import fingerprint, load
-    from vid.narrate import assemble, fit, write_script
-    from vid.probe import have_ffmpeg
+    from vid.narrate import assemble, fit, refuse_unfitted, write_script
     from vid.speech.interface import resolve_speech, speech_preflight
 
     record = load(video)
@@ -673,14 +802,11 @@ def narrate(
     # to avoid paying.
     #
     # ffmpeg is checked BEFORE speech, so that missing binary is reported
+    from vid.probe import require_ffmpeg
+
     # before the model write happens, regardless of which backend is chosen.
     if not script_only:
-        if not have_ffmpeg():
-            raise VidError(
-                "Assembling a narration lays every synthesised line onto a silent bed with "
-                f"ffmpeg, so it needs ffmpeg on PATH first. Install it ({manifest_install('ffmpeg')}) "
-                "-- see `vid check` for the command for your system."
-            )
+        require_ffmpeg("assembling a narration lays every synthesised line onto a silent bed with ffmpeg")
         speech_preflight(voice)
 
     intelligence = None
@@ -689,6 +815,15 @@ def narrate(
 
         intelligence = default_intelligence()
         intelligence.preflight()
+    except VidError:
+        # STRAIGHT THROUGH. `preflight()` already said exactly what is
+        # wrong -- gh not installed, or gh not signed in -- WITH the
+        # manifest's install reference. Collapsing that into "none is
+        # configured" below tells a caller to go configure a provider they
+        # have already configured, and drops the one line that would have
+        # fixed it. Swallowed only where a model is genuinely OPTIONAL
+        # (`find`, which falls back to literal search); here it is required.
+        raise
     except Exception:
         intelligence = None
     if intelligence is None:
@@ -710,11 +845,13 @@ def narrate(
         fit(script, speaker, workdir, intelligence, model=model, reasoning_effort=reasoning_effort)
         temp_track = assemble(script, workdir / "narration.wav", total)
 
+        refuse_unfitted(script, allow_unfitted=allow_unfitted)
+        unfitted = script.unfitted()
+
         report = [f"narration for {video}", ""]
         report += [line.report() for line in script.lines]
-        unfitted = script.unfitted()
         if unfitted:
-            report += ["", f"  {len(unfitted)} line(s) did not fit:"]
+            report += ["", f"  {len(unfitted)} line(s) did not fit (accepted via --allow-unfitted):"]
             report += [f"    {line.start:.2f}s -- {line.note}" for line in unfitted]
 
         if out is None:
@@ -723,9 +860,32 @@ def narrate(
             # be somewhere durable -- a path into a directory that no longer
             # exists is not a usable track.
             durable_dir = _narration_dir()
-            durable_dir.mkdir(parents=True, exist_ok=True)
             track = durable_dir / f"{fingerprint(video)}.wav"
-            shutil.copyfile(temp_track, track)
+            # THE FIFTH SIBLING OF A CLASS FIXED FOUR TIMES ON THIS BRANCH.
+            # `index.save`, `index.load` and `fingerprint` all now name the
+            # env var that chose their location when the filesystem refuses;
+            # these two calls did not, so an unwritable VID_NARRATION_DIR (a
+            # read-only mount, a typo in the variable, a full disk) escaped as
+            # a raw OSError traceback. `cli.main` translates only `VidError`.
+            #
+            # WORSE HERE THAN ELSEWHERE, which is why it is not merely tidy:
+            # the synthesis has ALREADY RUN by this point. The model has been
+            # called and paid for, the audio is rendered, and the only thing
+            # left is the copy out of the scoped temp dir -- so a traceback
+            # here throws away completed, billable work and tells the caller
+            # nothing about how to keep it.
+            try:
+                durable_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(temp_track, track)
+            except OSError as exc:
+                raise VidError(
+                    f"The narration was synthesised, but it could not be saved to {track}: "
+                    f"{exc.strerror or exc}.\n"
+                    "That location comes from VID_NARRATION_DIR when it is set, and the XDG "
+                    "state directory otherwise. Point VID_NARRATION_DIR at a writable "
+                    "directory and run this again, or pass --out to write the track straight "
+                    "to a path you choose."
+                ) from exc
             report += [
                 "",
                 f"  narration track: {track}",
@@ -814,7 +974,16 @@ def recolor_op(video: str, reference: str, strength: float = 1.0):
 def recolor(plan: Plan, like: str, strength: float = 1.0) -> Plan:
     """Map a plan's own source video's colour onto a reference image's."""
     if plan.source is None:
-        raise VidError("recolor needs a plan with a source video to measure.")
+        # NAMES THE CORRECTIVE INVOCATION, not just the condition. `recolor`
+        # measures the SOURCE's palette, so a sourceless plan cannot be
+        # recoloured -- but "needs a plan with a source video" left the caller
+        # to work out how a plan acquires one. Its sibling in `compile.py`
+        # already said "Name one when the chain starts"; this one did not.
+        raise VidError(
+            "recolor measures the source video's own palette, and this plan has no source to "
+            "measure. Start the chain by naming a video -- `vid trim talk.mp4 ... | vid recolor "
+            "--like reference.png` -- or pass a plan that already names one."
+        )
     operation = recolor_op(plan.source, like, strength)
     return plan.with_operation(operation)
 
@@ -879,6 +1048,10 @@ def stitch(
     *,
     transition: str | None = None,
     duration: float = 0.5,
+    # `str | None`, not a Literal: the CLI hands this straight through from a
+    # typer option, which is a plain string. The runtime check below is the
+    # real gate, and it gives a better message than a type error would.
+    fit: str | None = None,
     model: str = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: ReasoningEffort = "low",
 ) -> Plan:
@@ -889,6 +1062,12 @@ def stitch(
     starts a fresh plan from its own first entry, appending the rest.
     """
     from vid.plan import Stitch
+
+    if fit is not None and fit not in ("fit", "fill"):
+        raise VidError(
+            f"Unknown fit mode {fit!r}. Use `fit` to preserve aspect and pad the remainder "
+            "with bars, or `fill` to preserve aspect and crop the overflow centred."
+        )
 
     rest = list(sources)
     if plan is None:
@@ -912,6 +1091,7 @@ def stitch(
     return plan.with_operation(
         Stitch(
             sources=rest,
+            fit=fit,
             transition=preset,
             transition_duration=duration,
             transition_requested=requested,
@@ -920,6 +1100,158 @@ def stitch(
             # True only on the tier-3 path, where `probe` actually rendered
             # and measured it. A preset needs no proving; it is ffmpeg's.
             transition_verified=expression is not None,
+        )
+    )
+
+
+def overlay(
+    plan: Plan,
+    source: str,
+    x: int = 0,
+    y: int = 0,
+    width: int | None = None,
+    height: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    mask: str | None = None,
+    mask_source: str | None = None,
+    mask_radius: int = 40,
+    mask_invert: bool = False,
+    mask_feather: float = 0.0,
+    to_x: int | None = None,
+    to_y: int | None = None,
+    to_width: int | None = None,
+    to_height: int | None = None,
+    move_at: str | None = None,
+    move_over: float = 1.0,
+    easing: str = "linear",
+    audio: str | None = None,
+    audio_gain: float = 0.0,
+    base_gain: float = 0.0,
+    duck: bool = False,
+    key: str | None = None,
+    key_colour: str = "0x00FF00",
+    key_threshold: float = 0.9,
+    key_similarity: float = 0.3,
+    key_blend: float = 0.0,
+    opacity: float = 1.0,
+) -> Plan:
+    """Lay another clip over the picture, at a stated place and time.
+
+    Placement is in pixels of the edit's own frame, with the origin at the top
+    left. `width`/`height` resize the layer and must be given together.
+    `start`/`end` bound the window it is on screen for; omit both and it runs
+    for the whole edit.
+
+    Picture only. The layer's sound is not taken: in the common
+    picture-in-picture case the base already carries the narration, and adding
+    a second copy of it is the defect rather than the feature.
+    """
+    from vid.plan import Key, LayerAudio, Mask, Motion, Overlay
+    from vid.timecode import parse_timecode
+
+    if (width is None) != (height is None):
+        raise VidError(
+            "An overlay needs both --width and --height, or neither. Given only one, the "
+            "other would have to be invented from an aspect ratio nobody stated."
+        )
+    if width is not None and width <= 0:
+        raise VidError(f"An overlay's width must be positive, not {width}.")
+    if height is not None and height <= 0:
+        raise VidError(f"An overlay's height must be positive, not {height}.")
+
+    begins = parse_timecode(start) if start else None
+    ends = parse_timecode(end) if end else None
+    if begins is not None and ends is not None and ends <= begins:
+        raise VidError(
+            f"An overlay's --end ({ends:g}s) must come after its --start ({begins:g}s). "
+            "As written the layer would never be on screen."
+        )
+
+    shape = None
+    if mask is not None:
+        allowed = ("rect", "rounded_rect", "circle", "ellipse", "image", "video")
+        if mask not in allowed:
+            raise VidError(f"Unknown mask {mask!r}. Use one of: {', '.join(allowed)}.")
+        if mask in ("image", "video") and not mask_source:
+            raise VidError(
+                f"A {mask} mask reads its matte from a file, so --mask-source is required. "
+                "The procedural shapes (rect, rounded_rect, circle, ellipse) need no file."
+            )
+        if mask_feather < 0:
+            raise VidError(f"A mask's feather cannot be negative, and {mask_feather:g} is.")
+        if mask_radius < 0:
+            raise VidError(f"A rounded rectangle's radius cannot be negative, and {mask_radius} is.")
+        shape = Mask(kind=mask, source=mask_source, radius=mask_radius, invert=mask_invert, feather=mask_feather)
+
+    travel = None
+    if any(value is not None for value in (to_x, to_y, to_width, to_height)):
+        if easing not in ("linear", "ease_in_out"):
+            raise VidError(f"Unknown easing {easing!r}. Use `linear` or `ease_in_out`.")
+        if move_over <= 0:
+            raise VidError(f"An overlay's --move-over must be positive, not {move_over:g}.")
+        if (to_width is None) != (to_height is None):
+            raise VidError(
+                "An overlay's motion needs both --to-width and --to-height, or neither, for the "
+                "same reason --width and --height do: one alone invents an aspect ratio."
+            )
+        travel = Motion(
+            to_x=to_x if to_x is not None else x,
+            to_y=to_y if to_y is not None else y,
+            to_width=to_width,
+            to_height=to_height,
+            start=parse_timecode(move_at) if move_at else 0.0,
+            duration=move_over,
+            easing=easing,
+        )
+
+    sound = None
+    if audio is not None or audio_gain or base_gain or duck:
+        policy = audio if audio is not None else "keep"
+        if policy not in ("drop", "keep", "only"):
+            raise VidError(
+                f"Unknown audio policy {policy!r}. Use `drop` (the layer contributes no sound), "
+                "`keep` (mix it with the base), or `only` (it replaces the base)."
+            )
+        sound = LayerAudio(
+            policy=policy,
+            gain_db=audio_gain,
+            base_gain_db=base_gain,
+            duck=duck,
+        )
+
+    if not 0.0 <= opacity <= 1.0:
+        raise VidError(f"An overlay's opacity runs from 0 (invisible) to 1 (solid), and {opacity:g} is outside it.")
+
+    cutout = None
+    if key is not None:
+        if key not in ("colorkey", "chromakey", "lumakey"):
+            raise VidError(
+                f"Unknown key {key!r}. Use `colorkey` (flat colour), `chromakey` (better for green "
+                "screen), or `lumakey` (by brightness)."
+            )
+        cutout = Key(
+            kind=key,
+            colour=key_colour,
+            threshold=key_threshold,
+            similarity=key_similarity,
+            blend=key_blend,
+        )
+
+    return plan.with_operation(
+        Overlay(
+            source=source,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            start=begins,
+            end=ends,
+            mask=shape,
+            motion=travel,
+            audio=sound,
+            key=cutout,
+            opacity=opacity,
         )
     )
 

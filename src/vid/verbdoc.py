@@ -15,13 +15,16 @@ from __future__ import annotations
 PIPE_RULE = """
 ## The pipe carries a plan, not pixels
 
-Every verb except `render` reads a plan on stdin, appends one operation, and
-writes the plan to stdout. Nothing decodes a frame until `render`, which compiles
-the whole plan into ONE ffmpeg pass.
+The plan-building verbs read a plan on stdin, append one operation, and write
+the plan to stdout. No frame is decoded while a plan is being built; `render`
+compiles the whole plan into ONE ffmpeg pass.
 
-So this verb is instant, deterministic, and needs neither ffmpeg nor any AI
-provider. It costs $0.00. Chain freely -- five operations cost one decode and one
-encode, not five of each.
+NOT every verb works this way, and saying so used to be wrong here: `index`,
+`find`, `narrate`, `verify`, `check`, `manifest`, `transitions` and
+`audio extract` report or read rather than appending to a plan, and each says
+so in its own document.
+
+{cost_clause}
 
 ```bash
 vid trim talk.mp4 --from 0:10 --to 2:30 \\
@@ -32,6 +35,29 @@ vid trim talk.mp4 --from 0:10 --to 2:30 \\
 Start a chain by naming a file. Continue one by piping. A verb given neither
 fails and says so.
 """
+
+#: The ordinary case: building a plan touches nothing.
+FREE_COST_CLAUSE = """So this verb is instant, deterministic, and needs neither ffmpeg nor any AI
+provider. It costs $0.00. Chain freely -- five operations cost one decode and one
+encode, not five of each."""
+
+#: The exception, and it shipped as a FALSE CLAIM. `recolor` appends an
+#: operation like any other plan-building verb, so it was given the pipe rule
+#: above -- which told the reader it "needs neither ffmpeg nor any AI
+#: provider". It does need ffmpeg, immediately: `lib.recolor` measures the
+#: source's palette by sampling real frames while the plan is still being
+#: built, which is why `color._require_ffmpeg_tools` exists at all.
+#:
+#: A document that says a capability needs no ffmpeg, in a tool whose whole
+#: contract is that plan-building is free, is the kind of claim an agent acts
+#: on -- and it was wrong for exactly one verb.
+SAMPLES_PIXELS_WHILE_BUILDING = frozenset({"recolor"})
+
+SAMPLING_COST_CLAUSE = """So this verb is deterministic and needs no AI provider -- but UNLIKE every other
+plan-building verb it DOES need ffmpeg right now, not at `render`. It measures
+the reference and the source by sampling real frames while the plan is being
+built, and refuses by name if ffmpeg or ffprobe is absent. It costs $0.00 in
+provider spend; it is not free of decode."""
 
 _DOCS: dict[str, str] = {
     "trim": """# vid trim -- keep a time range
@@ -217,6 +243,11 @@ Two things a caller usually finds out the hard way, which this verb handles:
   matches.
 - `--duration` (optional, default `0.5`) -- seconds the transition takes.
   Ignored when `--transition` is omitted.
+- `--fit` (optional, default none) -- how a clip that is not this edit's size
+  is resolved. `fit` preserves aspect and pads the remainder with bars, so
+  nothing leaves frame. `fill` preserves aspect and crops the overflow centred,
+  so nothing is letterboxed. Neither stretches. Only consulted when a size
+  actually differs.
 - `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
   selection AND generation. Named presets do not call it.
 - `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
@@ -225,10 +256,177 @@ Two things a caller usually finds out the hard way, which this verb handles:
 
 **Failures.** No clips named: refused, naming the fix. A `--transition` name
 that matches none of the 58 presets, and that a model also cannot resolve or
-prove: refused, with the expression it tried if it got that far.
+prove: refused, with the expression it tried if it got that far. A clip whose
+sound does not match the running edit's -- one carries an audio stream and the
+other does not: refused at render, naming the file. Give the silent side a
+track with `audio replace`, or say the silence is deliberate with
+`audio remove` before stitching; after `audio remove` an incoming clip's sound
+is dropped without complaint, because you already said what to do with it. A
+clip that is not this edit's size, with no `--fit`: refused, naming both sizes
+and both modes. Resizing footage without being asked changes the framing
+without saying so, so there is no default.
 
 **What it costs.** Stitching re-encodes the picture, with or without a transition.
 Picture stream-copy is reserved for audio-only plans.
+""",
+    "overlay": """# vid overlay -- lay another clip over the picture
+
+```bash
+vid overlay inset.mp4 talk.mp4 --x 20 --y 20 --width 320 --height 180
+vid overlay logo.mp4 - --x 40 --y 40 --start 0:05 --end 0:20
+vid trim talk.mp4 --to 2:00 | vid overlay inset.mp4 - --x 300 --y 20
+```
+
+The FIRST argument is the clip being laid on top. The second is what it goes
+over, or `-` for the plan arriving on stdin.
+
+## Where it goes
+
+Placement is in **pixels of the edit's own frame**, origin at the top left.
+`--width` and `--height` resize the layer and must be given together: with only
+one, the other would have to be invented from an aspect ratio nobody stated,
+which silently reshapes the layer.
+
+An odd width or height is rounded down to even. `yuv420p` cannot encode an odd
+dimension, and the layer is composited into a frame that will be.
+
+## When it is on screen
+
+`--start` and `--end` bound the window. Omit both and the layer runs for the
+whole edit; omit just `--end` and it runs to the end.
+
+`--start` is when the layer APPEARS, and it plays FROM ITS OWN BEGINNING: at
+`--start 0:02` the layer's first frame and first sound both arrive two seconds
+in, together. It is not a seek into the layer, and `--end` bounds the window
+without retiming it.
+
+## Masks
+
+The layer can be cut to a shape. `--mask circle` and `--mask ellipse` differ:
+the circle's diameter is the layer's SHORTER side, while the ellipse is
+inscribed and touches all four edges.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --x 20 --y 20 --width 320 --height 180 --mask circle
+vid overlay cam.mp4 talk.mp4 --mask rounded_rect --mask-radius 24 --mask-feather 3
+vid overlay cam.mp4 talk.mp4 --mask video --mask-source wipe.mp4
+```
+
+`--mask image` and `--mask video` read the matte from a file: white keeps, black
+drops, and a `video` matte is read **per frame**, so the cut-out can move. The
+matte is scaled to the layer, so it need not match its size.
+
+The mask is applied at the layer's own size, before any `--width`/`--height`
+resize, so the shape and its feathering scale with the picture rather than being
+described twice.
+
+## Motion
+
+An inset can grow to full screen. `--x`/`--y`/`--width`/`--height` are where it
+STARTS; the `--to-*` flags are where it ends.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --x 300 --y 20 --width 320 --height 180 \
+  --to-x 0 --to-y 0 --to-width 1280 --to-height 720 --move-at 0:02 --move-over 1
+```
+
+**This animates presentation only.** The layer is never retimed, so its own
+source timing is untouched: a moment two seconds into the recording still lands
+two seconds into the recording, whatever the frame is doing around it.
+
+Sizes are rounded to even numbers. `yuv420p` cannot encode an odd dimension, and
+an animated size crosses odd values constantly.
+
+## Transparency
+
+`--opacity` scales the whole layer uniformly. `--key` makes part of the layer's
+OWN picture transparent, by colour or by brightness -- distinct from a mask,
+which imposes a shape from outside.
+
+```bash
+vid overlay cam.mp4 talk.mp4 --key colorkey --key-colour 0x00FF00
+vid overlay cam.mp4 talk.mp4 --key chromakey --mask circle --opacity 0.8
+```
+
+**The order is a contract, not an implementation detail**, because a different
+order looks different:
+
+1. `--key` edits the layer's own alpha, from its own content.
+2. `--mask` INTERSECTS that with a shape imposed from outside.
+3. `--mask-feather` softens the COMBINED edge, not just the shape's.
+4. `--opacity` scales whatever survived, uniformly.
+
+Feathering before the intersection would soften an edge the shape then cuts
+hard. Scaling opacity before the shape would make the shape's own border
+semi-transparent twice.
+
+At their defaults (`--opacity 1`, no key, no feather) these are genuine no-ops:
+the emitted chain is the plain composite.
+
+## Sound
+
+**The layer's sound is dropped by default.** In the common picture-in-picture
+case the base already carries the narration, so a layer that quietly added its
+own would duplicate it. Inclusion is stated, never assumed.
+
+```bash
+--audio keep                    mix the layer in with the base
+--audio only                    the layer replaces the base
+--audio keep --audio-gain -6    mix it in, 6 dB down
+--audio keep --duck             dip the base under the layer, recovering after
+```
+
+`keep` sums the two rather than averaging them. `amix` defaults to scaling every
+input by 1/n, which drops the base 3 dB for no reason other than a layer being
+present; this uses `normalize=0` and the gains you state.
+
+The layer's sound starts when the layer appears, is bounded to the edit's own
+length, and is faded 20 ms at each end so it does not click.
+
+**Arguments.**
+- `source` (required) -- the clip to lay over the picture.
+- `over` (optional) -- what it goes over, or `-` for the plan on stdin.
+- `--x` (optional, default `0`) -- left edge, in pixels from the frame's left.
+- `--y` (optional, default `0`) -- top edge, in pixels from the frame's top.
+- `--width` (optional, default none) -- resize the layer. Needs `--height` too.
+- `--height` (optional, default none) -- resize the layer. Needs `--width` too.
+- `--start` (optional, default none) -- when the layer appears.
+- `--end` (optional, default none) -- when the layer disappears.
+- `--mask` (optional, default none) -- cut the layer to a shape: `rect`,
+  `rounded_rect`, `circle`, `ellipse`, `image`, `video`. None is the whole
+  rectangle.
+- `--mask-source` (optional, default none) -- the matte file, required for
+  an `image` or `video` mask and ignored by the procedural shapes.
+- `--mask-radius` (optional, default `40`) -- corner radius for `rounded_rect`.
+- `--mask-invert` (optional, default off) -- cut a hole instead of a window.
+- `--mask-feather` (optional, default `0`) -- soften the mask edge, in pixels.
+- `--to-x` / `--to-y` (optional, default none) -- where the layer moves to.
+- `--to-width` / `--to-height` (optional, default none) -- what it grows to.
+  Both together or neither, for the same reason `--width`/`--height` are.
+- `--move-at` (optional, default `0`) -- when the move begins.
+- `--move-over` (optional, default `1`) -- seconds the move takes.
+- `--easing` (optional, default `linear`) -- `linear` or `ease_in_out`.
+- `--audio` (optional, default `drop`) -- the layer's sound: `drop`, `keep`
+  or `only`.
+- `--audio-gain` (optional, default `0`) -- layer gain in dB before mixing.
+- `--base-gain` (optional, default `0`) -- base gain in dB before mixing.
+- `--duck` (optional, default off) -- dip the base under the layer.
+- `--key` (optional, default none) -- make part of the layer's own picture
+  transparent: `colorkey`, `chromakey` or `lumakey`.
+- `--key-colour` (optional, default `0x00FF00`) -- the colour to remove.
+- `--key-threshold` (optional, default `0.9`) -- brightness to remove, `lumakey` only.
+- `--key-similarity` (optional, default `0.3`) -- how close a pixel must be to count.
+- `--key-blend` (optional, default `0`) -- softness at the keyed edge.
+- `--opacity` (optional, default `1`) -- uniform transparency, 0 to 1.
+
+**Result.** A plan with one more operation, `overlay`, written to stdout.
+
+**Failures.** Only one of `--width`/`--height`: refused, rather than inventing
+the other. A width or height that is zero or negative: refused. An `--end` at or
+before `--start`: refused, because the layer would never be on screen.
+
+**What it costs.** Compositing re-encodes the picture. Picture stream-copy is
+reserved for audio-only plans.
 """,
     "caption": """# vid caption -- burn subtitles into the picture
 
@@ -418,6 +616,12 @@ argument, never a piped continuation, and the result is a human-readable report
 - `--mix` / `--replace` (optional, default none) -- force laying the narration
   over the original audio, or in place of it. Omit to decide from whether the
   video already has speech.
+- `--allow-unfitted` (optional, default `False`) -- lay the narration on even
+  if a line still overruns its slot after every rewrite. WITHOUT this, an
+  unfitted line is a REFUSAL, not a note in the report: the run stops and names
+  each line and by how much it overran. A narration that did not fit is not a
+  success carrying a warning, and a report the caller must remember to read is
+  not a failure.
 - `--model` / `--intelligence-model` (default `gpt-6-astra`) -- model for
   script writing and every shortening retry, not the speech synthesiser.
 - `--reasoning-effort` (default `low`) -- `low`, `medium`, `high`, `xhigh`, `max`.
@@ -434,7 +638,10 @@ narration track and the command to lay it on.
 (`vid index`). No provider configured: refused, naming the fix (`vid check`).
 No speech synthesiser installed (unless `--script-only`): refused, naming the
 install command. A line that still does not fit after two rewrites and a
-speed-up: reported by name in the result, not silently dropped.
+speed-up: REFUSED, naming each line and by how much it overran. It is not a
+result carrying a warning -- `lib.narrate` returns a string, so a programmatic
+caller would have nothing to branch on. Pass `--allow-unfitted` to lay the
+narration on anyway and accept the overrun.
 
 ## Why it does not just write a script and read it
 
@@ -808,8 +1015,19 @@ model only says what a frame shows. A time is a lookup, never a guess.
 **Result.** A text report: duration, fingerprint, shot count, speech passage
 count, and where the index is stored.
 
+**Declining the `--vision` prompt is a VALID PARTIAL OUTCOME, and the report
+says so.** Shots and any requested speech are detected and STORED before the
+prompt is shown, so answering no keeps that work rather than discarding it --
+the index on disk is real and reusable, and re-running with `--vision --yes`
+describes the shots without redoing detection or transcription. The report
+names what was skipped ("vision descriptions skipped at your request"). This
+is the one case where `index` succeeds having done less than the flags asked
+for; every other shortfall below is a refusal.
+
 **Failures.** ffmpeg or ffprobe missing: refused before any work starts,
-naming the fix (`vid check`). `--vision` with no provider configured: refused,
+naming the fix (`vid check`). Speech requested with no backend installed and
+nothing already transcribed: refused before any work starts, naming the
+install and `--no-speech`. `--vision` with no provider configured: refused,
 naming the fix. `--vision` without `--yes` and not attached to a terminal:
 refused, telling you to pass `--yes`.
 
@@ -923,6 +1141,13 @@ ffmpeg's own failure: refused, showing its last lines of output.
 
 **What it needs.** ffmpeg on PATH to render, ffprobe when input timing or
 geometry is needed (including picture copy and supplied audio).
+
+**No model, ever.** Rendering is deterministic: the same plan and the same
+inputs compile to the same ffmpeg invocation and the same output. It never
+calls a provider, never needs one configured, and costs nothing beyond the
+encode. The model-backed verbs are the ones that WRITE a plan (`narrate`,
+`find`, `index --vision`); `render` only executes one, so a plan produced by a
+model is still inspectable with `--print-command` before a frame is touched.
 """,
     "plan": """# vid plan -- show the edit, without performing it
 
@@ -1078,14 +1303,85 @@ NOT_PIPE_PARTICIPANTS = frozenset(
 )
 
 
+#: Verbs whose library function is not simply `lib.<verb>`.
+_LIBRARY_NAMES: dict[str, str] = {
+    "plan": "show",
+    "manifest": "load_manifest",
+}
+
+#: Verbs with NO library function, and why. `audio` is a command GROUP rather
+#: than a verb -- its own document already says "None of its own" for every
+#: section and points at the four subcommands, each of which has a real library
+#: function and gets a real signature below.
+#:
+#: EXPLICIT, not inferred from a failed lookup. A verb whose library function
+#: was renamed would otherwise silently join this set and lose its documented
+#: surface, which is exactly the kind of quiet omission this section exists to
+#: stop.
+_NO_LIBRARY_SURFACE: frozenset[str] = frozenset({"audio"})
+
+
+def _library_section(name: str) -> str:
+    """The verb's Python signature, READ FROM THE FUNCTION rather than retyped.
+
+    WHY GENERATED. `check-spec-adherence` found that every capability skill
+    documented its CLI arguments and none documented the library's -- so an
+    agent reading `vid trim --help` learned about `source`, `--from` and
+    `--to`, and had no way to know `lib.trim` takes a required `plan: Plan`
+    first. Both surfaces are supported; only one was described.
+
+    Hand-writing 22 signature blocks would have fixed it once and then rotted,
+    because nothing would tie the prose to the function. Deriving it from
+    `inspect.signature` means a changed parameter changes this text in the same
+    commit, and `test_verbdoc.py` asserts the tie holds.
+    """
+    import inspect
+
+    from vid import lib
+
+    function = getattr(lib, _LIBRARY_NAMES.get(name, name))
+    signature = inspect.signature(function)
+    summary = (inspect.getdoc(function) or "").strip().split("\n")[0]
+
+    section = [
+        "",
+        "## The same capability from Python",
+        "",
+        "The CLI arguments above are one surface; this is the other. Both are supported.",
+        "",
+        "```python",
+        "from vid import lib",
+        "",
+        f"lib.{function.__name__}{signature}",
+        "```",
+    ]
+    if summary:
+        section += ["", summary]
+    if "plan" in signature.parameters:
+        section += [
+            "",
+            (
+                "`plan` is the edit the operation is appended to, and it is REQUIRED here -- the "
+                "CLI's optional `source` argument is the command-line shorthand for starting one. "
+                "Build a plan with any verb that begins a chain and pass the result along; plans "
+                "are never mutated in place, so each call returns a new one."
+            ),
+        ]
+    return "\n".join(section) + "\n"
+
+
 def verb_doc(name: str) -> str:
     """The document for one verb, with the pipe rule appended where it applies."""
     body = _DOCS.get(name)
     if body is None:
         raise KeyError(name)
+    document = body.strip() + "\n"
+    if name not in _NO_LIBRARY_SURFACE:
+        document += _library_section(name)
     if name in NOT_PIPE_PARTICIPANTS:
-        return body.strip() + "\n"
-    return body.strip() + "\n" + PIPE_RULE
+        return document
+    clause = SAMPLING_COST_CLAUSE if name in SAMPLES_PIXELS_WHILE_BUILDING else FREE_COST_CLAUSE
+    return document + PIPE_RULE.format(cost_clause=clause)
 
 
 def verbs() -> tuple[str, ...]:

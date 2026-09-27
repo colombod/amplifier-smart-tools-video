@@ -1,0 +1,265 @@
+"""A JSON plan must be refused on the same terms as a CLI call.
+
+`lib.overlay` validated its arguments; the pydantic models did not. A plan file
+reaches `Overlay` and `Motion` directly, never passing through the library
+function, so every guard that lived only in `lib` was a guard the JSON door did
+not have. An independent review walked through it: a width-only animation the
+library refuses was accepted from JSON and rendered horizontally stretched.
+
+These tests assert PARITY rather than each rule separately. A rule added to one
+path and not the other is the defect, so the test compares the two doors
+against the same payload instead of trusting either alone.
+"""
+
+import pydantic
+import pytest
+
+from vid import lib
+from vid.plan import Plan
+from vid.schemas import VidError
+
+
+def _via_json(**fields) -> bool:
+    """True if a JSON plan carrying these overlay fields is ACCEPTED."""
+    payload = {
+        "plan_format": 1,
+        "source": "a.mp4",
+        "operations": [dict(op="overlay", source="b.mp4", **fields)],
+    }
+    try:
+        Plan.model_validate(payload)
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+def _via_library(**kwargs) -> bool:
+    """True if the same intent through `lib.overlay` is ACCEPTED."""
+    try:
+        lib.overlay(Plan(source="a.mp4"), "b.mp4", **kwargs)
+        return True
+    except VidError:
+        return False
+
+
+#: (label, library kwargs, equivalent JSON fields). Each is a shape the library
+#: has always refused and JSON once accepted.
+REFUSED = [
+    ("a size on one axis only", {"width": 320}, {"width": 320}),
+    (
+        "an animation sized on one axis only",
+        {"to_width": 1280},
+        {"motion": {"to_width": 1280, "start": 0.0, "duration": 1.0}},
+    ),
+    ("a window that ends before it begins", {"start": "5", "end": "1"}, {"start": 5.0, "end": 1.0}),
+    ("an opacity above 1", {"opacity": 1.5}, {"opacity": 1.5}),
+    ("an opacity below 0", {"opacity": -3.0}, {"opacity": -3.0}),
+]
+
+#: `Mask` kept NONE of the library's guards when `Overlay` and `Motion` got
+#: theirs. Same file, same JSON door, missed because the reported site was
+#: fixed and the class was not swept.
+MASK_REFUSED = [
+    ("a negative corner radius", {"mask": "rounded_rect", "mask_radius": -40}, {"kind": "rounded_rect", "radius": -40}),
+    ("a negative feather", {"mask": "circle", "mask_feather": -5.0}, {"kind": "circle", "feather": -5.0}),
+    ("an image mask with no file", {"mask": "image"}, {"kind": "image"}),
+    ("a video mask with no file", {"mask": "video"}, {"kind": "video"}),
+]
+
+MASK_ACCEPTED = [
+    ("a plain circle", {"mask": "circle"}, {"kind": "circle"}),
+    ("a rounded rectangle", {"mask": "rounded_rect", "mask_radius": 40}, {"kind": "rounded_rect", "radius": 40}),
+    ("an image mask with a file", {"mask": "image", "mask_source": "m.png"}, {"kind": "image", "source": "m.png"}),
+    ("a softened edge", {"mask": "circle", "mask_feather": 3.0}, {"kind": "circle", "feather": 3.0}),
+]
+
+
+def _mask_via_json(mask: dict) -> bool:
+    payload = {
+        "plan_format": 1,
+        "source": "a.mp4",
+        "operations": [{"op": "overlay", "source": "b.mp4", "mask": mask}],
+    }
+    try:
+        Plan.model_validate(payload)
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+@pytest.mark.parametrize(("label", "kwargs", "mask"), MASK_REFUSED, ids=[c[0] for c in MASK_REFUSED])
+def test_both_doors_refuse_the_same_mask(label, kwargs, mask):
+    assert not _via_library(**kwargs), f"the library now ACCEPTS {label}; this test is stale"
+    assert not _mask_via_json(mask), f"a JSON plan still accepts {label}, which the library refuses"
+
+
+@pytest.mark.parametrize(("label", "kwargs", "mask"), MASK_ACCEPTED, ids=[c[0] for c in MASK_ACCEPTED])
+def test_both_doors_accept_the_same_mask(label, kwargs, mask):
+    """A negative radius once rendered a PLAIN RECTANGLE rather than failing --
+    the rounding silently ignored. Over-correcting here would refuse masks that
+    have always been legitimate, so the accept cases are pinned too."""
+    assert _via_library(**kwargs), f"the library wrongly refuses {label}"
+    assert _mask_via_json(mask), f"a JSON plan wrongly refuses {label}"
+
+
+ACCEPTED = [
+    (
+        "a fully stated overlay",
+        {"width": 320, "height": 180, "opacity": 0.5},
+        {"width": 320, "height": 180, "opacity": 0.5},
+    ),
+    (
+        "an animation sized on both axes",
+        {"to_width": 1280, "to_height": 720},
+        {"motion": {"to_width": 1280, "to_height": 720, "start": 0.0, "duration": 1.0}},
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "kwargs", "fields"), REFUSED, ids=[case[0] for case in REFUSED])
+def test_both_doors_refuse_the_same_plan(label, kwargs, fields):
+    assert not _via_library(**kwargs), f"the library now ACCEPTS {label}; this test is stale"
+    assert not _via_json(**fields), f"a JSON plan still accepts {label}, which the library refuses"
+
+
+@pytest.mark.parametrize(("label", "kwargs", "fields"), ACCEPTED, ids=[case[0] for case in ACCEPTED])
+def test_both_doors_accept_the_same_plan(label, kwargs, fields):
+    """Guard against over-correcting: the new refusals must not catch valid plans."""
+    assert _via_library(**kwargs), f"the library wrongly refuses {label}"
+    assert _via_json(**fields), f"a JSON plan wrongly refuses {label}"
+
+
+# ---------------------------------------------------------------------------
+# `LayerAudio`'s compressor settings are NOT a parity case, and that is the
+# point. The CLI exposes only `--duck`, so `lib.overlay` has no parameter that
+# can reach these fields at all -- a JSON plan is the only door. There is no
+# library guard to mirror; these ARE the guard.
+#
+# The dangerous values sit INSIDE ffmpeg's accepted range, so ffmpeg renders
+# them happily and says nothing. Measured against a plain no-duck render at
+# 2047.2, with an honest duck reaching 1344.6:
+#
+#     duck_ratio=1.0       base 2047.2  -- identical to no duck at all
+#     duck_threshold=1.0   base 2047.2  -- identical to no duck at all
+#
+# Exit 0, a normal-looking file, no diagnostic.
+# ---------------------------------------------------------------------------
+
+DUCK_REFUSED = [
+    ("a 1:1 ratio, which is no compression", {"duck_ratio": 1.0}),
+    ("a ratio above ffmpeg's maximum", {"duck_ratio": 21.0}),
+    ("a threshold of 1, which nothing crosses", {"duck_threshold": 1.0}),
+    ("a negative threshold", {"duck_threshold": -1.0}),
+    ("an attack beyond ffmpeg's range", {"duck_attack": 99999.0}),
+    ("a release beyond ffmpeg's range", {"duck_release": 99999.0}),
+]
+
+DUCK_ACCEPTED = [
+    ("the defaults", {}),
+    ("a gentle ratio", {"duck_ratio": 4.0, "duck_threshold": 0.1}),
+    ("the maximum ratio", {"duck_ratio": 20.0}),
+    ("a fast attack", {"duck_attack": 5.0}),
+]
+
+
+def _duck_via_json(settings: dict) -> bool:
+    payload = {
+        "plan_format": 1,
+        "source": "a.mp4",
+        "operations": [
+            {
+                "op": "overlay",
+                "source": "b.mp4",
+                "audio": {"policy": "keep", "duck": True, **settings},
+            }
+        ],
+    }
+    try:
+        Plan.model_validate(payload)
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+@pytest.mark.parametrize(("label", "settings"), DUCK_REFUSED, ids=[c[0] for c in DUCK_REFUSED])
+def test_a_duck_that_would_not_duck_is_refused(label, settings):
+    assert not _duck_via_json(settings), f"a JSON plan still accepts {label}"
+
+
+@pytest.mark.parametrize(("label", "settings"), DUCK_ACCEPTED, ids=[c[0] for c in DUCK_ACCEPTED])
+def test_workable_duck_settings_are_still_accepted(label, settings):
+    """Over-correcting here would refuse settings that duck perfectly well,
+    including both range boundaries."""
+    assert _duck_via_json(settings), f"a JSON plan wrongly refuses {label}"
+
+
+# ---------------------------------------------------------------------------
+# Cut, Retime and Zoom. Filed as deferred debt, then fixed once measurement
+# showed the filing was wrong about WHY they were dangerous.
+#
+# The filing said they were reachable only through a JSON plan, so `lib.*`
+# would protect a CLI user. Measured, that is false for two of the three:
+#
+#     lib.cut(start=5, end=2)      ACCEPTED   -- no guard at all
+#     lib.cut(start=5, end=5)      ACCEPTED
+#     lib.zoom(duration=-3)        ACCEPTED   -- no guard at all
+#     lib.zoom(to=0)               ACCEPTED
+#     lib.retime(speed AND ramp)   refused    -- the only real library guard
+#
+# `lib.cut` and `lib.zoom` parse timecodes and construct the model directly.
+# The CLI reaches the same defects, which is why these stopped being
+# deferrable. Both doors are pinned below precisely because assuming one of
+# them was safe is what produced the wrong filing.
+# ---------------------------------------------------------------------------
+
+OP_REFUSED = [
+    ("a cut that ends before it starts", {"op": "cut", "start": 5.0, "end": 2.0}),
+    ("a cut starting before the file", {"op": "cut", "start": -1.0, "end": 2.0}),
+    ("a retime that is both constant and a ramp", {"op": "retime", "speed": 2.0, "ramp": [{"at": 1.0, "speed": 0.5}]}),
+    ("a retime that is neither", {"op": "retime"}),
+    ("a reversed retime speed", {"op": "retime", "speed": -2.0}),
+    ("a zoom lasting negative time", {"op": "zoom", "duration": -3.0}),
+    ("a zoom centred before the file", {"op": "zoom", "at": -5.0}),
+]
+
+OP_ACCEPTED = [
+    ("an ordinary cut", {"op": "cut", "start": 2.0, "end": 5.0}),
+    ("a constant retime", {"op": "retime", "speed": 2.0}),
+    ("a ramped retime", {"op": "retime", "ramp": [{"at": 1.0, "speed": 0.5}]}),
+    ("a default zoom", {"op": "zoom"}),
+    ("a zoom OUT, which is not a zoom of zero", {"op": "zoom", "to": 0.8}),
+    # MOVED HERE FROM `OP_REFUSED`, on measurement rather than preference.
+    # Rendered pre-guard against a 6.0s source, validation fully bypassed:
+    #     cut 5 -> 5    rc=0, 6.0s   removes nothing, harms nothing
+    #     cut 5 -> 2    rc=0, 9.0s   DUPLICATES footage -- still refused above
+    #     zoom to=0     rc=0, 6.0s   same duration as the control
+    #     zoom dur=0    rc=0, 6.0s   same
+    # These are degenerate no-ops that plan_format 1 has always accepted, so
+    # refusing them changed the meaning of a stored plan without a format bump.
+    # The guards were narrowed from `<=` to `<`: a REVERSED range invents
+    # footage and a NEGATIVE duration silently clamps into a different mode,
+    # and those remain refused. Doing nothing is not the same as doing harm.
+    ("a cut that removes nothing", {"op": "cut", "start": 5.0, "end": 5.0}),
+    ("a zoom of zero, a no-op rather than an error", {"op": "zoom", "to": 0.0}),
+    ("a zoom lasting no time", {"op": "zoom", "duration": 0.0}),
+]
+
+
+def _op_via_json(operation: dict) -> bool:
+    try:
+        Plan.model_validate({"plan_format": 1, "source": "a.mp4", "operations": [operation]})
+        return True
+    except pydantic.ValidationError:
+        return False
+
+
+@pytest.mark.parametrize(("label", "operation"), OP_REFUSED, ids=[c[0] for c in OP_REFUSED])
+def test_a_nonsensical_operation_is_refused(label, operation):
+    assert not _op_via_json(operation), f"a plan still accepts {label}"
+
+
+@pytest.mark.parametrize(("label", "operation"), OP_ACCEPTED, ids=[c[0] for c in OP_ACCEPTED])
+def test_a_legitimate_operation_is_still_accepted(label, operation):
+    """`to=0.8` is the one that matters here: a zoom OUT is legitimate, and a
+    guard written as `to >= 1` would have broken it while looking correct."""
+    assert _op_via_json(operation), f"a plan wrongly refuses {label}"

@@ -110,4 +110,20 @@ def provider_profile(provider: str, profile: str, default_env_var: str | None = 
             f"[providers.{provider}.{profile}] in {path} is missing 'api_key_env' -- it names "
             "the environment variable to read, and is required on every profile."
         )
+    # PRESENT IS NOT THE SAME AS USABLE. The check above accepted any type, and
+    # the value goes straight to `os.environ.get`, which requires a str. A TOML
+    # list -- `api_key_env = ["OPENAI_API_KEY"]`, an easy thing to write -- got
+    # through here and died downstream as a raw
+    #     TypeError: str expected, not list
+    # which `cli.main` does not translate, so it reached the caller as a
+    # traceback pointing at neither the file nor the field. Reproduced exactly
+    # before this guard existed.
+    if not isinstance(section["api_key_env"], str):
+        found = type(section["api_key_env"]).__name__
+        raise VidError(
+            f"[providers.{provider}.{profile}] in {path} sets 'api_key_env' to a {found}, and it "
+            "must be a single quoted string naming one environment variable -- for example "
+            'api_key_env = "OPENAI_API_KEY". A list or table cannot be looked up in the '
+            "environment."
+        )
     return section

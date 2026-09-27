@@ -20,7 +20,9 @@ import itertools
 import math
 from pathlib import Path
 import re
+from typing import ClassVar
 
+from vid.core.writes import writing
 from vid.plan import (
     AudioMix,
     AudioRemove,
@@ -28,7 +30,10 @@ from vid.plan import (
     Caption,
     Cut,
     Grade,
+    Key,
     Lut,
+    Motion,
+    Overlay,
     Plan,
     Recolor,
     Retime,
@@ -138,6 +143,8 @@ class Compiler:
         has_audio: bool = True,
         frame_rate: float | None = None,
         dimensions: tuple[int, int] | None = None,
+        source_audio: dict[str, bool] | None = None,
+        source_sizes: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -154,6 +161,22 @@ class Compiler:
         # already guarded on this, so the whole chain degrades to video-only
         # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
         self.audio = "0:a" if has_audio else None
+        #: Path -> whether that file carries an audio stream, for the clips a
+        #: stitch pulls in. Probed by the render path for the same reason
+        #: `durations` is: it is a fact about the file, not about the plan, and
+        #: keeping it out of here is what lets every other verb run with no
+        #: ffmpeg at all. A path that is absent is assumed to have sound.
+        self.source_audio = source_audio or {}
+        #: Path -> (width, height) for the clips a stitch pulls in, probed by
+        #: the render path alongside `durations` and `source_audio`. Absent
+        #: means nobody probed, and nothing is resized on an unproven guess.
+        self.source_sizes = source_sizes or {}
+        #: The size every stitched clip is resolved to: the plan source's own.
+        #: Taken from the probed sizes rather than `dimensions` so that a plan
+        #: compiled without probing has no target and normalises nothing.
+        self.target_size = self.source_sizes.get(plan.source)
+        #: True once `audio remove` has run. See `audio_remove`.
+        self.audio_removed = False
         #: The source's own frame rate, used to put retimed frames back on a
         #: uniform grid, and to give `zoompan` an accurate per-frame clock.
         #: None when it could not be read, in which case retime behaves as
@@ -193,6 +216,30 @@ class Compiler:
     # -- operations ---------------------------------------------------------
 
     def trim(self, op: Trim) -> None:
+        # A TRIM THAT STARTS PAST THE END OF THE MATERIAL renders a 261-byte
+        # MP4 with NO STREAMS AT ALL, and exits 0. Measured on the 6.0s base
+        # fixture, before this guard:
+        #
+        #     start=5.9   rc=0   2942 bytes   nb_streams=2   duration=0.100000
+        #     start=6.0   rc=0    261 bytes   nb_streams=0   duration=None
+        #     start=1e9   rc=0    261 bytes   nb_streams=0   duration=None
+        #
+        # The reviewer who found this reached it with `start=1e9` and then
+        # correctly qualified it: 1e9 is not what makes it happen, being past
+        # the end is, and `start=10` on a ten-second clip does it just as well.
+        # So it is guarded HERE rather than by a bound on the model -- this is
+        # the only place the source's actual length is known, and no ceiling on
+        # `start` could express "past the end of THIS file".
+        #
+        # `self.elapsed` is 0.0 when the length is genuinely unknown, which is
+        # falsy and correctly skips the check rather than refusing everything.
+        if self.elapsed and op.start >= self.elapsed:
+            raise VidError(
+                f"This trim starts at {op.start:g}s, and by that point the edit is only "
+                f"{self.elapsed:g}s long -- so it would keep nothing. Rendered as asked it "
+                "produces a file with no video and no audio in it, and reports success. "
+                "Give a start inside the material, or drop the operation."
+            )
         end = f":end={op.end}" if op.end is not None else ""
         self.video = self._step(f"trim=start={op.start}{end},setpts=PTS-STARTPTS", self.video, "v")
         aend = f":end={op.end}" if op.end is not None else ""
@@ -376,9 +423,27 @@ class Compiler:
             self.inputs.append(source)
             index = len(self.inputs) - 1
             other_v, other_a = f"{index}:v", f"{index}:a"
+            # Whether a clip carries sound is a property of the FILE, probed
+            # before compiling. None means nobody probed -- a direct
+            # `compile_plan` call rather than the render path -- and an unproven
+            # guess must not raise. Unknown follows the running edit, which is
+            # exactly how this behaved before anything probed the sources.
+            known = self.source_audio.get(source)
+            if known is not None:
+                self._refuse_audio_mismatch(source, known)
+            other_v = self._normalised(source, other_v, op)
             if op.transition:
                 self._transition(other_v, other_a, op)
                 self.elapsed += self.durations.get(source, 0.0) - op.transition_duration
+            elif self.audio is None:
+                # Neither side has sound. concat's a=0 form takes video only;
+                # interpolating the absent stream anyway put the literal string
+                # "None" in the graph and ffmpeg rejected the whole command.
+                # Exactly the guard `cut` already carries.
+                self.elapsed += self.durations.get(source, 0.0)
+                out_v = self._next("v")
+                self.filters.append(f"[{self.video}][{other_v}]concat=n=2:v=1:a=0[{out_v}]")
+                self.video = out_v
             else:
                 self.elapsed += self.durations.get(source, 0.0)
                 out_v, out_a = self._next("v"), self._next("a")
@@ -386,6 +451,492 @@ class Compiler:
                     f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
                 )
                 self.video, self.audio = out_v, out_a
+
+    #: Procedural mattes, written against `geq`'s own W and H so one expression
+    #: serves every layer size. ffmpeg's expression evaluator has NO `^`
+    #: operator, so every square here is written as a product -- `x^2` parses as
+    #: a bitwise xor against 2 and yields a silently wrong shape.
+    _SHAPES: ClassVar[dict[str, str]] = {
+        "rect": "255",
+        "circle": ("if(lte((X-W/2)*(X-W/2)+(Y-H/2)*(Y-H/2),min(W/2\\,H/2)*min(W/2\\,H/2)),255,0)"),
+        "ellipse": ("if(lte(((X-W/2)/(W/2))*((X-W/2)/(W/2))+((Y-H/2)/(H/2))*((Y-H/2)/(H/2)),1),255,0)"),
+    }
+
+    def _rounded_rect(self, radius: int) -> str:
+        """A rectangle with rounded corners, as a `geq` luma expression.
+
+        A point is inside when its distance from the nearest corner CENTRE is
+        within the radius, where the corner centres sit one radius in from each
+        edge. `max(..., 0)` collapses the straight-edge case to zero distance,
+        so the same expression covers the flats and the curves.
+        """
+        inset_x = f"max(abs(X-W/2)-(W/2-{radius})\\,0)"
+        inset_y = f"max(abs(Y-H/2)-(H/2-{radius})\\,0)"
+        return f"if(lte({inset_x}*{inset_x}+{inset_y}*{inset_y},{radius}*{radius}),255,0)"
+
+    def _shape_matte(self, layer: str, op: Overlay) -> tuple[str, str]:
+        """Build the shape matte, returning (picture, matte).
+
+        A procedural shape is derived from the layer itself, so the stream is
+        split: one copy stays the picture, the other is reduced to grey.
+        """
+        mask = op.mask
+        assert mask is not None
+        if mask.kind in ("image", "video"):
+            if not mask.source:
+                raise VidError(f"A {mask.kind} mask needs a file to read the matte from. Name one.")
+            size = self.source_sizes.get(op.source)
+            if size is None:
+                raise VidError(
+                    f"A {mask.kind} mask has to be scaled to the layer's own size, and the size of "
+                    f"{op.source!r} was not read. Compile through `vid render`, which probes it."
+                )
+            self.inputs.append(mask.source)
+            matte = self._step(f"format=gray,scale={size[0]}:{size[1]},setsar=1", f"{len(self.inputs) - 1}:v", "v")
+            return layer, matte
+
+        picture, source_for_matte = self._next("v"), self._next("v")
+        self.filters.append(f"[{layer}]split[{picture}][{source_for_matte}]")
+        expression = self._SHAPES.get(mask.kind) or self._rounded_rect(mask.radius)
+        matte = self._step(f"format=gray,geq=lum='{expression}':cb=128:cr=128,format=gray", source_for_matte, "v")
+        return picture, matte
+
+    def _key_filter(self, key: Key) -> str:
+        """`lumakey` takes different parameters from the two colour keys.
+
+        Named parameters throughout, because the positional forms do not line
+        up: `colorkey=color:similarity:blend` against
+        `lumakey=threshold:tolerance:softness`. Passing one's arguments
+        positionally to the other keys the wrong thing without complaining.
+        """
+        if key.kind == "lumakey":
+            return f"lumakey=threshold={key.threshold:g}:tolerance={key.similarity:g}:softness={key.blend:g}"
+        return f"{key.kind}=color={key.colour}:similarity={key.similarity:g}:blend={key.blend:g}"
+
+    def _composited(self, layer: str, op: Overlay) -> str:
+        """Key, shape, feather and opacity, resolved into ONE alpha channel.
+
+        THE ORDER IS A CONTRACT, not an implementation detail, because a
+        different order is visibly different:
+
+            key      edits the layer's OWN alpha, from its own content
+            shape    INTERSECTS that with a shape imposed from outside
+            feather  softens the COMBINED edge, not just the shape's
+            opacity  scales whatever survived, uniformly
+
+        Feathering before the intersection would soften an edge the shape then
+        cuts hard; scaling opacity before the shape would make the shape's own
+        border semi-transparent twice.
+
+        All of it at the layer's NATIVE size, merged into alpha BEFORE any
+        resize, so a circular inset stays circular as it grows: one description
+        of the shape rather than two free to drift apart.
+        """
+        key, mask = op.key, op.mask
+        opacity = max(0.0, min(1.0, op.opacity))
+        if key is None and mask is None and opacity >= 1.0:
+            return layer
+
+        picture = layer
+        mattes: list[str] = []
+
+        if key is not None:
+            keyed = self._step(f"{self._key_filter(key)},format=rgba", picture, "v")
+            picture, alpha_source = self._next("v"), self._next("v")
+            self.filters.append(f"[{keyed}]split[{picture}][{alpha_source}]")
+            mattes.append(self._step("alphaextract,format=gray", alpha_source, "v"))
+
+        if mask is not None:
+            picture, shape = self._shape_matte(picture, op)
+            if mask.invert:
+                shape = self._step("negate", shape, "v")
+            mattes.append(shape)
+
+        if not mattes:
+            # Opacity alone still needs something to scale: a white matte the
+            # size of the layer, derived from the layer so it cannot mismatch.
+            picture, source = self._next("v"), self._next("v")
+            self.filters.append(f"[{layer}]split[{picture}][{source}]")
+            mattes.append(self._step("format=gray,geq=lum='255':cb=128:cr=128,format=gray", source, "v"))
+
+        combined = mattes[0]
+        for extra in mattes[1:]:
+            merged = self._next("v")
+            self.filters.append(f"[{combined}][{extra}]blend=all_mode=multiply[{merged}]")
+            combined = self._step("format=gray", merged, "v")
+
+        if mask is not None and mask.feather > 0:
+            combined = self._step(f"gblur=sigma={mask.feather:g}", combined, "v")
+        if opacity < 1.0:
+            combined = self._step(f"lutyuv=y='val*{opacity:g}'", combined, "v")
+
+        rgba = self._step("format=rgba", picture, "v")
+        out = self._next("v")
+        self.filters.append(f"[{rgba}][{combined}]alphamerge[{out}]")
+        return out
+
+    def overlay(self, op: Overlay) -> None:
+        """Lay another clip over the picture at a stated place and time.
+
+        Picture only. The layer's sound is not taken, which is the whole point
+        of stating it: in the common picture-in-picture case the base already
+        carries the narration, and quietly mixing a second copy in is the
+        defect, not the feature. `self.audio` is therefore never read here --
+        it cannot leak the literal string "None" into the graph the way the
+        stitch path once did, because it is not interpolated at all.
+
+        `elapsed` is untouched. An overlay changes what a frame LOOKS like, not
+        how many there are, so a duration that moved would be a defect.
+        """
+        self.inputs.append(op.source)
+        index = len(self.inputs) - 1
+        layer = self._composited(f"{index}:v", op)
+
+        if (op.width is None) != (op.height is None):
+            raise VidError(
+                "An overlay needs both --width and --height, or neither. Given only one, "
+                "the other would have to be invented from an aspect ratio nobody stated, "
+                "which silently reshapes the layer."
+            )
+        # SHIFT THE PICTURE FIRST, so every later expression shares one clock.
+        #
+        # `enable` decides WHETHER the layer is drawn at an output time; it does
+        # nothing to WHICH of the layer's own frames is drawn. Left alone, a
+        # layer revealed at start=2 shows its 2-second-old content the moment it
+        # appears, while the sound -- always shifted by `adelay` -- is correct.
+        #
+        # THE CONTRACT: `start` is when the layer APPEARS, and it plays FROM ITS
+        # OWN BEGINNING. That is what the audio path always did, so the picture
+        # was the side that was wrong.
+        #
+        # `tpad`, NOT `setpts`. A PTS shift is cancelled by the
+        # `setpts=PTS-STARTPTS` rebase in the elapsed bound below, which
+        # re-zeros the stream and subtracts exactly the offset just added.
+        # `tpad` PREPENDS REAL FRAMES, so the offset is content rather than a
+        # timestamp and survives the rebase -- precisely why `adelay` works.
+        # Transparent padding, so the base shows through before the layer
+        # appears, and `enable` hides it regardless.
+        #
+        # ORDERED BEFORE `_animated` DELIBERATELY. A motion declares ONE window,
+        # but its two halves are evaluated by different filters: the size lands
+        # in `scale=...:eval=frame` applied to the LAYER, and the position lands
+        # in `overlay=x=...` applied to the EDIT. `t` means layer time in the
+        # first and edit time in the second. With the pad applied afterwards
+        # those clocks differed by exactly `start`, and one declared window came
+        # apart -- measured with start=2 and a 1s window at output 2-3s:
+        #
+        #   move_at=2    right edge 152/152/152 at t=2.1/2.5/3.0, reaching
+        #                640 only at t=5.0 -- the size arrived two seconds late
+        #   move_at=0    position already complete before the layer was revealed
+        #
+        # Padding first puts the layer stream on edit time, so `scale` and
+        # `overlay` read the same `t` and the window stays whole.
+        start = op.start if op.start is not None else 0.0
+        if start > 0:
+            layer = self._step(f"tpad=start_duration={start:.6f}:start_mode=add:color=0x00000000", layer, "v")
+
+        position_x, position_y = str(op.x), str(op.y)
+        if op.motion is not None:
+            layer, position_x, position_y = self._animated(layer, op, self.source_sizes.get(op.source))
+        elif op.width is not None and op.height is not None:
+            # Even dimensions: yuv420p cannot encode an odd width or height, and
+            # an overlay is composited into a frame that will be.
+            width, height = (op.width // 2) * 2, (op.height // 2) * 2
+            layer = self._step(f"scale={width}:{height},setsar=1", layer, "v")
+
+        # `enable` is what confines the layer to its window. Without it the
+        # overlay runs for the whole edit regardless of what was asked.
+        window = ""
+        if op.start is not None or op.end is not None:
+            window = (
+                f":enable='between(t,{start:.6f},{op.end:.6f})'"
+                if op.end is not None
+                else f":enable='gte(t,{start:.6f})'"
+            )
+
+        # BOUND THE LAYER TO THE EDIT. `overlay` does not stop when the main
+        # input does: a 3s layer over a 2s trimmed edit rendered 3s, silently
+        # undoing the trim. Measured, and invisible to every test that renders
+        # an overlay on its own, because alone the two lengths agree.
+        #
+        # A layer SHORTER than the edit is left alone: `overlay` holds its last
+        # frame, which is what a picture-in-picture wants.
+        if self.elapsed:
+            layer = self._step(f"trim=end={self.elapsed:.6f},setpts=PTS-STARTPTS", layer, "v")
+
+        out = self._next("v")
+        self.filters.append(f"[{self.video}][{layer}]overlay=x='{position_x}':y='{position_y}'{window}[{out}]")
+        self.video = out
+
+        self._layer_audio(op, index)
+
+    def _regained_audio(self, label: str) -> None:
+        """The edit has sound again. Assign it AND clear `audio_removed`.
+
+        These two are one fact, so they are one call. `audio remove` sets that
+        flag to mean "the caller already said what to do with sound here", and
+        `_refuse_audio_mismatch` short-circuits on it. The moment any path puts
+        a track back, the flag is a lie -- and a stitch against a silent clip
+        then walks through the guard and emits a specifier for a stream that
+        does not exist.
+
+        A previous round fixed `audio_replace` alone. That was the instance,
+        not the invariant: `overlay --audio keep` and `--audio only` restore
+        sound through DIFFERENT lines, and a review found the same defect
+        waiting behind both. Routing every restoration through here is what
+        stops a fourth site appearing.
+        """
+        self.audio = label
+        self.audio_removed = False
+
+    def _layer_audio(self, op: Overlay, index: int) -> None:
+        """Fold the layer's own sound in, or leave it out.
+
+        `amix` DEFAULTS TO normalize=1, which scales every input by 1/n. Measured
+        on a 440 Hz base: alone, max_volume -17.6 dB; through a default `amix`
+        with a second layer, -18.5 dB. The base lost 3 dB because of nothing but
+        the PRESENCE of an overlay. So `normalize=0` and explicit gains: a level
+        that changes without being asked to is the defect this whole file keeps
+        paying for.
+
+        `self.audio` is read only behind `is not None`. An absent base stream is
+        a normal state -- a silent source, or a prior `audio remove` -- and
+        interpolating it would put the literal text "None" in the graph.
+        """
+        policy = op.audio
+        if policy is None or policy.policy == "drop":
+            return
+
+        known = self.source_audio.get(op.source)
+        if known is False:
+            raise VidError(
+                f"Cannot take audio from {op.source!r}: it carries no audio stream. Use the "
+                "default `drop` policy, or supply a layer that has sound."
+            )
+
+        # Matching rate and layout are a PRECONDITION of amix, not a nicety: a
+        # 44.1k stereo layer against a 48k mono base is either refused outright
+        # or silently resampled into drift.
+        layer = self._step(
+            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS",
+            f"{index}:a",
+            "a",
+        )
+        start = op.start if op.start is not None else 0.0
+        if start > 0:
+            layer = self._step(f"adelay={start * 1000:.6f}:all=1", layer, "a")
+        # A hard start off a zero crossing clicks. The sibling `aud` tool
+        # measured 31.9x between a snapped and an unsnapped cut.
+        layer = self._step(f"afade=t=in:st={start:.6f}:d=0.02", layer, "a")
+        if op.end is not None:
+            layer = self._step(f"afade=t=out:st={max(op.end - 0.02, 0.0):.6f}:d=0.02", layer, "a")
+            layer = self._step(f"atrim=end={op.end:.6f},asetpts=PTS-STARTPTS", layer, "a")
+        if policy.gain_db:
+            layer = self._step(f"volume={policy.gain_db:g}dB", layer, "a")
+        # `apad` with NO trim pads with silence FOREVER: ffmpeg does not finish,
+        # it simply never stops writing. `_bound_audio` returns "" when it does
+        # not know the length, and 0.0 is its "unknown" sentinel -- so a bare
+        # concatenation here turns an unprobed plan into a hung render rather
+        # than an error. Measured: a 30-minute test timeout with no output.
+        bound = self._bound_audio(self.elapsed)
+        if not bound:
+            raise VidError(
+                "An overlay that contributes sound needs the edit's length, and it was not "
+                "measured. Compile through `vid render`, which probes it."
+            )
+        # `_bound_audio` already carries its own apad; prefixing another one
+        # emitted the filter name `apadapad`.
+        layer = self._step(bound.lstrip(","), layer, "a")
+
+        if policy.policy == "only" or self.audio is None:
+            # `self.audio is None` IS the post-`audio remove` case, which is
+            # exactly how the stale flag was reached.
+            self._regained_audio(layer)
+            return
+
+        base = self.audio
+        # HOLD THE BASE FOR THE WHOLE EDIT before mixing.
+        #
+        # `amix` ends an input when that input's stream ends. The base is
+        # decoded from a file, and its audio stream can finish a few tens of
+        # milliseconds short of its video -- AAC frame granularity, not a bug in
+        # the file. With `dropout_transition=0` amix then simply drops it, and
+        # the last moments of the edit play the LAYER alone.
+        #
+        # Measured: the base's tone vanished around 2.54-2.58s of a 3s render on
+        # ffmpeg 6.1.1-3ubuntu5, while the same render on a newer nightly kept
+        # it. Duration was unchanged either way, so nothing that checked length
+        # noticed, and every level probe sampled the middle where both are
+        # present.
+        #
+        # `_placed_audio` has always conditioned SUPPLIED audio this way, for
+        # exactly this reason. The mix path simply never did the same for the
+        # base it already had.
+        if self.elapsed:
+            base = self._step(f"apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS", base, "a")
+        if policy.base_gain_db:
+            base = self._step(f"volume={policy.base_gain_db:g}dB", base, "a")
+        if policy.duck:
+            # sidechaincompress consumes the layer as its key, so the layer is
+            # split: one copy ducks the base, the other is still mixed in.
+            key, mixed = self._next("a"), self._next("a")
+            self.filters.append(f"[{layer}]asplit[{key}][{mixed}]")
+            ducked = self._next("a")
+            self.filters.append(
+                f"[{base}][{key}]sidechaincompress="
+                f"threshold={policy.duck_threshold:g}:ratio={policy.duck_ratio:g}:"
+                f"attack={policy.duck_attack:g}:release={policy.duck_release:g}[{ducked}]"
+            )
+            base, layer = ducked, mixed
+
+        out = self._next("a")
+        self.filters.append(f"[{base}][{layer}]amix=inputs=2:normalize=0:dropout_transition=0[{out}]")
+        self._regained_audio(out)
+
+    def _progress(self, motion: Motion) -> str:
+        """0 before the move, 1 after it, and the eased fraction in between.
+
+        `clip` holds the ends flat, so the geometry is stationary outside the
+        window rather than continuing to extrapolate past it.
+        """
+        linear = f"clip((t-{motion.start:.6f})/{max(motion.duration, 1e-6):.6f},0,1)"
+        if motion.easing == "linear":
+            return linear
+        # Smoothstep: 3p^2 - 2p^3, written as products because ffmpeg's
+        # evaluator has no exponent operator.
+        return f"({linear}*{linear}*(3-2*{linear}))"
+
+    def _even(self, expression: str) -> str:
+        """Round a size expression down to an even number of pixels.
+
+        yuv420p cannot encode an odd width or height. An animated size crosses
+        odd values constantly, so without this the render dies partway through
+        on a frame that happened to land wrong -- not at the first frame, which
+        is what makes it look intermittent.
+        """
+        return f"trunc(({expression})/2)*2"
+
+    def _animated(self, layer: str, op: Overlay, size: tuple[int, int] | None) -> tuple[str, str, str]:
+        """Scale the layer per frame, and return the label plus x/y expressions.
+
+        `scale` with `eval=frame` re-evaluates its size expression every frame,
+        and `overlay` already evaluates x/y per frame. Together they move and
+        resize the layer without touching a single timestamp.
+
+        NOT `zoompan`, whose `d` is output-frames-per-input-frame and which
+        rendered 400 seconds from an 8-second source the last time it was used
+        here (see `Compiler.zoom`).
+        """
+        motion = op.motion
+        if motion is None:
+            raise VidError("internal: _animated called without a motion")
+
+        from_width = op.width if op.width is not None else (size[0] if size else None)
+        from_height = op.height if op.height is not None else (size[1] if size else None)
+        to_width = motion.to_width if motion.to_width is not None else from_width
+        to_height = motion.to_height if motion.to_height is not None else from_height
+        if from_width is None or from_height is None or to_width is None or to_height is None:
+            raise VidError(
+                f"An animated overlay needs to know how big {op.source!r} is, and its size was not "
+                "read. Give --width and --height, or compile through `vid render`, which probes it."
+            )
+
+        progress = self._progress(motion)
+        width = self._even(f"{from_width}+({to_width}-{from_width})*{progress}")
+        height = self._even(f"{from_height}+({to_height}-{from_height})*{progress}")
+        moved = self._step(f"scale=w='{width}':h='{height}':eval=frame,setsar=1", layer, "v")
+
+        x = f"{op.x}+({motion.to_x}-{op.x})*{progress}"
+        y = f"{op.y}+({motion.to_y}-{op.y})*{progress}"
+        return moved, x, y
+
+    def _normalised(self, source: str, label: str, op: Stitch) -> str:
+        """Resize a clip to the target size, or return it untouched.
+
+        `concat` requires matching resolution and SAR across segments. Without
+        this the mismatch reaches ffmpeg, which rejects the whole command rather
+        than naming the file, so a caller learns about it at render time in a
+        message that does not say which clip was the problem.
+
+        Both modes preserve aspect ratio. Stretching is never applied: a frame
+        that silently changed shape looks plausible and is wrong, which is the
+        class of defect this whole compiler keeps paying for.
+
+        `setsar=1` because matching pixel dimensions is not sufficient -- two
+        clips of the same size and different sample aspect are still refused.
+        """
+        target = self.target_size
+        size = self.source_sizes.get(source)
+        if target is None or size is None:
+            # Unknown means nobody probed, which is the direct `compile_plan`
+            # path. An unproven guess must not resize someone's footage.
+            return label
+        if size == target:
+            # SAME PIXEL SIZE IS NOT THE SAME FRAME. Two 640x360 clips at SAR
+            # 1:1 and 2:1 describe different shapes, and `concat` refuses them
+            # exactly as it refuses mismatched resolutions -- inside ffmpeg,
+            # naming no file.
+            #
+            # The docstring above has always said so; this branch returned
+            # untouched anyway, so the one case where `setsar` was the ONLY
+            # thing needed was the one case that skipped it. Even `fit="fit"`
+            # could not rescue it, because the sizes matched and nothing ran.
+            #
+            # `setsar=1` alone, deliberately: no scale, no pad, no crop. The
+            # frame is already the right size, so touching its pixels would be
+            # a change nobody asked for.
+            return self._step("setsar=1", label, "v")
+        if op.fit is None:
+            raise VidError(
+                f"Cannot stitch {source!r}: it is {size[0]}x{size[1]} and this edit is "
+                f"{target[0]}x{target[1]}. Say how to resolve that with `--fit fit` "
+                "(preserve aspect, pad the remainder with bars, nothing leaves frame) or "
+                "`--fit fill` (preserve aspect, crop the overflow centred, nothing is "
+                "letterboxed). Neither is a default, because resizing footage without "
+                "being asked changes the framing without saying so."
+            )
+        width, height = target
+        if op.fit == "fit":
+            chain = (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+            )
+        else:
+            chain = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+        return self._step(chain, label, "v")
+
+    def _refuse_audio_mismatch(self, source: str, incoming_has_audio: bool) -> None:
+        """Refuse a join where exactly one side carries sound.
+
+        concat needs the same streams on both sides. Passing it a specifier for
+        a stream that does not exist fails as `Stream specifier ... matches no
+        streams`, which names neither the file nor the reason -- and dropping
+        the sound instead would silently discard audio the caller still has.
+
+        Named here, before ffmpeg runs, because the caller knows which file they
+        meant and ffmpeg does not.
+        """
+        running_has_audio = self.audio is not None
+        if running_has_audio == incoming_has_audio:
+            return
+        if self.audio_removed:
+            # `audio remove` already said what to do with sound in this edit.
+            # Dropping the incoming clip's too is carrying out that instruction,
+            # not discarding something silently, so there is nothing to refuse.
+            return
+        if incoming_has_audio:
+            raise VidError(
+                f"Cannot stitch {source!r}, which has sound, onto an edit that has none. "
+                "Give the running edit an audio track with `vid audio replace`, or say the "
+                "silence is deliberate with `vid audio remove` before stitching -- joining "
+                "a silent edit to a sounded clip would have to invent a track or discard one."
+            )
+        raise VidError(
+            f"Cannot stitch {source!r} onto this edit: it carries no audio stream, and the "
+            "edit so far does. Add sound to it with `vid audio replace`, or remove the "
+            "edit's own with `vid audio remove` before stitching -- joining them as they "
+            "are would silently drop the audio you already have."
+        )
 
     def _transition(self, other_v: str, other_a: str, op: Stitch) -> None:
         """`xfade` for video, `acrossfade` for audio -- they are separate filters.
@@ -430,6 +981,13 @@ class Compiler:
             f"xfade=transition={op.transition}:duration={op.transition_duration}:offset={offset}"
             f"{expr}[{out_v}]"
         )
+        if self.audio is None:
+            # Silent on both sides -- `_refuse_audio_mismatch` has already ruled
+            # out the one-sided case. xfade is video-only, so the picture blend
+            # above is the whole transition; acrossfade below would interpolate
+            # the absent stream the same way the plain concat path used to.
+            self.video = out_v
+            return
         # AAC decode padding is not a transition handle. Bound both sides to
         # their picture timing before acrossfade, or each join drifts later.
         self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
@@ -487,7 +1045,13 @@ class Compiler:
         ).hexdigest()[:16]
         cube = lut_cache_dir() / f"{key}.cube"
         if not cube.is_file():
-            cube.parent.mkdir(parents=True, exist_ok=True)
+            with writing(
+                cube,
+                "The generated colour lookup table",
+                "That location comes from VID_LUT_CACHE_DIR when it is set, and a cache "
+                "directory otherwise. Point VID_LUT_CACHE_DIR at a writable directory.",
+            ):
+                cube.parent.mkdir(parents=True, exist_ok=True)
             write_cube(
                 ColorStats(mean=op.source_mean, std=op.source_std),
                 ColorStats(mean=op.reference_mean, std=op.reference_std),
@@ -540,6 +1104,12 @@ class Compiler:
         files, and the second is what "remove" means.
         """
         self.audio = None
+        # Silence a caller ASKED for, as distinct from a source that happened to
+        # arrive without a track. A later stitch reads this: dropping a clip's
+        # sound is carrying out a stated intent, where doing the same to an edit
+        # that was only incidentally silent would be discarding audio nobody
+        # said to discard.
+        self.audio_removed = True
 
     def _extra_audio(self, track: str) -> str:
         """Add an audio file as an input and return its stream label."""
@@ -552,7 +1122,7 @@ class Compiler:
         # long. The result always matches the video, which is the answer every
         # caller wants and the one ffmpeg would otherwise decide by accident.
         chain = self._placed_audio(op.start)
-        self.audio = self._step(chain, incoming, "a")
+        self._regained_audio(self._step(chain, incoming, "a"))
 
     def _placed_audio(self, start: float) -> str:
         if not math.isfinite(start) or start < 0:
@@ -674,6 +1244,8 @@ def compile_plan(
     has_audio: bool = True,
     frame_rate: float | None = None,
     dimensions: tuple[int, int] | None = None,
+    source_audio: dict[str, bool] | None = None,
+    source_sizes: dict[str, tuple[int, int]] | None = None,
     video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
@@ -682,7 +1254,15 @@ def compile_plan(
         total = (durations or {}).get(plan.source or "", 0.0)
         if not math.isfinite(total) or total <= 0:
             raise VidError("Picture stream-copy needs a known positive video duration. Compile through `vid render`.")
-    compiler = Compiler(plan, durations=durations, has_audio=has_audio, frame_rate=frame_rate, dimensions=dimensions)
+    compiler = Compiler(
+        plan,
+        durations=durations,
+        has_audio=has_audio,
+        frame_rate=frame_rate,
+        dimensions=dimensions,
+        source_audio=source_audio,
+        source_sizes=source_sizes,
+    )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
     # than its own concrete type, which is a real narrowing gap (13 diagnostics
@@ -700,6 +1280,8 @@ def compile_plan(
                 compiler.zoom(operation)
             case Stitch():
                 compiler.stitch(operation)
+            case Overlay():
+                compiler.overlay(operation)
             case Caption():
                 compiler.caption(operation)
             case Recolor():

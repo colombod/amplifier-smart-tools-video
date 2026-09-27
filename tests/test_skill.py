@@ -88,3 +88,63 @@ def test_every_command_answers_its_own_help() -> None:
 
         assert result.exit_code == 0
         assert result.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# A capability that says `model_backed=False` is read by a caller deciding
+# "can I run this with no credentials at all". The spec's core promise is that
+# deterministic capabilities do exactly that, so a capability with a provider
+# path hiding behind a flag must NAME it -- the classification is per-capability
+# while the behaviour is per-path.
+#
+# `find` established the pattern in this same table: stay model_backed=False
+# where a genuinely useful credential-free path exists, and say in the summary
+# what turns a provider on. Marking the whole capability model-backed would
+# under-sell what works uncredentialed, which is the thing the spec most wants
+# a consumer to be able to trust.
+# ---------------------------------------------------------------------------
+
+#: (capability, the flag or input that escalates to a provider)
+ESCALATING = [
+    ("stitch", "describing a transition in words rather than naming one"),
+    ("index", "--vision, which describes frames with a model"),
+    ("find", "describing a moment by meaning rather than literal words"),
+]
+
+
+@pytest.mark.parametrize(("name", "what_escalates"), ESCALATING, ids=[c[0] for c in ESCALATING])
+def test_a_capability_with_a_provider_path_names_it(name, what_escalates):
+    """Verified against the source, not taken on the summary's word:
+
+    - stitch  -> lib.resolve_transition takes `model` and calls it for a
+                 DESCRIPTIVE transition; a NAME resolves with no provider.
+    - index   -> the CLI's --vision reaches index.describe -> vision.describe_shots,
+                 and is already gated behind --yes for spend. Shots are ffmpeg
+                 and speech is local faster-whisper: neither needs credentials.
+    """
+    from vid.core.skill import CAPABILITIES
+
+    capability = next(c for c in CAPABILITIES if c.name == name)
+
+    assert not capability.model_backed, (
+        f"{name} is now model_backed=True; if its deterministic path was removed this test is stale, "
+        "and if it was not, the manifest now under-sells what runs with no credentials"
+    )
+    assert "provider" in capability.summary or "model" in capability.summary, (
+        f"{name} has a provider path ({what_escalates}) that its summary does not mention. "
+        "A caller reading the manifest to decide whether credentials are needed gets the wrong answer."
+    )
+
+
+def test_a_capability_with_no_provider_path_does_not_claim_one():
+    """The control. Without it, 'mentions a provider' could be satisfied by
+    saying so on every capability, which would be just as useless."""
+    from vid.core.skill import CAPABILITIES
+
+    deterministic = {"trim", "cut", "retime", "zoom", "vignette", "lut", "caption"}
+    for capability in CAPABILITIES:
+        if capability.name in deterministic:
+            assert not capability.model_backed, f"{capability.name} became model-backed"
+            assert "escalat" not in capability.summary, (
+                f"{capability.name} has no provider path but its summary implies an escalation"
+            )

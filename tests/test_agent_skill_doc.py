@@ -25,6 +25,15 @@ REMOVED_MARKERS = (
     "capability | needs | install",  # the matrix table header
     "brew postinstall ca-certificates",  # the caption/libass troubleshooting steps
     "Chain the verbs. Do not call them one at a time.",  # the chaining contract restatement
+    # Trimmed after `check-spec-adherence` run 3 flagged `agent-skill-is-thin`
+    # again. The INSTALL COMMANDS all stayed -- the spec names them explicitly --
+    # but the prose DESCRIBING what each extra enables went, because that is the
+    # content that drifts: `vid check` reports what is actually present and
+    # configured on the box, and this file cannot.
+    "local transcription, so moments can be",  # per-extra capability prose
+    "speaks narration through OpenAI's API",  # per-extra capability prose
+    "the CLI is a thin wrapper",  # library-surface description
+    "against the repository's",  # version-comparison mechanics
 )
 
 

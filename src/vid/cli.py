@@ -14,12 +14,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from pydantic import ValidationError
 import typer
 
 from vid import lib
 from vid.plan import read_plan, write_plan
 from vid.schemas import DEFAULT_INTELLIGENCE_MODEL, ReasoningEffort, VidError
-from vid.verbdoc import verb_doc
 
 ModelOption = Annotated[str, typer.Option("--model", "--intelligence-model", help="Model for model-backed work.")]
 EffortOption = Annotated[
@@ -40,11 +40,19 @@ def _print_skill(value: bool) -> None:
 
 
 def _doc(name: str):
-    """A `--help` that prints this verb's document and stops."""
+    """A `--help` that prints this verb's document and stops.
+
+    THROUGH THE LIBRARY, not around it. This reached into `vid.verbdoc`
+    directly, so a capability's own help was the one piece of domain content
+    the CLI owned rather than relayed -- `lib.skill()` gave a library caller
+    the whole tool's document, but no function gave them a single verb's.
+    `lib.capability_skill` is now that function, and the CLI relays it like
+    everything else.
+    """
 
     def callback(value: bool) -> None:
         if value:
-            typer.echo(verb_doc(name))
+            typer.echo(lib.capability_skill(name))
             raise typer.Exit()
 
     return Annotated[
@@ -144,6 +152,10 @@ def stitch(
         str | None, typer.Option("--transition", help="An xfade preset: fade, dissolve, wipeleft...")
     ] = None,
     duration: Annotated[float, typer.Option("--duration", help="Seconds the transition takes.")] = 0.5,
+    fit: Annotated[
+        str | None,
+        typer.Option("--fit", help="Resolve a differing size: `fit` pads with bars, `fill` crops centred."),
+    ] = None,
     help: _doc("stitch") = False,
     model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: EffortOption = "low",
@@ -154,7 +166,97 @@ def stitch(
     else:
         plan, rest = None, sources
     write_plan(
-        lib.stitch(plan, rest, transition=transition, duration=duration, model=model, reasoning_effort=reasoning_effort)
+        lib.stitch(
+            plan,
+            rest,
+            transition=transition,
+            duration=duration,
+            fit=fit,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+    )
+
+
+@app.command()
+def overlay(
+    source: Annotated[str, typer.Argument(help="The clip to lay over the picture.")],
+    over: Annotated[str | None, typer.Argument(help="A video file, or omit to continue a piped plan.")] = None,
+    x: Annotated[int, typer.Option("--x", help="Left edge, in pixels from the frame's left.")] = 0,
+    y: Annotated[int, typer.Option("--y", help="Top edge, in pixels from the frame's top.")] = 0,
+    width: Annotated[int | None, typer.Option("--width", help="Resize the layer. Needs --height too.")] = None,
+    height: Annotated[int | None, typer.Option("--height", help="Resize the layer. Needs --width too.")] = None,
+    start: Annotated[str | None, typer.Option("--start", help="When the layer appears.")] = None,
+    end: Annotated[str | None, typer.Option("--end", help="When the layer disappears.")] = None,
+    mask: Annotated[
+        str | None,
+        typer.Option("--mask", help="Cut the layer to a shape: rect, rounded_rect, circle, ellipse, image, video."),
+    ] = None,
+    mask_source: Annotated[
+        str | None, typer.Option("--mask-source", help="The matte file, for an image or video mask.")
+    ] = None,
+    mask_radius: Annotated[int, typer.Option("--mask-radius", help="Corner radius for rounded_rect.")] = 40,
+    mask_invert: Annotated[bool, typer.Option("--mask-invert", help="Cut a hole instead of a window.")] = False,
+    mask_feather: Annotated[float, typer.Option("--mask-feather", help="Soften the mask edge, in pixels.")] = 0.0,
+    to_x: Annotated[int | None, typer.Option("--to-x", help="Left edge the layer moves to.")] = None,
+    to_y: Annotated[int | None, typer.Option("--to-y", help="Top edge the layer moves to.")] = None,
+    to_width: Annotated[int | None, typer.Option("--to-width", help="Width the layer grows to.")] = None,
+    to_height: Annotated[int | None, typer.Option("--to-height", help="Height the layer grows to.")] = None,
+    move_at: Annotated[str | None, typer.Option("--move-at", help="When the move begins.")] = None,
+    move_over: Annotated[float, typer.Option("--move-over", help="Seconds the move takes.")] = 1.0,
+    easing: Annotated[str, typer.Option("--easing", help="`linear` or `ease_in_out`.")] = "linear",
+    audio: Annotated[
+        str | None,
+        typer.Option("--audio", help="The layer's sound: `drop` (default), `keep`, or `only`."),
+    ] = None,
+    audio_gain: Annotated[float, typer.Option("--audio-gain", help="Layer gain in dB before mixing.")] = 0.0,
+    base_gain: Annotated[float, typer.Option("--base-gain", help="Base gain in dB before mixing.")] = 0.0,
+    duck: Annotated[bool, typer.Option("--duck", help="Dip the base under the layer, recovering after.")] = False,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="Make part of the layer transparent: colorkey, chromakey, lumakey."),
+    ] = None,
+    key_colour: Annotated[str, typer.Option("--key-colour", help="The colour to remove.")] = "0x00FF00",
+    key_threshold: Annotated[float, typer.Option("--key-threshold", help="Brightness to remove, lumakey.")] = 0.9,
+    key_similarity: Annotated[float, typer.Option("--key-similarity", help="How close counts.")] = 0.3,
+    key_blend: Annotated[float, typer.Option("--key-blend", help="Softness at the keyed edge.")] = 0.0,
+    opacity: Annotated[float, typer.Option("--opacity", help="Uniform transparency, 0 to 1.")] = 1.0,
+    help: _doc("overlay") = False,
+) -> None:
+    """Lay another clip over the picture, at a stated place and time."""
+    write_plan(
+        lib.overlay(
+            read_plan(over),
+            source,
+            x,
+            y,
+            width,
+            height,
+            start,
+            end,
+            mask,
+            mask_source,
+            mask_radius,
+            mask_invert,
+            mask_feather,
+            to_x,
+            to_y,
+            to_width,
+            to_height,
+            move_at,
+            move_over,
+            easing,
+            audio,
+            audio_gain,
+            base_gain,
+            duck,
+            key,
+            key_colour,
+            key_threshold,
+            key_similarity,
+            key_blend,
+            opacity,
+        )
     )
 
 
@@ -322,6 +424,13 @@ def narrate(
     mix: Annotated[
         bool | None, typer.Option("--mix/--replace", help="Over the original audio, or instead of it.")
     ] = None,
+    allow_unfitted: Annotated[
+        bool,
+        typer.Option(
+            "--allow-unfitted",
+            help="Lay the narration on even if a line overruns its slot. Without this, an unfitted line is refused.",
+        ),
+    ] = False,
     help: _doc("narrate") = False,
     model: ModelOption = DEFAULT_INTELLIGENCE_MODEL,
     reasoning_effort: EffortOption = "low",
@@ -335,6 +444,7 @@ def narrate(
             script_only=script_only,
             voice=voice,
             mix=mix,
+            allow_unfitted=allow_unfitted,
             model=model,
             reasoning_effort=reasoning_effort,
         )
@@ -447,11 +557,39 @@ def check(help: _doc("check") = False) -> None:
     typer.echo(lib.check())
 
 
+def _readable(error: ValidationError) -> list[str]:
+    """Pydantic's report, reduced to the sentences the validators actually wrote.
+
+    Every range guard in `plan.py` raises `ValueError` from inside a validator,
+    and each one is phrased for a caller -- naming the remedy, and whose limit
+    the number is. Pydantic wraps that in a `ValidationError` whose `str()` is a
+    developer artefact: the message survives, buried under a type tag, the
+    offending input dict and a link to pydantic.dev.
+    """
+    lines: list[str] = []
+    for item in error.errors():
+        # Pydantic prefixes a validator's own ValueError with "Value error, ".
+        message = str(item.get("msg", "")).removeprefix("Value error, ")
+        where = ".".join(str(part) for part in item.get("loc", ()) if not isinstance(part, int))
+        lines.append(f"{where}: {message}" if where else message)
+    return lines or [str(error)]
+
+
 def main() -> int:
     try:
         app()
     except VidError as error:
         typer.echo(f"vid: {error}", err=True)
+        return 1
+    except ValidationError as error:
+        # CAUGHT ALONGSIDE VidError, because a direct verb builds its model by
+        # hand: `vid cut --from 5 --to 2` constructed `Cut` straight from the
+        # CLI, so the ValidationError escaped `main` entirely and Typer printed
+        # a Python traceback. The JSON plan path never showed this -- `read_plan`
+        # catches ValidationError itself -- so the two doors onto the SAME guards
+        # behaved differently, and only the documented one was civil.
+        for line in _readable(error):
+            typer.echo(f"vid: {line}", err=True)
         return 1
     return 0
 
