@@ -140,15 +140,23 @@ def test_every_command_documents_its_library_surface() -> None:
     assert not missing, f"these capabilities document no library surface: {', '.join(missing)}"
 
 
-def test_the_only_exempt_command_is_the_audio_group() -> None:
+def test_the_only_exempt_commands_are_the_two_groups() -> None:
     """A verb must not join the exempt set by having its function renamed.
 
     The exemption is an explicit set, not a failed lookup, so this asserts the
-    set stays what it claims to be: `audio` is a command GROUP whose own
-    document says "None of its own" and points at four subcommands -- each of
-    which does carry a real signature.
+    set stays what it claims to be. Both members are command GROUPS whose own
+    documents say "None of its own" and point at subcommands -- each of which
+    does carry a real signature:
+
+      audio  -> remove, replace, mix, extract
+      mask   -> wipe, from-video
+
+    This test was named `..._is_the_audio_group` and asserted a one-member set
+    until `mask` arrived. Renamed rather than widened quietly, because a test
+    whose NAME claims less than its body checks is the same defect as a
+    docstring that overclaims.
     """
-    assert frozenset({"audio"}) == NO_LIBRARY_SURFACE
+    assert frozenset({"audio", "mask"}) == NO_LIBRARY_SURFACE
     for subcommand in AUDIO_SUBCOMMANDS:
         assert LIBRARY_MARKER in verb_doc(subcommand), f"{subcommand} lost its library surface"
 

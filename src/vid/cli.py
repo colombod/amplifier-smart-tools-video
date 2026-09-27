@@ -400,6 +400,52 @@ def audio_extract(
     typer.echo(lib.audio_extract(video, output))
 
 
+mask_app = typer.Typer(
+    help="Write a matte: an animated wipe, or one derived from footage.",
+    no_args_is_help=True,
+)
+app.add_typer(mask_app, name="mask")
+
+
+@mask_app.callback()
+def _mask_group(help: _doc("mask") = False) -> None:
+    """Write a matte: an animated wipe, or one derived from footage.
+
+    A group callback for the same reason `audio` has one: `mask` is a sub-app
+    rather than a verb, and without this `vid mask --help` falls through to
+    Typer's usage box while every other verb answers with its document.
+    """
+
+
+@mask_app.command("wipe")
+def mask_wipe(
+    output: Annotated[str, typer.Argument(help="Where to write the matte, e.g. reveal.mkv.")],
+    shape: Annotated[str, typer.Option("--shape", help="linear, radial or barn_door.")] = "linear",
+    direction: Annotated[str, typer.Option("--direction", help="left, right, up or down. Linear only.")] = "left",
+    width: Annotated[int, typer.Option("--width", help="Matte width in pixels.")] = 640,
+    height: Annotated[int, typer.Option("--height", help="Matte height in pixels.")] = 360,
+    seconds: Annotated[float, typer.Option("--seconds", help="How long the reveal takes.")] = 2.0,
+    fps: Annotated[float, typer.Option("--fps", help="Frame rate of the matte.")] = 30.0,
+    help: _doc("mask_wipe") = False,
+) -> None:
+    """Write an animated reveal. Ends a chain rather than continuing one."""
+    typer.echo(lib.mask_wipe(shape, output, width=width, height=height, seconds=seconds, fps=fps, direction=direction))
+
+
+@mask_app.command("from-video")
+def mask_from_video(
+    video: Annotated[str, typer.Argument(help="The footage to derive the matte from.")],
+    output: Annotated[str, typer.Argument(help="Where to write the matte, e.g. matte.mkv.")],
+    key: Annotated[str, typer.Option("--key", help="colorkey, chromakey, lumakey or alpha.")] = "colorkey",
+    colour: Annotated[str, typer.Option("--colour", help="The colour to key out.")] = "0x00FF00",
+    similarity: Annotated[float, typer.Option("--similarity", help="0..1. How close counts as a match.")] = 0.3,
+    blend: Annotated[float, typer.Option("--blend", help="0..1. Softness at the key's edge.")] = 0.0,
+    help: _doc("mask_from_video") = False,
+) -> None:
+    """Derive a per-frame matte from footage. Ends a chain rather than continuing one."""
+    typer.echo(lib.mask_from_video(video, output, key=key, colour=colour, similarity=similarity, blend=blend))
+
+
 @app.command()
 def narrate(
     video: Annotated[str, typer.Argument(help="The video to narrate. Index it first.")],

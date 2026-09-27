@@ -814,3 +814,63 @@ def ensure_long_base_clip() -> Clip:
             capture_output=True,
         )
     return Clip(path=path, name="base6", colour="0x303030", hz=200, seconds=6.0)
+
+
+def ensure_moving_subject_clip() -> Path:
+    """A pure-lime field with a red box that MOVES, for keyed-matte tests.
+
+    Movement is the point. `ensure_keyable_clip` above is static, so a matte
+    derived from it cannot show that the white region TRACKS anything -- every
+    timestamp looks the same, and a test over it would pass just as happily on a
+    frozen matte.
+
+    TWO TRAPS, both hit live while building this, both recorded so the next
+    person does not pay for them again:
+
+    1. `color=green` IS NOT `0x00FF00`. lavfi's `green` is CSS green, `007f00`,
+       measured. Keying `0x00FF00` against it with similarity 0.3 swallowed the
+       ENTIRE frame -- field and subject -- and produced a uniformly black
+       matte that looked like a broken library rather than a wrong fixture.
+       This uses `0x00FF00` explicitly so the key names exactly what is there.
+
+    2. `drawbox` CANNOT MOVE. Its `t` is THICKNESS and it exposes no time
+       variable, which is the same finding `tests/fixtures.py`'s mask notes
+       record for #13. A `drawbox=x='20+t*80'` fixture silently drew nothing at
+       all, and the first sampling of it read green where the box should have
+       been. `overlay` x/y do expose `t`, so the box is composited instead.
+
+    The box spans x=60..120 at t=0.5 and x=220..280 at t=2.5, two windows that
+    do not overlap -- so a matte that tracks and a matte that does not are
+    distinguishable by reading pixels at those two times.
+    """
+    path = FIXTURE_DIR / "moving_subject.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=0x00FF00:s=320x180:r=30:d=3",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=0xFF0000:s=60x60:r=30:d=3",
+                "-filter_complex",
+                "[0][1]overlay=x='20+t*80':y=60",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return path

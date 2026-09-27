@@ -568,6 +568,151 @@ is what you want.
 **What it costs.** Nothing here. `render` compiles this like any other
 operation -- no separate decode.
 """,
+    "mask": """# vid mask -- write a matte you can look at before you use it
+
+```bash
+vid mask wipe reveal.mkv --shape linear --direction left --seconds 2
+vid mask from-video greenscreen.mp4 matte.mkv --key colorkey --colour 0x00FF00
+```
+
+A PRODUCING verb, like `vid audio extract`: it writes a file and ENDS a chain
+rather than continuing one. Every other verb here passes a plan along; this one
+does not, and a caller who expects otherwise is owed the exception in writing.
+
+## Why a verb, when `overlay --mask` exists
+
+The inline `--mask` field on `overlay` covers shapes and direct file references
+without any extra step, and it remains the right tool for those. This verb
+covers what inline cannot: a matte you want to **inspect, reuse, version, or
+derive from footage** before trusting it.
+
+The two compose rather than duplicate:
+
+```bash
+vid mask from-video cam.mp4 matte.mkv --key colorkey
+vid overlay cam.mp4 talk.mp4 --mask video --mask-source matte.mkv | vid render out.mp4
+```
+
+`vid mask` writes a matte; `overlay --mask video` consumes one. There is exactly
+one matte format and one consumer.
+
+## The matte format
+
+Single-channel grayscale, at the dimensions and frame rate you ask for.
+**White keeps, black drops.**
+
+Written as **`.mkv` / ffv1**, and that is measured rather than preferred: asking
+for `gray` on the mp4/h264 path returns `yuvj420p` with exit code 0 -- as an
+output flag, as `format=gray` in the chain, with libx264 named explicitly, and
+in mkv too. Only ffv1 actually wrote a single-channel file. Lossless is the
+right answer for a matte anyway, since a lossy one carries compression ringing
+on precisely the edges it exists to define. Any other extension is refused.
+
+## Deliberately deterministic
+
+Every derivation here is a threshold or a channel extraction. There is no
+subject segmentation and no rotoscoping: ffmpeg has no such filter, and
+pretending otherwise would put a quality claim behind a capability that cannot
+meet it. If model-backed segmentation is ever wanted it is a separate, clearly
+labelled capability, not a quiet upgrade to this one.
+
+**Arguments.** None; `mask` is a group. See `vid mask wipe --help` and
+`vid mask from-video --help`.
+
+**Result.** The group's own help.
+
+**Failures.** None of its own.
+""",
+    "mask_wipe": """# vid mask wipe -- write an animated reveal as a matte
+
+```bash
+vid mask wipe reveal.mkv
+vid mask wipe reveal.mkv --shape linear --direction up --seconds 1.5
+vid mask wipe iris.mkv --shape radial --width 1280 --height 720 --fps 60
+vid mask wipe doors.mkv --shape barn_door --seconds 3
+```
+
+Writes a matte that opens over `--seconds`: black at the start, white at the
+end, single-channel grayscale throughout. White keeps, black drops.
+
+A matte animation is a transition, a reveal, or a spotlight, so this is useful
+well beyond picture-in-picture. Feed it to `vid overlay --mask video
+--mask-source <file>`.
+
+## The shapes
+
+- `linear` sweeps across the frame; `--direction` picks which way.
+- `radial` opens from the centre outwards, reaching the FURTHEST corner at the
+  end rather than the nearest edge, so the reveal is genuinely complete.
+- `barn_door` opens from the centre horizontally, both ways at once.
+  `--direction` does not apply to it.
+
+`geq` is the mechanism, because it is the only filter here that exposes TIME.
+`drawbox` cannot do this: its `t` is thickness and it has no time variable at
+all -- measured, and recorded alongside the fixtures that needed it.
+
+**Arguments.**
+- `output` (required) -- where to write the matte. Must end `.mkv`.
+- `--shape` (optional, default `linear`) -- `linear`, `radial` or `barn_door`.
+- `--direction` (optional, default `left`) -- `left`, `right`, `up` or `down`.
+  Applies to `linear` only.
+- `--width` (optional, default `640`) -- matte width in pixels, rounded down to even.
+- `--height` (optional, default `360`) -- matte height in pixels, rounded down to even.
+- `--seconds` (optional, default `2.0`) -- how long the reveal takes.
+- `--fps` (optional, default `30.0`) -- frame rate of the matte.
+
+**Result.** `wrote <path>` on stdout. Ends the chain; nothing is piped onward.
+
+**Failures.** An unknown `--shape` or `--direction` is refused, naming the
+available ones. A non-positive `--seconds` or `--fps` is refused. A `--width` or
+`--height` below 2 is refused. An output not ending `.mkv` is refused, with the
+measurement explaining why. If ffmpeg is missing, the refusal names it.
+""",
+    "mask_from_video": """# vid mask from-video -- derive a per-frame matte from footage
+
+```bash
+vid mask from-video greenscreen.mp4 matte.mkv
+vid mask from-video cam.mp4 matte.mkv --key colorkey --colour 0x00FF00 --similarity 0.1
+vid mask from-video titles.mov matte.mkv --key alpha
+```
+
+Turns footage into a matte by keying it: single-channel grayscale, white keeps,
+black drops, one frame of matte per frame of source. The white region tracks
+whatever survives the key, so a moving subject gives a moving matte.
+
+## White is what SURVIVES the key
+
+`colorkey` makes the named colour transparent, so the extracted alpha is black
+where that colour was and white on everything else -- the subject. That matches
+the format contract without inverting anything. Inverting it here to "look
+right" would silently disagree with every other matte this tool emits.
+
+## The keys
+
+- `colorkey` -- flat colour, RGB distance. The usual choice.
+- `chromakey` -- YUV distance, better for green screen with lighting variation.
+- `lumakey` -- keys on brightness; `--similarity` is the threshold.
+- `alpha` -- the source already carries an alpha channel; take it as it is.
+  `--colour` is ignored.
+
+**Arguments.**
+- `video` (required) -- the footage to derive the matte from.
+- `output` (required) -- where to write the matte. Must end `.mkv`.
+- `--key` (optional, default `colorkey`) -- `colorkey`, `chromakey`, `lumakey`
+  or `alpha`.
+- `--colour` (optional, default `0x00FF00`) -- the colour to key out. Ignored by
+  `lumakey` and `alpha`.
+- `--similarity` (optional, default `0.3`) -- 0..1, how close counts as a match.
+  Too loose keys the whole frame; too tight keys nothing.
+- `--blend` (optional, default `0.0`) -- 0..1, softness at the key's edge.
+
+**Result.** `wrote <path>` on stdout. Ends the chain; nothing is piped onward.
+
+**Failures.** An unknown `--key` is refused, naming the available ones. A
+`--similarity` or `--blend` outside 0..1 is refused. An output not ending `.mkv`
+is refused. An unreadable source, or a matte that does not come back
+single-channel, is refused naming the file.
+""",
     "audio_extract": """# vid audio extract -- pull the audio out to a file
 
 ```bash
@@ -1299,6 +1444,12 @@ NOT_PIPE_PARTICIPANTS = frozenset(
         "find",
         "audio",  # the group overview spans three plan verbs and one non-plan verb; ambiguous, so excluded
         "audio_extract",
+        # `mask` is a PRODUCING verb group: both subcommands write a matte and
+        # END a chain, so the pipe rule would be false of them for the same
+        # reason it is false of `audio extract`.
+        "mask",
+        "mask_wipe",
+        "mask_from_video",
     }
 )
 
@@ -1318,7 +1469,7 @@ _LIBRARY_NAMES: dict[str, str] = {
 #: was renamed would otherwise silently join this set and lose its documented
 #: surface, which is exactly the kind of quiet omission this section exists to
 #: stop.
-_NO_LIBRARY_SURFACE: frozenset[str] = frozenset({"audio"})
+_NO_LIBRARY_SURFACE: frozenset[str] = frozenset({"audio", "mask"})
 
 
 def _library_section(name: str) -> str:
