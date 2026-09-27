@@ -30,7 +30,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 import pytest
 
-from tests.fixtures import have_ffmpeg
+from tests.fixtures import ensure_long_base_clip, ensure_square_clip, have_ffmpeg
 from vid.compile import compile_plan
 import vid.plan as plan_module
 from vid.plan import AudioMix, AudioReplace, Cut, Mask, Motion, Overlay, Plan, Trim, Zoom
@@ -540,8 +540,32 @@ def test_a_judgement_bound_cannot_move_quietly(name, expected):
 # ---------------------------------------------------------------------------
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SOURCE = str(FIXTURES / "base6.mp4")
-LAYER = str(FIXTURES / "square.mp4")
+
+# GENERATED, NOT ASSUMED PRESENT. These were bare paths:
+#
+#     SOURCE = str(FIXTURES / "base6.mp4")
+#     LAYER = str(FIXTURES / "square.mp4")
+#
+# which worked only because both clips happened to be COMMITTED binaries. This
+# module never called a generator at all, and nothing noticed, because the files
+# were always already there.
+#
+# Untracking them to satisfy #13 ("every fixture generated idempotently on a
+# clean checkout, none committed") exposed it immediately: on a cold checkout
+# this file failed 15 of its 16 renders and CREATED NOTHING. Reproduced twice
+# in the full suite and once in isolation, so it was the ordering, not a race.
+#
+# That is the defect the committed binaries were hiding, and it is the reason
+# "none committed" was worth landing rather than waiving: a fixture you cannot
+# rebuild is a fixture whose absence is a silent failure waiting for the first
+# contributor who clones fresh.
+if have_ffmpeg():
+    SOURCE = str(ensure_long_base_clip().path)
+    LAYER = str(ensure_square_clip().path)
+else:
+    # Every render below is skipped without ffmpeg, so these are never opened.
+    SOURCE = str(FIXTURES / "base6.mp4")
+    LAYER = str(FIXTURES / "square.mp4")
 SOURCE_SECONDS = 6.0
 SOURCE_SIZE = (640, 360)
 LAYER_SIZE = (480, 480)

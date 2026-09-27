@@ -230,3 +230,20 @@ __marimo__/
 # Generated website and local preview environments
 _site/
 .work/
+
+# Generated test fixtures. tests/fixtures.py's ensure_* helpers rebuild every one
+# of these from ffmpeg alone, idempotently, so committing them stored ~230 KB of
+# regenerable binaries AND contradicted issue #13's own acceptance criterion.
+# talk.mp4 / meeting.mp4 are NOT here: their generator needs espeak-ng, a system
+# dependency beyond ffmpeg. openai_tts/ is NOT here: it is a recorded real
+# response with provenance, which this repo requires to be committed.
+tests/fixtures/alpha.mp4
+tests/fixtures/base6.mp4
+tests/fixtures/bravo.mp4
+tests/fixtures/charlie.mp4
+tests/fixtures/corner.mp4
+tests/fixtures/keyable.mp4
+tests/fixtures/silent.mp4
+tests/fixtures/square.mp4
+tests/fixtures/undecodable.mp4
+tests/fixtures/varying.mp4
