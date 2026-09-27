@@ -12,15 +12,22 @@ Both are fixed on `main`, and this file asserts the four bullets rather than
 trusting that. It exists because #16 was auto-closed by PR #20's `Closes #16`
 while one bullet was still open, and nothing in the suite would have noticed.
 
-THE ONE DEVIATION, STATED PLAINLY. Bullet 1 reads "ffmpeg accepts the command".
-It does not: `vid` REFUSES a silent base joined to a sounded clip, before any
-command is built. That is deliberate and it is SYMMETRIC with bullet 3, whose
-own wording accepts a named refusal for the mirror case ("silence supplied
-deliberately, OR the failure names that file and its missing stream"). Joining a
-silent edit to a sounded clip has exactly two possible outcomes -- invent a
-track, or discard one -- and both change the caller's audio without being asked.
-Bullet 1 was written before that symmetry was settled; the refusal is the
-settled answer, and the `None` defect it was really about is gone either way.
+ALL FOUR BULLETS NOW HOLD, INCLUDING BULLET 1 -- and this file previously said
+otherwise, at length. It argued that refusing a silent base joined to a sounded
+clip was "the settled answer", because such a join "would have to invent a track
+or discard one".
+
+THAT ARGUMENT WAS WRONG, and #22 is what showed it. Synthesising silence for a
+clip that genuinely has no audio invents NOTHING: the clip really is silent, and
+a silent track is its honest representation. Only DISCARDING an existing track
+loses something, and that alone is still refused. Conflating the two produced a
+refusal that did not remove the work -- it moved it to #22's reporter, who built
+the silent track by hand per segment and measured up to 5 frames of picture
+drift for it.
+
+So bullet 1's "ffmpeg accepts the command" is now literally true, and the
+symmetry argument this docstring used to make is retained above only as a record
+of the mistake. See tests/test_stitch_synthesises_silence.py.
 """
 
 from __future__ import annotations
@@ -116,16 +123,17 @@ def test_bullet_1_a_silent_base_never_puts_the_literal_none_in_a_graph(clips, tm
     from vid.schemas import VidError
 
     silent, sounded = clips
-    try:
-        plan = stitch(Plan(source=str(silent)), [str(sounded)])
-        render(plan, str(tmp_path / "out.mp4"))
-    except VidError as refusal:
-        message = str(refusal)
-        assert "None" not in message, f"the literal None leaked into the refusal: {message!r}"
-        assert "audio replace" in message, f"a refusal here must name how to ADD sound: {message!r}"
-        assert "audio remove" in message, f"a refusal here must name how to DECLARE silence: {message!r}"
-        return
-    raise AssertionError("expected either a clean render or a named refusal")
+    out = tmp_path / "out.mp4"
+
+    # Since #22 this RENDERS rather than refusing: the silent base is given
+    # synthesised silence for its own span. The core property is unchanged and
+    # is what this test is really for -- the literal text `None` must never
+    # reach the graph, whatever the outcome.
+    render(stitch(Plan(source=str(silent)), [str(sounded)]), str(out))
+
+    assert out.is_file(), "a silent base joined to a sounded clip no longer renders"
+    assert _audio_streams(out) == 1, "the reconciled result should carry one audio track"
+    assert VidError is not None  # imported for the signature this test used to assert
 
 
 def test_bullet_2_audio_remove_then_stitch_renders_with_no_audio(clips, tmp_path):
@@ -146,19 +154,17 @@ def test_bullet_3_a_silent_clip_onto_a_sounded_edit_names_the_file(clips, tmp_pa
     """#16 accepts a named refusal here. It must NAME the file, not ffmpeg."""
     from vid.lib import render, stitch
     from vid.plan import Plan
-    from vid.schemas import VidError
 
     silent, sounded = clips
-    # The refusal must come from THIS call. Wrapping both statements would let a
-    # failure in `stitch` satisfy a test that claims to be about `render`.
-    plan = stitch(Plan(source=str(sounded)), [str(silent)])
-    with pytest.raises(VidError) as failure:
-        render(plan, str(tmp_path / "out.mp4"))
+    out = tmp_path / "out.mp4"
 
-    message = str(failure.value)
-    assert "silent.mp4" in message, f"the refusal does not name the offending file: {message!r}"
-    assert "no audio stream" in message, f"the refusal does not name what is missing: {message!r}"
-    assert "Stream specifier" not in message, "a raw ffmpeg error reached the caller"
+    # #16 offered two acceptable outcomes: "silence supplied deliberately, OR
+    # the failure names that file". It used to take the second. Since #22 it
+    # takes the FIRST, which is the one the issue listed before the fallback.
+    render(stitch(Plan(source=str(sounded)), [str(silent)]), str(out))
+
+    assert out.is_file(), "the silent clip was not reconciled into the edit"
+    assert _audio_streams(out) == 1, "silence was not supplied for the silent clip"
 
 
 def test_the_none_guard_exists_at_the_line_the_issue_named():

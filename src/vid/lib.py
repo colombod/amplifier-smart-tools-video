@@ -92,10 +92,12 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # An overlay needs the edit's length: BOTH its picture and its sound are
     # bounded back to it, and without that a layer longer than the edit
     # extends the edit to the layer's own length.
-    needs_durations = any(
-        (isinstance(op, Stitch) and op.transition) or isinstance(op, (_Retime, AudioReplace, AudioMix, Overlay))
-        for op in plan.operations
-    )
+    # A PLAIN stitch needs them too, now that a clip without audio gets a
+    # matching-length silence synthesised for it (#22). The length of that
+    # silence IS the clip's duration, so probing is no longer a transition-only
+    # concern -- and without this the compiler refuses a join it could have
+    # made, naming a duration it was never given.
+    needs_durations = any(isinstance(op, (Stitch, _Retime, AudioReplace, AudioMix, Overlay)) for op in plan.operations)
     durations: dict[str, float] = {}
     if needs_durations:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
