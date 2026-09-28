@@ -972,6 +972,12 @@ class Compiler:
         6-channel file could silently reorder the caller's channels, which is a
         worse failure than the format surprise this method exists to fix.
         """
+        stated = self.plan.audio_format
+        if stated is not None:
+            layout = self.CHANNEL_LAYOUTS.get(stated.channels)
+            if layout is not None:
+                return stated.sample_rate, layout
+
         probed = self.source_audio_format
         if probed is not None:
             rate, channels = probed
@@ -1002,6 +1008,28 @@ class Compiler:
         """
         rate, layout = self.audio_join_format
         return self._step(f"aformat=sample_rates={rate}:channel_layouts={layout}", label, "a")
+
+    def conform_output_audio(self) -> None:
+        """Put the finished audio into the format the caller asked for.
+
+        ONE CONFORM, AT THE END, and that is deliberate. `audio_join_format`
+        already makes every JOIN agree, but a plan with no join in it -- a bare
+        `trim`, say -- never passes through that path at all. Without this, an
+        explicitly requested format would apply to some plans and silently not
+        to others, depending on which verbs happened to be present. That is the
+        exact failure the field exists to remove.
+
+        Reuses `_conformed`, so the format a join settles on and the format the
+        output carries cannot drift apart: there is one resolver, and both call
+        it.
+
+        A no-op unless the caller stated a format. With `audio_format` unset
+        this adds no filter at all, so an existing plan compiles to the same
+        graph it did before the field existed.
+        """
+        if self.plan.audio_format is None or self.audio is None:
+            return
+        self.audio = self._conformed(self.audio)
 
     def _reconcile_audio(self, source: str, incoming_has_audio: bool, other_a: str) -> str:
         """Make both sides of a join carry sound, or refuse for a stated reason.
@@ -1379,6 +1407,27 @@ def _seal_dangling_outputs(compiler: Compiler) -> None:
         compiler.filters.append(f"[{label}]{sink}")
 
 
+#: What ffmpeg accepts for `-b:a`: a plain bit count, or one suffixed k/K/M/m.
+_BITRATE = re.compile(r"^\d+(\.\d+)?[kKmM]?$")
+
+
+def validate_audio_bitrate(bitrate: str) -> str:
+    """Refuse a bitrate ffmpeg would reject, by name, before the render starts.
+
+    Handed straight through, a typo like "192kbps" reaches ffmpeg as an
+    unparseable option and comes back as a wall of encoder usage text with the
+    caller's own mistake nowhere in it. Refusing here names the value and what
+    the form is, which is the whole difference between a diagnosable failure
+    and a confusing one.
+    """
+    if not _BITRATE.match(bitrate.strip()):
+        raise VidError(
+            f"--audio-bitrate takes a bitrate like 192k, 128k or 256000, not {bitrate!r}. "
+            "A plain number is bits per second; a k or M suffix multiplies it."
+        )
+    return bitrate.strip()
+
+
 def compile_plan(
     plan: Plan,
     output: str,
@@ -1391,6 +1440,7 @@ def compile_plan(
     source_audio: dict[str, bool] | None = None,
     source_sizes: dict[str, tuple[int, int]] | None = None,
     source_audio_format: tuple[int, int] | None = None,
+    audio_bitrate: str | None = None,
     video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
@@ -1451,6 +1501,11 @@ def compile_plan(
                     "rebuild the plan with this version's verbs."
                 )
 
+    # AFTER every operation, BEFORE the graph is sealed. After, because it must
+    # conform whatever the last verb produced; before, because the sealer is
+    # what accounts for every label, and a step added later would be unowned.
+    compiler.conform_output_audio()
+
     _seal_dangling_outputs(compiler)
 
     command = ["ffmpeg"]
@@ -1469,6 +1524,13 @@ def compile_plan(
         command += ["-preset", "medium", "-pix_fmt", "yuv420p"]
     if compiler.audio is not None:
         command += ["-c:a", "aac"]
+        # AN ENCODER ARGUMENT, WHICH IS WHY IT IS NOT IN THE PLAN. It is applied
+        # after the filter graph is built, so it changes nothing about the edit
+        # -- only about the file. `audio_format` is the opposite: a fact about
+        # the edit that every join has to agree on, so that one IS in the plan.
+        # `--video-codec` sits here for exactly the same reason.
+        if audio_bitrate is not None:
+            command += ["-b:a", validate_audio_bitrate(audio_bitrate)]
         # NO -shortest HERE, and that was learned the hard way. It looked like
         # exactly the right tool -- the video lands correctly and only atempo's
         # rounding runs long -- and it made 2x and 1.5x exact. It also broke

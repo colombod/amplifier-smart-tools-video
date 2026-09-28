@@ -90,6 +90,7 @@ _DOC_KEY: dict[tuple[str, ...], str | None] = {
     ("transitions",): "transitions",
     ("check",): "check",
     ("audio",): "audio",
+    ("audio", "format"): "audio_format",
     ("audio", "remove"): "audio_remove",
     ("audio", "replace"): "audio_replace",
     ("audio", "mix"): "audio_mix",

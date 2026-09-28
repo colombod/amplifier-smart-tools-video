@@ -287,9 +287,19 @@ def render(
     video_codec: Annotated[
         str, typer.Option("--video-codec", help="libx264 (default), or guarded picture copy.")
     ] = "libx264",
+    audio_bitrate: Annotated[
+        str | None,
+        typer.Option("--audio-bitrate", help="Audio encoder bitrate, e.g. 192k. Default is ffmpeg's."),
+    ] = None,
 ) -> None:
     """Compile the plan and encode, once."""
-    result = lib.render(read_plan(None), output, print_command=print_command, video_codec=video_codec)
+    result = lib.render(
+        read_plan(None),
+        output,
+        print_command=print_command,
+        video_codec=video_codec,
+        audio_bitrate=audio_bitrate,
+    )
     typer.echo(result)
 
 
@@ -333,6 +343,26 @@ def find(
     lib.find(query, video, show=show, model=model, reasoning_effort=reasoning_effort)
 
 
+#: `--channels` takes a word, not a count. "mono" and "stereo" are what a
+#: person says and what ffmpeg itself calls these layouts; "1" and "2" are an
+#: implementation detail of how the plan stores it. Anything else is refused by
+#: name rather than silently truncated -- vid can only name mono and stereo
+#: layouts, and guessing "5.1" for a 6-channel request could reorder a
+#: caller's channels.
+CHANNEL_WORDS: dict[str, int] = {"mono": 1, "stereo": 2}
+
+
+def _channel_count(word: str) -> int:
+    try:
+        return CHANNEL_WORDS[word.strip().lower()]
+    except KeyError:
+        raise VidError(
+            f"--channels takes {' or '.join(sorted(CHANNEL_WORDS))}, not {word!r}. "
+            "vid can only name those two layouts, and guessing a name for more channels "
+            "could silently reorder them."
+        ) from None
+
+
 audio_app = typer.Typer(
     help="Remove, replace, mix or extract the audio track.",
     no_args_is_help=True,
@@ -359,6 +389,17 @@ def audio_remove(
 ) -> None:
     """Drop the audio. The result is a silent video."""
     write_plan(lib.audio_remove(read_plan(video)))
+
+
+@audio_app.command("format")
+def audio_format(
+    video: Annotated[str | None, typer.Argument(help="The video, or omit to continue a piped plan.")] = None,
+    rate: Annotated[int, typer.Option("--rate", help="Samples per second, e.g. 44100 or 48000.")] = ...,
+    channels: Annotated[str, typer.Option("--channels", help="mono or stereo.")] = ...,
+    help: _doc("audio_format") = False,
+) -> None:
+    """State the sample rate and channels the finished edit should carry."""
+    write_plan(lib.audio_format(read_plan(video), rate, _channel_count(channels)))
 
 
 @audio_app.command("replace")

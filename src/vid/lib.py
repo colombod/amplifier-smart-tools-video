@@ -66,7 +66,14 @@ def repository_url() -> str | None:
     return skill_module.repository_url()
 
 
-def render(plan: Plan, output: str, *, print_command: bool = False, video_codec: str = "libx264") -> str:
+def render(
+    plan: Plan,
+    output: str,
+    *,
+    print_command: bool = False,
+    video_codec: str = "libx264",
+    audio_bitrate: str | None = None,
+) -> str:
     """Compile a plan and run it, or show what would run.
 
     Probing happens here rather than in the compiler: durations are a property of
@@ -190,6 +197,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
         source_audio=source_audio,
         source_sizes=source_sizes,
         source_audio_format=source_audio_format,
+        audio_bitrate=audio_bitrate,
         video_codec=video_codec,
     )
 
@@ -761,6 +769,28 @@ def audio_remove(plan: Plan) -> Plan:
     from vid.plan import AudioRemove
 
     return plan.with_operation(AudioRemove())
+
+
+def audio_format(plan: Plan, sample_rate: int, channels: int) -> Plan:
+    """State the sample rate and channel count the finished edit should carry.
+
+    NOT AN OPERATION, and that is why this does not call `with_operation`. The
+    format is not a step in the chain -- it does not happen at a point in time
+    the way a trim or a mix does. It is a property of the whole edit, which
+    every join has to agree on and which the output has to end in. So it sets a
+    PLAN-LEVEL FIELD, and stating it twice settles it once rather than stacking
+    two conflicting steps.
+
+    Uses `model_copy` rather than rebuilding the plan field by field. That is
+    not a style preference: `Plan.with_operation` rebuilds explicitly and
+    therefore has to remember every field, and a field omitted there does not
+    fail to compile -- it silently vanishes the moment another verb is piped
+    after it. `model_copy` carries everything by construction, so this cannot
+    acquire that bug later.
+    """
+    from vid.plan import AudioFormat
+
+    return plan.model_copy(update={"audio_format": AudioFormat(sample_rate=sample_rate, channels=channels)})
 
 
 def audio_replace(plan: Plan, track: str, start: float = 0.0) -> Plan:

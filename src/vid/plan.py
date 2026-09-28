@@ -864,19 +864,69 @@ Operation = Annotated[
 ]
 
 
+class AudioFormat(BaseModel):
+    """The sample rate and channel count the finished edit should carry.
+
+    ON THE PLAN RATHER THAN ON `stitch`, and that placement is the whole
+    argument. Sample rate and channel count are properties of the FILTER GRAPH
+    -- they decide what the edit sounds like, and every join in it has to agree
+    on them. A `stitch`-only flag would control the format for plans that
+    happen to contain a stitch and nothing else, which is an option that looks
+    like it governs the output while actually governing one path.
+
+    BITRATE IS DELIBERATELY NOT HERE. It is an encoder argument applied after
+    the graph is built, so changing it changes nothing about the graph. It
+    lives on `render` beside `--video-codec`, which is not stored in the plan
+    either. Putting all three on one flag would mix a fact about the EDIT with
+    a fact about the FILE.
+
+    Both fields are bounded, because this model is swept by the guard ratchet
+    and an unbounded numeric field on a plan model is exactly what that ratchet
+    exists to refuse.
+    """
+
+    sample_rate: int = Field(
+        ...,
+        ge=8000,
+        le=192000,
+        description="Samples per second, e.g. 44100 or 48000.",
+    )
+    channels: int = Field(
+        ...,
+        ge=1,
+        le=2,
+        description="1 for mono, 2 for stereo.",
+    )
+
+
 class Plan(BaseModel):
     """An edit, described but not performed."""
 
     plan_format: int = PLAN_FORMAT
     source: str | None = None
     operations: list[Operation] = Field(default_factory=list)
+    #: The format the finished edit should carry, or None to keep the source's.
+    #:
+    #: OPTIONAL, AND DEFAULTING TO None IS WHAT KEEPS `plan_format` AT 1. A plan
+    #: written before this field existed parses unchanged and renders
+    #: identically, so nothing older is invalidated -- the same reasoning #20
+    #: used for `Stitch.fit`.
+    audio_format: AudioFormat | None = None
 
     def with_operation(self, operation: Operation) -> Plan:
-        """A new plan with one more step. Plans are never mutated in place."""
+        """A new plan with one more step. Plans are never mutated in place.
+
+        EVERY PLAN-LEVEL FIELD MUST BE CARRIED HERE. This rebuilds the plan
+        field by field, so one omitted above is not a compile error -- it is a
+        setting that silently disappears the moment the caller pipes another
+        verb after it. `test_audio_format_survives_later_verbs` is that hazard,
+        asserted.
+        """
         return Plan(
             plan_format=self.plan_format,
             source=self.source,
             operations=[*self.operations, operation],
+            audio_format=self.audio_format,
         )
 
 

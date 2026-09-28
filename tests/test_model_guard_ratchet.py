@@ -181,6 +181,10 @@ def _numeric_models() -> dict[str, list[str]]:
 #: one named. `Retime` takes no required field but its validator demands
 #: exactly one of speed/ramp.
 SEEDS: dict[str, dict] = {
+    #: Both fields are bounded and required, so the probe's own minimal value
+    #: cannot build one. That is the ratchet working: it refused to call
+    #: AudioFormat guarded when it could not construct it at all.
+    "AudioFormat": {"sample_rate": 48000, "channels": 2},
     "Mask": {"kind": "rect"},
     "Recolor": {
         "reference": "ref.png",
