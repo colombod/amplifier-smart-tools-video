@@ -315,6 +315,57 @@ def dimensions(path: str) -> tuple[int, int] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
+def audio_format(path: str) -> tuple[int, int] | None:
+    """The first audio stream's (sample_rate, channels), or None if unreadable.
+
+    MEASURED REASON THIS EXISTS. Synthesised silence used to be generated at a
+    fixed 48 kHz stereo, and a real track beside it was conformed UP to meet
+    that. So adding one silent clip to a join changed the format of the whole
+    output -- and because mono to stereo spreads one channel's energy across
+    two, it cost the real audio 3 dB. Measured end to end through the CLI on a
+    44.1 kHz mono source:
+
+        stitch, every clip has real audio  ->  44100/1, true peak -17.2 dBFS
+        stitch, ONE silent clip            ->  48000/2, true peak -20.2 dBFS
+        that same output remixed to mono   ->  48000/1, true peak -17.2 dBFS
+
+    The last row is the control: the 3 dB is the channel split, not lost
+    signal. Knowing the real format lets the silence match the edit instead of
+    the edit matching the silence.
+
+    Returns None rather than a default, and every caller must keep that
+    distinct from a real answer. A guess here would resample the caller's audio
+    while looking like a successful probe -- the same defect one layer down.
+    """
+    if not have_ffprobe():
+        return None
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate,channels",
+            "-of",
+            "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    try:
+        rate_str, _, channels_str = raw.partition(",")
+        rate, channels = int(rate_str), int(channels_str)
+    except ValueError:
+        return None
+    return (rate, channels) if rate > 0 and channels > 0 else None
+
+
 def frame_rate(path: str) -> float | None:
     """The video's nominal frame rate, or None when it cannot be read.
 

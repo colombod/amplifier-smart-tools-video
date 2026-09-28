@@ -21,10 +21,34 @@ it moved it to the party with less information:
      made the picture drift by up to 5 frames and pushed the final mix's true
      peak up, because stitch has no audio bitrate/format option."
 
-Both halves of that are why the silence here is stereo 48 kHz and why its
-length comes from the probed duration rather than from `-shortest` guessing.
+That evidence bundled TWO variables, and each got its own fix. The length one
+still stands: the silence's length comes from the probed duration rather than
+from `-shortest` guessing, and
 `test_the_synthesised_silence_does_not_shift_the_picture` is that 5-frame drift,
 asserted.
+
+THE FORMAT ONE NO LONGER HOLDS, AND #27 RETIRED IT. The silence was pinned to
+stereo 48 kHz, which meant a real track beside it was conformed UP to meet
+that -- so adding one silent clip changed the whole output's format, and cost
+the caller's real audio 3 dB. Re-measured through the CLI on a 44.1 kHz mono
+source:
+
+    stitch, every clip has real audio  ->  44100/1, true peak -17.2 dBFS
+    stitch, ONE silent clip            ->  48000/2, true peak -20.2 dBFS
+    that same output remixed to mono   ->  48000/1, true peak -17.2 dBFS
+
+Once the LENGTH fix landed, the drift half stopped reproducing: patching the
+constants to 44100/mono and re-rendering measured 0.00 frames of drift and an
+identical 45-frame output. And the true-peak half is inverted from the original
+claim -- mono PRESERVES the source's -17.2; the stereo pin is what moved it.
+
+So the silence now follows the edit's own probed format, which is what a stitch
+of all-sounded clips already did. The 48 kHz stereo constants remain only as
+the fallback for a compile that never probed, such as `--print-command`.
+See `test_join_keeps_the_edits_audio_format.py`.
+
+A measured decision stays true only while the conditions it was measured under
+hold. A sibling fix retired this one, and nothing re-checked.
 """
 
 from __future__ import annotations
