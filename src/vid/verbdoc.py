@@ -485,6 +485,45 @@ subcommand has its own arguments; see the four `--help`s above.
 
 **What it costs.** $0.00, no provider, no network. All of this is ffmpeg.
 """,
+    "audio_format": """# vid audio format -- state the sample rate and channels of the finished edit
+
+```bash
+vid audio format talk.mp4 --rate 44100 --channels mono   # start a chain
+vid trim talk.mp4 --from 0:10 | vid audio format --rate 48000 --channels stereo
+```
+
+**Arguments.** `video` (optional) -- a file to start a chain, or omit to
+continue a piped plan. `--rate` -- samples per second, e.g. `44100` or `48000`.
+`--channels` -- `mono` or `stereo`.
+
+**Result.** A plan whose `audio_format` FIELD is set, written to stdout. Note
+that this is not an operation: it does not add a step to the chain. The format
+is a property of the whole edit, so stating it twice settles it once rather
+than stacking two conflicting steps, and it applies wherever it is stated in
+the chain.
+
+**What it is for.** Every join in an edit has to agree on a sample rate and
+channel layout. Without this, that agreement is settled by the source file, and
+a caller delivering to a spec had no way to say otherwise. With it, the format
+is stated once and both the joins and the final output follow it.
+
+**Default when unset.** The source's own format is kept. A plan written before
+this verb existed renders exactly as it did -- `plan_format` is still `1`.
+
+**Bitrate is NOT here.** It is `vid render --audio-bitrate`, because it is an
+encoder setting applied after the filter graph is built: changing it changes
+nothing about the edit, only about the file. `--video-codec` lives there for
+the same reason and is likewise not stored in the plan.
+
+**Failures.** `--channels` given anything but `mono` or `stereo`: refused,
+naming what it takes. vid can only name those two layouts, and guessing a name
+for more channels could silently reorder them. A `--rate` outside
+8000--192000: refused by the plan model. Neither a file argument nor a plan on
+stdin: refused, naming the fix.
+
+**What it costs.** One `aformat` filter at the end of the audio graph, and
+nothing at all when unset.
+""",
     "audio_remove": """# vid audio remove -- drop the audio track
 
 ```bash
@@ -1268,6 +1307,15 @@ cannot see through is a tool you cannot debug.
 - `output` (required) -- where to write the finished video.
 - `--print-command` (optional, default `False`) -- print the ffmpeg
   invocation and stop; does not render, but may probe inputs.
+- `--audio-bitrate` (optional, default ffmpeg's own) -- the audio encoder's
+  bitrate, e.g. `192k`, `128k` or `256000`. A plain number is bits per second;
+  a `k` or `M` suffix multiplies it. Anything else is refused by name before
+  the render starts, rather than reaching ffmpeg as an unparseable option.
+  This is an ENCODER setting, applied after the filter graph is built, which is
+  why it lives here and not in the plan -- changing it changes nothing about
+  the edit, only about the file. The edit's own sample rate and channels are
+  `vid audio format`, which does go in the plan because every join has to agree
+  on them.
 - `--video-codec` (default `libx264`) -- `libx264` re-encodes; `copy` preserves
   picture packets for audio-only plans (remove, replace, mix, or no operations).
   Copy rejects ALL picture/timing operations, even a no-op trim. Copy requires
