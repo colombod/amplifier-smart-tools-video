@@ -121,6 +121,121 @@ def test_p_actually_counts_down(contrasting, tmp_path):
     assert late < 50, f"P should end near 0.0 (dark), not {late}"
 
 
+def test_the_guides_crossfade_agrees_with_ffmpegs_own_fade(contrasting, tmp_path):
+    """The guide's crossfade, checked against ffmpeg's OWN implementation.
+
+    Every other test here reasons about P from vf_xfade.c and from vid's own
+    measurements. That is self-consistent, and self-consistency is exactly what
+    #21 had: the guide agreed with itself while disagreeing with ffmpeg.
+
+    So this compares against an ORACLE vid does not control --
+    `xfade=transition=fade`, ffmpeg's built-in crossfade. If the guide's
+    recommended expression is written for the right P direction, the custom
+    render and the built-in must agree about which clip dominates at each end.
+    A reversed expression disagrees with the built-in at BOTH ends, which no
+    amount of internal consistency can hide.
+
+    Rendered over white -> black, so "which clip dominates" is directly
+    readable as luma: bright early, dark late.
+    """
+    white, black = contrasting
+
+    def render(name: str, filtergraph: str) -> Path:
+        out = tmp_path / name
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(white),
+                "-i",
+                str(black),
+                "-filter_complex",
+                filtergraph,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return out
+
+    builtin = render("builtin.mp4", "[0][1]xfade=transition=fade:duration=2:offset=0")
+    guided = render(
+        "guided.mp4",
+        "[0][1]xfade=transition=custom:duration=2:offset=0:expr='A*P+B*(1-P)'",
+    )
+
+    builtin_early, builtin_late = _luma(builtin, 0.1), _luma(builtin, 1.9)
+    guided_early, guided_late = _luma(guided, 0.1), _luma(guided, 1.9)
+
+    # The oracle itself must run white -> black, or the comparison is vacuous.
+    assert builtin_early > builtin_late, (
+        f"ffmpeg's own fade did not run from the first clip to the second: "
+        f"{builtin_early} -> {builtin_late}. The fixtures or the oracle changed, "
+        "so this test is no longer comparing what it claims to compare."
+    )
+
+    assert guided_early > guided_late, (
+        f"the guide's crossfade runs BACKWARDS: {guided_early} -> {guided_late}, "
+        f"while ffmpeg's own fade runs {builtin_early} -> {builtin_late}"
+    )
+
+    # Same direction is the claim; near-identical values are the evidence that
+    # the guide's expression IS a crossfade rather than merely something that
+    # happens to darken.
+    assert abs(guided_early - builtin_early) < 25, (
+        f"early frame disagrees with ffmpeg's own fade: {guided_early} vs {builtin_early}"
+    )
+    assert abs(guided_late - builtin_late) < 25, (
+        f"late frame disagrees with ffmpeg's own fade: {guided_late} vs {builtin_late}"
+    )
+
+
+def test_the_backwards_crossfade_disagrees_with_ffmpegs_own_fade(contrasting, tmp_path):
+    """The control, and the reason the test above is not vacuous.
+
+    An assertion that passes for both the right and the wrong expression proves
+    nothing. This renders the BACKWARDS form #21 reported and asserts the
+    comparison actually catches it.
+    """
+    white, black = contrasting
+    out = tmp_path / "backwards.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(white),
+            "-i",
+            str(black),
+            "-filter_complex",
+            "[0][1]xfade=transition=custom:duration=2:offset=0:expr='A*(1-P)+B*P'",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    early, late = _luma(out, 0.1), _luma(out, 1.9)
+    assert early < late, (
+        f"the backwards crossfade was expected to run dark -> bright, but measured "
+        f"{early} -> {late}. If this no longer holds, the comparison above is not "
+        "catching what it claims to catch."
+    )
+
+
 def test_the_guide_does_not_claim_p_counts_up():
     """The exact false sentence #21 reported, kept out by name."""
     assert "0.0 at the start to 1.0 at the end" not in EXPRESSION_GUIDE, (
