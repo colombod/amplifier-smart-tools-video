@@ -247,6 +247,75 @@ def test_what_mask_writes_is_what_overlay_reads(tmp_path) -> None:
     assert (int(width), int(height)) == (320, 180), "the composed render changed the frame size"
 
 
+def test_a_matte_of_a_different_size_is_resolved_to_the_layers_own_size(tmp_path) -> None:
+    """#17's size/frame-rate criterion, which nothing else exercised.
+
+    `vid mask` writes a matte at whatever dimensions and frame rate the caller
+    asks for, and `overlay` consumes one at the LAYER's size. Those two numbers
+    are free to differ, and the contract says what happens when they do:
+    "the mask is resolved at the layer's own size, before any resize"
+    (contracts/plan.v1.md). The compiler implements it as `scale=W:H` on the
+    matte input.
+
+    Every existing test fed overlay a matte derived from the very clip it was
+    composited onto, so the two sizes always agreed and the scale step was a
+    no-op. A rule that only ever runs on inputs where it does nothing is not
+    actually under test -- the resolution could be cropping, offsetting or
+    stretching wrongly and every green test would stay green.
+
+    So this writes the SAME linear wipe twice, once matching the layer and once
+    at a quarter of its area and a different frame rate, composites both, and
+    compares the decoded results. A linear wipe reveals the same FRACTION at a
+    given time regardless of its pixel dimensions, so the two mattes describe
+    the same geometry and the composites must agree. If the mismatched one were
+    cropped or offset rather than scaled, the revealed region would move and
+    the luma would diverge.
+    """
+    from vid.lib import overlay, render
+    from vid.plan import Plan
+
+    source = ensure_moving_subject_clip()
+
+    matching = tmp_path / "matching.mkv"
+    mask_wipe("linear", str(matching), width=320, height=180, seconds=2.0, fps=30.0, direction="left")
+
+    mismatched = tmp_path / "mismatched.mkv"
+    mask_wipe("linear", str(mismatched), width=160, height=90, seconds=2.0, fps=15.0, direction="left")
+
+    # The premise: the two mattes really are different sizes and rates, or this
+    # test is silently comparing a thing against itself.
+    _c1, w1, h1, _p1, r1 = _stream(matching)
+    _c2, w2, h2, _p2, r2 = _stream(mismatched)
+    assert (w1, h1, r1) != (w2, h2, r2), (
+        f"both mattes came out {w1}x{h1}@{r1}; this test is not comparing a mismatch at all"
+    )
+
+    def compose(matte: Path, name: str) -> Path:
+        plan = overlay(Plan(source=str(source)), str(source), mask="video", mask_source=str(matte))
+        out = tmp_path / name
+        render(plan, str(out))
+        return out
+
+    from_matching = compose(matching, "from_matching.mp4")
+    from_mismatched = compose(mismatched, "from_mismatched.mp4")
+
+    # The frame size is the LAYER's either way -- a matte must never resize the edit.
+    for composed in (from_matching, from_mismatched):
+        _codec, width, height, _pix_fmt, _rate = _stream(composed)
+        assert (int(width), int(height)) == (320, 180), f"the matte changed the composed frame size to {width}x{height}"
+
+    # And the cut-out lands in the same place. Sampled mid-wipe, where a
+    # misresolved matte differs most: at the ends the reveal is near fully open
+    # or fully closed and almost any resolution rule agrees.
+    matching_luma = _mean_luma(from_matching, 1.0)
+    mismatched_luma = _mean_luma(from_mismatched, 1.0)
+    assert abs(matching_luma - mismatched_luma) < 12.0, (
+        f"a matte at a different size resolved to a different cut-out: "
+        f"{matching_luma:.1f} vs {mismatched_luma:.1f} mean luma mid-wipe. The size rule is "
+        "not resolving to the layer's own size as contracts/plan.v1.md states."
+    )
+
+
 def test_the_format_guard_fires_when_the_encoder_does_not_honour_gray(tmp_path, monkeypatch) -> None:
     """The read-back guard, tested by CAUSING the failure it exists to catch.
 
