@@ -243,8 +243,10 @@ tests/fixtures/bravo.mp4
 tests/fixtures/charlie.mp4
 tests/fixtures/corner.mp4
 tests/fixtures/keyable.mp4
+tests/fixtures/silent-640.mp4
 tests/fixtures/silent.mp4
 tests/fixtures/square.mp4
+tests/fixtures/tone-44k-mono.mp4
 tests/fixtures/undecodable.mp4
 tests/fixtures/varying.mp4
 tests/fixtures/moving_subject.mp4

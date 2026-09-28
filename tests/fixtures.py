@@ -495,6 +495,145 @@ def ensure_silent_clip() -> Clip:
     return Clip(path=path, name="silent", colour="yellow", hz=0, seconds=2.0)
 
 
+def ensure_44k_mono_clip() -> Clip:
+    """A clip at 44.1 kHz MONO -- deliberately not this repo's usual format.
+
+    EVERY OTHER AUDIO FIXTURE HERE IS BUILT AT 48000 Hz. That is why the
+    synthesised-silence format pin was untestable by construction: "conform to
+    a fixed 48 kHz stereo" and "keep the source's own format" produce the same
+    bytes for every one of them, so no test could tell the two apart, and the
+    whole suite stayed green when the pin was removed.
+
+    A fixture whose format DIFFERS from the constant is the only thing that can
+    observe the difference. 44.1 kHz mono is the ordinary case that does it:
+    it is what most real recordings are, and it is two axes away from
+    48 kHz stereo, so a regression on either axis shows up here.
+    """
+    path = FIXTURE_DIR / "tone-44k-mono.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=640x360:r=30:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=2",
+                "-ac",
+                "1",
+                "-ar",
+                "44100",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="tone-44k-mono", colour="blue", hz=440, seconds=2.0)
+
+
+def ensure_silent_640_clip() -> Clip:
+    """A 640x360 clip with NO audio stream, matching the 44.1 kHz fixture's size.
+
+    `ensure_silent_clip` is already 640x360, but this one is kept separate so a
+    change to that fixture's size cannot silently turn an audio-format test
+    into a `--fit` refusal about picture size instead.
+    """
+    path = FIXTURE_DIR / "silent-640.mp4"
+    if not path.exists():
+        if not have_ffmpeg():
+            raise RuntimeError("ffmpeg and ffprobe must be on PATH to build fixtures")
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=640x360:r=30:d=1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "15",
+                "-an",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    return Clip(path=path, name="silent-640", colour="green", hz=0, seconds=1.0)
+
+
+def audio_stream_format(path: Path | str) -> tuple[int, int] | None:
+    """(sample_rate, channels) of the first audio stream, or None."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate,channels",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    rate, _, channels = raw.partition(",")
+    return int(rate), int(channels)
+
+
+def true_peak_dbfs(path: Path | str) -> float:
+    """The output's true peak, via ffmpeg's ebur128.
+
+    Used because the format pin's real cost was a LEVEL change, not just a
+    format one: conforming mono up to stereo spreads one channel's energy over
+    two and drops the measured true peak by ~3 dB. A test that only asserted
+    the sample rate would not have seen the caller's audio get quieter.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "info", "-i", str(path), "-af", "ebur128=peak=true", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    peaks = [line for line in result.stderr.splitlines() if "Peak:" in line]
+    if not peaks:
+        raise AssertionError(f"ebur128 reported no true peak for {path}")
+    return float(peaks[-1].split("Peak:")[1].split()[0])
+
+
 def corner_pixel(path: Path | str, at: float) -> tuple[int, int, int]:
     """Average RGB of a small patch at the very corner (0,0) of one frame.
 

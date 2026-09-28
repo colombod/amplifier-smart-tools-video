@@ -128,6 +128,21 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
     # of the compiler is what lets every other verb run with no ffmpeg at all.
     source_has_audio = has_audio(plan.source) if plan.source else True
 
+    # The source's OWN audio format, so a join can keep it instead of forcing
+    # everything to a fixed 48 kHz stereo. Measured reason, before this probe
+    # existed: adding one SILENT clip to a stitch changed the whole output to
+    # 48000/2 and cost the real audio 3 dB (-17.2 -> -20.2 dBFS true peak),
+    # while a stitch whose clips all carried audio already preserved 44100/1.
+    #
+    # Guarded on `print_command` for the same reason the duration probe is: a
+    # pure compile must not reach for ffprobe. Unprobed is None, and the
+    # compiler falls back rather than guessing a format for someone's sound.
+    source_audio_format = None
+    if not print_command and plan.source and plan.source != "-":
+        from vid.probe import audio_format as _audio_format
+
+        source_audio_format = _audio_format(plan.source)
+
     # The same question, asked of every clip a stitch pulls in. It used to be
     # asked only of `plan.source`, so stitching a silent clip emitted a stream
     # specifier for a stream that does not exist and ffmpeg refused the command
@@ -174,6 +189,7 @@ def render(plan: Plan, output: str, *, print_command: bool = False, video_codec:
         dimensions=dims,
         source_audio=source_audio,
         source_sizes=source_sizes,
+        source_audio_format=source_audio_format,
         video_codec=video_codec,
     )
 

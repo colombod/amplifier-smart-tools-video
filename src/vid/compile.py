@@ -145,6 +145,7 @@ class Compiler:
         dimensions: tuple[int, int] | None = None,
         source_audio: dict[str, bool] | None = None,
         source_sizes: dict[str, tuple[int, int]] | None = None,
+        source_audio_format: tuple[int, int] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -175,6 +176,11 @@ class Compiler:
         #: Taken from the probed sizes rather than `dimensions` so that a plan
         #: compiled without probing has no target and normalises nothing.
         self.target_size = self.source_sizes.get(plan.source)
+        #: (sample_rate, channels) of the plan source's own audio, probed by
+        #: the render path alongside `durations` and `source_sizes`. None means
+        #: nobody probed -- see `audio_join_format`, which then falls back
+        #: rather than guessing a format for the caller's sound.
+        self.source_audio_format = source_audio_format
         #: True once `audio remove` has run. See `audio_remove`.
         self.audio_removed = False
         #: The source's own frame rate, used to put retimed frames back on a
@@ -918,6 +924,62 @@ class Compiler:
     SILENCE_RATE: ClassVar[int] = 48000
     SILENCE_LAYOUT: ClassVar[str] = "stereo"
 
+    #: THE ABOVE IS NOW A FALLBACK, NOT THE ANSWER, and the reason is measured.
+    #: Pinning the join format meant a real track was conformed UP to meet the
+    #: silence, so adding ONE silent clip changed the whole output's format --
+    #: and because mono to stereo spreads one channel's energy over two, it
+    #: cost the caller's real audio 3 dB. Measured through the CLI on a
+    #: 44.1 kHz mono source, before this change:
+    #:
+    #:   stitch, every clip has real audio  ->  44100/1, true peak -17.2 dBFS
+    #:   stitch, ONE silent clip            ->  48000/2, true peak -20.2 dBFS
+    #:   that same output remixed to mono   ->  48000/1, true peak -17.2 dBFS
+    #:
+    #: The third row is the control: the 3 dB is the channel split, not lost
+    #: signal. Note that a stitch whose clips ALL carry audio already preserved
+    #: 44100/1 -- so following the edit's own format makes the silence path
+    #: CONSISTENT with what the rest of stitch already did, rather than
+    #: introducing a new policy.
+    #:
+    #: #22's reporter did measure the original pin: "The silent track must be
+    #: stereo 48 kHz. A mono or slightly long AAC bed made the picture drift by
+    #: up to 5 frames and pushed the final mix's true peak up." That evidence
+    #: bundled TWO variables, and each got its own fix. Once the length came
+    #: from the probed duration, the drift half stopped reproducing: patching
+    #: these constants to 44100/mono and re-rendering measured 0.00 frames of
+    #: drift, identical 45-frame output, same as the 48 kHz stereo build. And
+    #: the true-peak half is inverted from the claim -- mono PRESERVES the
+    #: source's -17.2, the stereo pin is what moved it.
+    #:
+    #: A measured decision stays true only while the conditions it was measured
+    #: under hold. A sibling fix retired this one, and nothing re-checked.
+    CHANNEL_LAYOUTS: ClassVar[dict[int, str]] = {1: "mono", 2: "stereo"}
+
+    @property
+    def audio_join_format(self) -> tuple[int, str]:
+        """(sample_rate, channel_layout) that silence and its neighbours share.
+
+        Resolution order, and each rung earns its place:
+          1. An explicit format on the plan, when the caller stated one.
+          2. The probed source format, so the edit keeps the format it started
+             with and a silent clip costs nothing.
+          3. The fixed constants, for a compile that never probed at all --
+             `--print-command` is pure by contract, so it cannot ffprobe, and
+             it must still emit a runnable graph.
+
+        A channel count with no unambiguous ffmpeg layout name (anything but
+        mono or stereo) falls back rather than guessing: inventing "5.1" for a
+        6-channel file could silently reorder the caller's channels, which is a
+        worse failure than the format surprise this method exists to fix.
+        """
+        probed = self.source_audio_format
+        if probed is not None:
+            rate, channels = probed
+            layout = self.CHANNEL_LAYOUTS.get(channels)
+            if layout is not None:
+                return rate, layout
+        return self.SILENCE_RATE, self.SILENCE_LAYOUT
+
     def _silence(self, seconds: float) -> str:
         """A finite silent stream, generated IN the graph rather than as an input.
 
@@ -927,10 +989,8 @@ class Compiler:
         the failure mode `_bound_audio` exists to prevent elsewhere in this file.
         """
         out = self._next("a")
-        self.filters.append(
-            f"anullsrc=r={self.SILENCE_RATE}:cl={self.SILENCE_LAYOUT},"
-            f"atrim=duration={seconds:.6f},asetpts=PTS-STARTPTS[{out}]"
-        )
+        rate, layout = self.audio_join_format
+        self.filters.append(f"anullsrc=r={rate}:cl={layout},atrim=duration={seconds:.6f},asetpts=PTS-STARTPTS[{out}]")
         return out
 
     def _conformed(self, label: str) -> str:
@@ -940,11 +1000,8 @@ class Compiler:
         inputs. Without this, a 44.1 kHz mono clip beside 48 kHz stereo silence
         either refuses or resamples somewhere the caller cannot see.
         """
-        return self._step(
-            f"aformat=sample_rates={self.SILENCE_RATE}:channel_layouts={self.SILENCE_LAYOUT}",
-            label,
-            "a",
-        )
+        rate, layout = self.audio_join_format
+        return self._step(f"aformat=sample_rates={rate}:channel_layouts={layout}", label, "a")
 
     def _reconcile_audio(self, source: str, incoming_has_audio: bool, other_a: str) -> str:
         """Make both sides of a join carry sound, or refuse for a stated reason.
@@ -1333,6 +1390,7 @@ def compile_plan(
     dimensions: tuple[int, int] | None = None,
     source_audio: dict[str, bool] | None = None,
     source_sizes: dict[str, tuple[int, int]] | None = None,
+    source_audio_format: tuple[int, int] | None = None,
     video_codec: str = "libx264",
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
@@ -1349,6 +1407,7 @@ def compile_plan(
         dimensions=dimensions,
         source_audio=source_audio,
         source_sizes=source_sizes,
+        source_audio_format=source_audio_format,
     )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
