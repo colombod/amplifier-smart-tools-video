@@ -175,7 +175,8 @@ class Cut(BaseModel):
         if self.end < self.start:
             raise ValueError(
                 f"A cut must not end before it starts, and {self.start:g} -> {self.end:g} does. "
-                "A reversed range removes nothing and duplicates footage instead."
+                "A reversed range removes nothing and duplicates footage instead. "
+                f"Swap them: cut {self.end:g} -> {self.start:g}."
             )
         return self
 
@@ -286,14 +287,21 @@ class Zoom(BaseModel):
         # clamps into a different kind of zoom, which is a wrong result rather
         # than a no-op.
         if self.to < 0:
-            raise ValueError(f"A zoom factor cannot be negative, and {self.to:g} is.")
+            raise ValueError(
+                f"A zoom factor cannot be negative, and {self.to:g} is. Give a positive factor: "
+                "above 1 zooms in, below 1 zooms out, and 1 leaves the framing alone."
+            )
         if self.duration < 0:
             raise ValueError(
                 f"A zoom cannot last less than no time at all, and {self.duration:g} does. "
-                "A negative duration silently becomes a different kind of zoom."
+                "A negative duration silently becomes a different kind of zoom. "
+                "Give a duration of 0 or more seconds."
             )
         if self.at is not None and self.at < 0:
-            raise ValueError(f"A zoom cannot be centred before the file starts, and {self.at:g} is negative.")
+            raise ValueError(
+                f"A zoom cannot be centred before the file starts, and {self.at:g} is negative. "
+                "Give a time of 0 or more seconds, or omit --at to centre it on the whole edit."
+            )
         return self
 
     x: str = "iw/2-(iw/zoom/2)"
@@ -342,7 +350,10 @@ class Mask(BaseModel):
                 "(rect, rounded_rect, circle, ellipse) need no file."
             )
         if self.radius < 0:
-            raise ValueError(f"A rounded rectangle's radius cannot be negative, and {self.radius} is.")
+            raise ValueError(
+                f"A rounded rectangle's radius cannot be negative, and {self.radius} is. "
+                "Give a radius of 0 or more pixels; 0 is a plain rectangle."
+            )
         # BOUNDED ABOVE TOO, and the ceiling is ffmpeg's, not ours. `feather`
         # compiles to `gblur=sigma=`, whose range `ffmpeg -h filter=gblur`
         # gives as "from 0 to 1024"; rendering confirms 1024 passes and 1024.1
