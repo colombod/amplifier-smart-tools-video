@@ -9,7 +9,7 @@ every run it ever performed — because nothing forced the question "is this shi
 version is a claim about what someone installed. This file is where that claim is kept
 honest.
 
-## Unreleased
+## 0.4.0
 
 `stitch` no longer emits a broken audio branch. It interpolated the running audio label
 into its `concat` entry without the `is not None` guard the rest of the compiler applies,
@@ -19,12 +19,12 @@ transition path now do too.
 
 It also assumed every stitched clip carried sound. Audio presence was probed on the plan's
 source alone, so stitching a silent clip emitted a stream specifier matching nothing. The
-render path now probes each stitch source, and a join where exactly one side has sound is
-refused by name rather than failing as `Stream specifier ... matches no streams`.
+render path now probes each stitch source, so that no longer happens.
 
-Deliberate silence is distinguished from incidental silence: after `audio remove` the
-caller has already said what to do with sound, so dropping an incoming clip's audio carries
-out that instruction and is not refused. `vid stitch --help` documents the new refusal.
+That gap was first closed by REFUSING a join where only one side had sound. Later in this
+same release it was closed better: `stitch` now SYNTHESISES silence for a clip that has
+none, so such a join succeeds instead of being turned away. The refusal is gone; what
+follows below describes what actually ships.
 
 Both faults were silent until render -- the plan validated and the compile succeeded.
 
@@ -146,6 +146,48 @@ holds its last frame, which is what a picture-in-picture wants.
 
 The defect was invisible to every test that rendered an overlay on its own, because alone
 the two lengths agree. It took composing the verb with `trim` to see it.
+
+`stitch` now SYNTHESISES silence for a clip that has no audio, rather than refusing the
+join. A silent clip is a normal thing to put in an edit -- a title card, a screen
+recording -- and refusing it made the caller solve a problem the tool could solve itself.
+
+**Fixed: a silent clip in a join changed the edit's audio format, and cost it 3 dB.** The
+synthesised silence was pinned to 48 kHz stereo and a real track beside it was conformed
+UP to meet that, so adding ONE silent clip changed the format of the WHOLE output -- and
+because mono to stereo spreads one channel's energy over two, the caller's real audio got
+quieter. Measured through the CLI on a 44.1 kHz mono source: an all-real-audio join gave
+44100/1 at -17.2 dBFS, one silent clip gave 48000/2 at -20.2, and remixing that output
+back to mono restored -17.2, proving the 3 dB was the channel split and not lost signal.
+The silence now follows the edit's own format. A stitch whose clips all carried audio
+already preserved it, so this is a restoration rather than a new policy.
+
+New verb: `vid audio format --rate 44100 --channels mono` states the sample rate and
+channel count the finished edit should carry, and `vid render --audio-bitrate 192k` sets
+the encoder's bitrate. The split is deliberate: rate and channels are properties of the
+FILTER GRAPH that every join has to agree on, so they live in the plan; bitrate is an
+ENCODER argument applied after the graph is built and changes nothing about the edit, so
+it lives on `render` beside `--video-codec`. `audio format` is a field rather than an
+operation, so stating it twice settles it once instead of stacking two conflicting steps.
+`--channels` takes `mono` or `stereo` and refuses anything else by name, because vid can
+only name those two layouts and guessing one for more channels could reorder them.
+
+`audio_format` is a new optional plan field defaulting to unset, so `plan_format` stays
+`1` and a plan written before it renders identically.
+
+**Fixed: the custom-transition guide reversed xfade's progress direction.** ffmpeg's
+`xfade` counts `P` DOWN, from 1.0 at the start to 0.0 at the end, which is the opposite of
+every other progress variable. An expression written for a counting-up `P` compiles,
+blends, and plays the transition in REVERSE. Validation could not see it either, because a
+reversed blend has the same midpoint as a correct one; it now checks the ENDPOINTS, and
+refuses a backwards expression by name. Measured with white A and black B: `A*(1-P)+B*P`
+gives 26, 125, 224 (starts on B, backwards) and `A*P+B*(1-P)` gives 224, 125, 26 (correct).
+
+**Fixed: the trim past-the-end guard never fired in the real render path.**
+
+**Fixed: the model guard ratchet matched type SPELLINGS, so four ordinary fields were
+invisible to it.** It recognised annotations by how they were written rather than what
+they were, so four plainly-spelled numeric fields were reported as guarded while carrying
+no bounds at all.
 
 ## 0.3.3
 
