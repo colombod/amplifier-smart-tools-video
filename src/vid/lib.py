@@ -11,6 +11,7 @@ receiving a `Plan` directly and calling these functions with no CLI involved.
 
 import math
 from pathlib import Path
+import sys
 
 from vid.core import manifest
 from vid.core import skill as skill_module
@@ -85,7 +86,7 @@ def render(
     from vid.compile import compile_plan, validate_video_codec
     from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Trim, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import dimensions, frame_rate, has_audio, video_duration
+    from vid.probe import dimensions, frame_rate, has_audio, have_ffprobe, video_duration
 
     validate_video_codec(plan, output, video_codec)
 
@@ -111,16 +112,33 @@ def render(
     # by hand; `render` supplied none, so the check saw an unknown length and
     # correctly skipped itself. A guard tested one layer above where it runs.
     #
-    # AND `print_command` SKIPS ALL OF IT, which the first version of this fix
-    # got wrong. `--print-command` is a PURE compile: it exists so the graph can
-    # be inspected on a machine with no ffmpeg and no media on disk, and adding
-    # `Trim` here made it demand ffprobe for the commonest plan there is. The
-    # guard is about what a RENDER would produce, so it belongs on the path that
-    # actually renders. An unprobed compile falls back to the documented
-    # unknown-duration behaviour: skip the check rather than refuse everything.
-    needs_durations = not print_command and any(
+    # `--print-command` PROBES WHEN IT CAN, and falls back only when it cannot.
+    #
+    # It promises "the ffmpeg it would run", so anything it prints that `render`
+    # would not run is a lie in the one string whose whole job is fidelity. Two
+    # earlier attempts each broke that promise from a different side: probing
+    # unconditionally made a pure compile demand ffprobe for the commonest plan
+    # there is, and skipping the probe entirely printed an `audio replace`
+    # graph with no `apad`/`atrim` -- which, run as printed, put a 6 s track on
+    # a 3 s picture and produced a SIX SECOND file where `render` produces
+    # three. Measured, both directions.
+    #
+    # So the fallback is now narrow and earned: it applies only when the probe
+    # genuinely cannot run -- no ffprobe on the machine, or the media not on
+    # disk, which is the case `--print-command` exists to serve. When that
+    # happens the caller is TOLD, on stderr, which bounds were left out. A
+    # missing bound the caller knows about is a different thing from one they
+    # do not.
+    wants_durations = any(
         isinstance(op, (Trim, Stitch, _Retime, AudioReplace, AudioMix, Overlay)) for op in plan.operations
     )
+    media = [plan.source, *[s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]]
+    media += [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
+    media += [op.track for op in plan.operations if isinstance(op, (AudioReplace, AudioMix)) and op.track]
+    can_probe = have_ffprobe() and all(Path(m).is_file() for m in media if m and m != "-")
+    needs_durations = wants_durations and (not print_command or can_probe)
+    #: True only when a compile that WANTED lengths could not get them.
+    pure_compile_fallback = print_command and wants_durations and not can_probe
     durations: dict[str, float] = {}
     if needs_durations:
         paths = [plan.source] + [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]
@@ -145,7 +163,7 @@ def render(
     # pure compile must not reach for ffprobe. Unprobed is None, and the
     # compiler falls back rather than guessing a format for someone's sound.
     source_audio_format = None
-    if not print_command and plan.source and plan.source != "-":
+    if (not print_command or can_probe) and plan.source and plan.source != "-":
         from vid.probe import audio_format as _audio_format
 
         source_audio_format = _audio_format(plan.source)
@@ -199,11 +217,35 @@ def render(
         source_audio_format=source_audio_format,
         audio_bitrate=audio_bitrate,
         video_codec=video_codec,
+        pure_compile=pure_compile_fallback,
     )
 
     if print_command:
         import shlex
 
+        # SAY WHAT WAS LEFT OUT. A command that silently omits length-dependent
+        # bounds is indistinguishable from one that never needed them, and this
+        # flag promises "the ffmpeg it would run". Where the lengths could not
+        # be read there is no honest way to print the real command, so the
+        # caller is told which bounds are missing and why -- on stderr, so a
+        # piped chain still receives only the command on stdout.
+        if pure_compile_fallback:
+            omitted = sorted(
+                {
+                    "audio replace/mix: pad and trim to the picture"
+                    if isinstance(op, (AudioReplace, AudioMix))
+                    else f"{op.op}: length-dependent bounds"
+                    for op in plan.operations
+                    if isinstance(op, (Trim, Stitch, _Retime, AudioReplace, AudioMix, Overlay))
+                }
+            )
+            reason = "ffprobe is not installed" if not have_ffprobe() else "the media is not on this machine"
+            print(
+                f"note: lengths could not be read ({reason}), so this command omits -- "
+                + "; ".join(omitted)
+                + ". It is the graph, not the command `vid render` would run.",
+                file=sys.stderr,
+            )
         return " ".join(shlex.quote(part) for part in command)
 
     from vid.probe import require_ffmpeg
