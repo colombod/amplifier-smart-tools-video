@@ -146,10 +146,16 @@ class Compiler:
         source_audio: dict[str, bool] | None = None,
         source_sizes: dict[str, tuple[int, int]] | None = None,
         source_audio_format: tuple[int, int] | None = None,
+        pure_compile: bool = False,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
         self.plan = plan
+        #: True when this compile can never run: `--print-command` is a pure
+        #: compile by contract, on a machine that may have no ffmpeg and no
+        #: media on disk, so nothing was probed and durations are unknown.
+        #: Checks that describe what a RENDER would produce must not fire here.
+        self.pure_compile = pure_compile
         # Clip lengths, supplied by the render path. Absent them a transition
         # cannot be placed, and the compiler says so rather than guessing an
         # offset that would silently put the blend in the wrong place.
@@ -1300,7 +1306,20 @@ class Compiler:
         if not math.isfinite(start) or start < 0:
             raise VidError("Audio start must be finite, nonnegative seconds.")
         if not math.isfinite(self.elapsed) or self.elapsed <= 0:
-            raise VidError("Supplied audio needs a known positive video duration. Compile through `vid render`.")
+            # A REAL RENDER STILL REFUSES, and that refusal is load-bearing:
+            # `trim`/`cut` once left `elapsed` unset, and `audio replace` after
+            # one rendered HOURS of padded silence instead of failing. Removing
+            # this would bring that back.
+            #
+            # A PURE COMPILE MUST NOT REFUSE. `--print-command` deliberately
+            # probes nothing, so `elapsed` is unknown for every plan, and
+            # raising here turned `vid render --print-command` into a hard
+            # failure for `audio replace` and `audio mix` -- on plans that
+            # render perfectly well. The graph is still emittable: place the
+            # track at `start` and leave out the pad/trim that need a length.
+            if not self.pure_compile:
+                raise VidError("Supplied audio needs a known positive video duration. Compile through `vid render`.")
+            return f"asetpts=PTS-STARTPTS,adelay={start * 1000:.6f}:all=1"
         return (
             f"asetpts=PTS-STARTPTS,adelay={min(start, self.elapsed) * 1000:.6f}:all=1"
             f",apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS"
@@ -1442,6 +1461,7 @@ def compile_plan(
     source_audio_format: tuple[int, int] | None = None,
     audio_bitrate: str | None = None,
     video_codec: str = "libx264",
+    pure_compile: bool = False,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
     validate_video_codec(plan, output, video_codec)
@@ -1458,6 +1478,7 @@ def compile_plan(
         source_audio=source_audio,
         source_sizes=source_sizes,
         source_audio_format=source_audio_format,
+        pure_compile=pure_compile,
     )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
