@@ -135,7 +135,9 @@ def render(
     media = [plan.source, *[s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]]
     media += [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
     media += [op.track for op in plan.operations if isinstance(op, (AudioReplace, AudioMix)) and op.track]
-    can_probe = have_ffprobe() and all(Path(m).is_file() for m in media if m and m != "-")
+    wanted = [m for m in media if m and m != "-"]
+    unusable = [m for m in wanted if not Path(m).is_file()]
+    can_probe = have_ffprobe() and not unusable
     needs_durations = wants_durations and (not print_command or can_probe)
     #: True only when a compile that WANTED lengths could not get them.
     pure_compile_fallback = print_command and wants_durations and not can_probe
@@ -205,6 +207,7 @@ def render(
     # bare relative path -- the same reason `index` and narration's default
     # track already report an absolute path.
     resolved_output = str(Path(output).resolve())
+    omissions: list[str] = []
     command = compile_plan(
         plan,
         resolved_output,
@@ -218,6 +221,7 @@ def render(
         audio_bitrate=audio_bitrate,
         video_codec=video_codec,
         pure_compile=pure_compile_fallback,
+        omissions=omissions,
     )
 
     if print_command:
@@ -229,20 +233,27 @@ def render(
         # be read there is no honest way to print the real command, so the
         # caller is told which bounds are missing and why -- on stderr, so a
         # piped chain still receives only the command on stdout.
-        if pure_compile_fallback:
-            omitted = sorted(
-                {
-                    "audio replace/mix: pad and trim to the picture"
-                    if isinstance(op, (AudioReplace, AudioMix))
-                    else f"{op.op}: length-dependent bounds"
-                    for op in plan.operations
-                    if isinstance(op, (Trim, Stitch, _Retime, AudioReplace, AudioMix, Overlay))
-                }
-            )
-            reason = "ffprobe is not installed" if not have_ffprobe() else "the media is not on this machine"
+        # ONLY WHAT WAS ACTUALLY LEFT OUT. `omissions` is appended by the
+        # compiler at the site that drops something, so a plan whose length
+        # came from the plan itself -- `trim` supplies one without probing --
+        # now prints NO note, because nothing was omitted. Built from the
+        # plan's operation types instead, this claimed `trim` then
+        # `audio replace` had dropped the pad/trim when the emitted argv was
+        # byte-identical to `render`'s. A note naming omissions that did not
+        # happen teaches its reader to ignore it.
+        if omissions:
+            if not have_ffprobe():
+                reason = "ffprobe is not installed"
+            elif unusable:
+                absent = [m for m in unusable if not Path(m).exists()]
+                # A directory, a FIFO or a dangling symlink IS on the machine.
+                # Saying otherwise sends the reader hunting the wrong fault.
+                reason = f"{absent[0]} is not on this machine" if absent else f"{unusable[0]} is not a readable file"
+            else:
+                reason = "the lengths could not be read"
             print(
-                f"note: lengths could not be read ({reason}), so this command omits -- "
-                + "; ".join(omitted)
+                f"note: {reason}, so this command omits -- "
+                + "; ".join(sorted(omissions))
                 + ". It is the graph, not the command `vid render` would run.",
                 file=sys.stderr,
             )

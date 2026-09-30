@@ -147,6 +147,7 @@ class Compiler:
         source_sizes: dict[str, tuple[int, int]] | None = None,
         source_audio_format: tuple[int, int] | None = None,
         pure_compile: bool = False,
+        omissions: list[str] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
@@ -156,6 +157,13 @@ class Compiler:
         #: media on disk, so nothing was probed and durations are unknown.
         #: Checks that describe what a RENDER would produce must not fire here.
         self.pure_compile = pure_compile
+        #: What this compile ACTUALLY left out, appended at the site that left
+        #: it out. The note used to be built from the plan's operation types
+        #: instead, which over-reported: `trim` then `audio replace` claimed
+        #: the pad/trim were dropped when `trim` had supplied the length and
+        #: the emitted argv was byte-identical to `render`'s. A note that
+        #: names omissions that did not happen trains its reader to ignore it.
+        self.omissions = [] if omissions is None else omissions
         # Clip lengths, supplied by the render path. Absent them a transition
         # cannot be placed, and the compiler says so rather than guessing an
         # offset that would silently put the blend in the wrong place.
@@ -407,8 +415,7 @@ class Compiler:
         if self.frame_rate is None or self.dimensions is None:
             raise VidError(
                 "zoom needs to know the source's frame rate and dimensions to pin "
-                "`zoompan`'s output, and neither was supplied. Compile through `vid render`, "
-                "which probes them from the source file."
+                "`zoompan`'s output, and neither was supplied. " + self._probe_remedy
             )
         at = op.at if op.at is not None else 0.0
         duration = max(op.duration, 0.0)
@@ -501,7 +508,7 @@ class Compiler:
             if size is None:
                 raise VidError(
                     f"A {mask.kind} mask has to be scaled to the layer's own size, and the size of "
-                    f"{op.source!r} was not read. Compile through `vid render`, which probes it."
+                    f"{op.source!r} was not read. " + self._probe_remedy
                 )
             self.inputs.append(mask.source)
             matte = self._step(f"format=gray,scale={size[0]}:{size[1]},setsar=1", f"{len(self.inputs) - 1}:v", "v")
@@ -754,7 +761,7 @@ class Compiler:
         if not bound:
             raise VidError(
                 "An overlay that contributes sound needs the edit's length, and it was not "
-                "measured. Compile through `vid render`, which probes it."
+                "measured. " + self._probe_remedy
             )
         # `_bound_audio` already carries its own apad; prefixing another one
         # emitted the filter name `apadapad`.
@@ -1130,8 +1137,8 @@ class Compiler:
         if not self.durations:
             raise VidError(
                 "A transition needs to know how long the clips are, and no durations were "
-                "supplied. Compile through `vid render`, which probes them -- a transition "
-                "placed at a guessed offset blends in the wrong place and looks like a bug."
+                "supplied. " + self._probe_remedy + " A transition placed at a guessed offset "
+                "blends in the wrong place and looks like a bug."
             )
         out_v, out_a = self._next("v"), self._next("a")
         offset = max(0.0, self.elapsed - op.transition_duration)
@@ -1302,6 +1309,23 @@ class Compiler:
         chain = self._placed_audio(op.start)
         self._regained_audio(self._step(chain, incoming, "a"))
 
+    @property
+    def _probe_remedy(self) -> str:
+        """The remedy that is actionable for the caller who actually hit this.
+
+        "Compile through `vid render`" is correct advice to a library caller
+        who called `compile_plan` directly. It is useless to someone who IS
+        running `vid render --print-command` and got this back -- and under a
+        pure compile that is exactly who reaches these refusals. Telling them
+        to do the thing they are already doing reads like a bug in the tool.
+        """
+        if self.pure_compile:
+            return (
+                "`--print-command` deliberately reads nothing, so this cannot be resolved here: "
+                "run it on a machine with the media, or drop `--print-command` to render."
+            )
+        return "Compile through `vid render`, which probes it."
+
     def _placed_audio(self, start: float) -> str:
         if not math.isfinite(start) or start < 0:
             raise VidError("Audio start must be finite, nonnegative seconds.")
@@ -1319,6 +1343,9 @@ class Compiler:
             # track at `start` and leave out the pad/trim that need a length.
             if not self.pure_compile:
                 raise VidError("Supplied audio needs a known positive video duration. Compile through `vid render`.")
+            note = "audio replace/mix: pad and trim to the picture"
+            if note not in self.omissions:
+                self.omissions.append(note)
             return f"asetpts=PTS-STARTPTS,adelay={start * 1000:.6f}:all=1"
         return (
             f"asetpts=PTS-STARTPTS,adelay={min(start, self.elapsed) * 1000:.6f}:all=1"
@@ -1462,6 +1489,7 @@ def compile_plan(
     audio_bitrate: str | None = None,
     video_codec: str = "libx264",
     pure_compile: bool = False,
+    omissions: list[str] | None = None,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
     validate_video_codec(plan, output, video_codec)
@@ -1479,6 +1507,7 @@ def compile_plan(
         source_sizes=source_sizes,
         source_audio_format=source_audio_format,
         pure_compile=pure_compile,
+        omissions=omissions,
     )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
