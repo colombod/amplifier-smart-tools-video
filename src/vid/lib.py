@@ -9,6 +9,7 @@ writing the result back out; a Python caller does the same work by building or
 receiving a `Plan` directly and calling these functions with no CLI involved.
 """
 
+from collections import Counter
 import math
 from pathlib import Path
 import sys
@@ -86,7 +87,7 @@ def render(
     from vid.compile import compile_plan, validate_video_codec
     from vid.plan import AudioMix, AudioReplace, Overlay, Stitch, Trim, Zoom
     from vid.plan import Retime as _Retime
-    from vid.probe import dimensions, frame_rate, has_audio, have_ffprobe, video_duration
+    from vid.probe import audio_presence, dimensions, frame_rate, have_ffprobe, video_duration
 
     validate_video_codec(plan, output, video_codec)
 
@@ -135,9 +136,20 @@ def render(
     media = [plan.source, *[s for op in plan.operations if isinstance(op, Stitch) for s in op.sources]]
     media += [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
     media += [op.track for op in plan.operations if isinstance(op, (AudioReplace, AudioMix)) and op.track]
-    can_probe = have_ffprobe() and all(Path(m).is_file() for m in media if m and m != "-")
+    wanted = [m for m in media if m and m != "-"]
+
+    def local_file(path: str) -> Path:
+        from urllib.parse import unquote, urlsplit
+        from urllib.request import url2pathname
+
+        uri = urlsplit(path)
+        if uri.scheme == "file" and uri.netloc in {"", "localhost"}:
+            return Path(url2pathname(unquote(uri.path)))
+        return Path(path)
+
+    unusable = [m for m in wanted if not local_file(m).is_file()]
+    can_probe = have_ffprobe() and not unusable
     needs_durations = wants_durations and (not print_command or can_probe)
-    #: True only when a compile that WANTED lengths could not get them.
     pure_compile_fallback = print_command and wants_durations and not can_probe
     durations: dict[str, float] = {}
     if needs_durations:
@@ -151,7 +163,10 @@ def render(
     # Probed here beside the durations, and for the same reason: whether a file
     # has sound is a property of the FILE, not of the plan, and keeping that out
     # of the compiler is what lets every other verb run with no ffmpeg at all.
-    source_has_audio = has_audio(plan.source) if plan.source else True
+    def _known_audio(path: str) -> bool | None:
+        return audio_presence(path) if local_file(path).is_file() else None
+
+    source_has_audio = _known_audio(plan.source) if plan.source else True
 
     # The source's OWN audio format, so a join can keep it instead of forcing
     # everything to a fixed 48 kHz stereo. Measured reason, before this probe
@@ -159,9 +174,9 @@ def render(
     # 48000/2 and cost the real audio 3 dB (-17.2 -> -20.2 dBFS true peak),
     # while a stitch whose clips all carried audio already preserved 44100/1.
     #
-    # Guarded on `print_command` for the same reason the duration probe is: a
-    # pure compile must not reach for ffprobe. Unprobed is None, and the
-    # compiler falls back rather than guessing a format for someone's sound.
+    # Inspection probes when its required media and ffprobe are available.
+    # Unprobed is None, so the compiler uses its format fallback rather than
+    # claiming to know the source's sound.
     source_audio_format = None
     if (not print_command or can_probe) and plan.source and plan.source != "-":
         from vid.probe import audio_format as _audio_format
@@ -174,7 +189,10 @@ def render(
     # with a message naming neither the file nor the reason.
     stitch_sources = [s for op in plan.operations if isinstance(op, Stitch) for s in op.sources if s and s != "-"]
     overlay_layers = [op.source for op in plan.operations if isinstance(op, Overlay) and op.source]
-    source_audio = {path: has_audio(path) for path in dict.fromkeys([*stitch_sources, *overlay_layers])}
+    audio_tracks = [op.track for op in plan.operations if isinstance(op, (AudioReplace, AudioMix))]
+    source_audio = {
+        path: _known_audio(path) for path in dict.fromkeys([*stitch_sources, *overlay_layers, *audio_tracks])
+    }
 
     # Sizes, for the same reason and on the same terms: `concat` needs matching
     # resolution and SAR, and which size a file is cannot be read from the plan.
@@ -205,6 +223,8 @@ def render(
     # bare relative path -- the same reason `index` and narration's default
     # track already report an absolute path.
     resolved_output = str(Path(output).resolve())
+    omissions: list[str] = []
+    assumptions: list[str] = []
     command = compile_plan(
         plan,
         resolved_output,
@@ -218,34 +238,34 @@ def render(
         audio_bitrate=audio_bitrate,
         video_codec=video_codec,
         pure_compile=pure_compile_fallback,
+        omissions=omissions,
+        assumptions=assumptions,
     )
 
     if print_command:
         import shlex
 
-        # SAY WHAT WAS LEFT OUT. A command that silently omits length-dependent
-        # bounds is indistinguishable from one that never needed them, and this
-        # flag promises "the ffmpeg it would run". Where the lengths could not
-        # be read there is no honest way to print the real command, so the
-        # caller is told which bounds are missing and why -- on stderr, so a
-        # piped chain still receives only the command on stdout.
-        if pure_compile_fallback:
-            omitted = sorted(
-                {
-                    "audio replace/mix: pad and trim to the picture"
-                    if isinstance(op, (AudioReplace, AudioMix))
-                    else f"{op.op}: length-dependent bounds"
-                    for op in plan.operations
-                    if isinstance(op, (Trim, Stitch, _Retime, AudioReplace, AudioMix, Overlay))
-                }
-            )
-            reason = "ffprobe is not installed" if not have_ffprobe() else "the media is not on this machine"
-            print(
-                f"note: lengths could not be read ({reason}), so this command omits -- "
-                + "; ".join(omitted)
-                + ". It is the graph, not the command `vid render` would run.",
-                file=sys.stderr,
-            )
+        # Diagnostics follow actual skipped steps and used unknown streams,
+        # not operation types or argv equality: equal commands can still rely
+        # on an unverified audio stream. Stdout remains only the command.
+        if omissions or assumptions:
+            if not have_ffprobe():
+                reason = "ffprobe is not on PATH"
+                remedy = (
+                    "Install ffprobe or restore it on PATH, then re-run `--print-command` with the media available."
+                )
+            elif unusable:
+                absent = [m for m in unusable if not Path(m).exists()]
+                # A directory, a FIFO or a dangling symlink IS on the machine.
+                # Saying otherwise sends the reader hunting the wrong fault.
+                reason = f"{absent[0]} is not on this machine" if absent else f"{unusable[0]} is not a readable file"
+                remedy = (
+                    "Restore readable media at the plan's paths, then re-run `--print-command` with ffprobe on PATH."
+                )
+            else:
+                reason = "the required metadata could not be read"
+                remedy = "Restore readable media and ffprobe on PATH, then re-run `--print-command`."
+            print(_fallback_note(reason, remedy, omissions, assumptions), file=sys.stderr)
         return " ".join(shlex.quote(part) for part in command)
 
     from vid.probe import require_ffmpeg
@@ -261,9 +281,31 @@ def render(
             f"ffmpeg failed to render {resolved_output!r}:\n{tail}\n"
             "Check that every input file the plan names is readable, or run `vid check` "
             "to confirm this installation's ffmpeg and filters are working. `--print-command` "
-            "shows the exact invocation without running it."
+            "shows the invocation without running it when metadata is readable; otherwise it "
+            "shows a fallback graph and names its omissions and assumptions on stderr."
         )
     return resolved_output
+
+
+def _fallback_note(reason: str, remedy: str, omissions: list[str], assumptions: list[str]) -> str:
+    def clauses(items: list[str]) -> str:
+        return "; ".join(text + (f" x{count}" if count > 1 else "") for text, count in sorted(Counter(items).items()))
+
+    sections: list[str] = []
+    if omissions:
+        sections.append("this command omits -- " + clauses(omissions))
+    if assumptions:
+        sections.append("this command assumes -- " + clauses(assumptions))
+    return (
+        f"note: {reason}, so "
+        + ". ".join(sections)
+        + (
+            ". It is the graph, not the command `vid render` would run. "
+            if omissions
+            else ". It is the graph; the command `vid render` would run may match if these assumptions hold. "
+        )
+        + remedy
+    )
 
 
 def check() -> str:

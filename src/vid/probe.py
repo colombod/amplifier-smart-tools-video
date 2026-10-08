@@ -219,6 +219,11 @@ def copy_video_duration(path: str) -> float:
 
 
 def has_audio(path: str) -> bool:
+    """Legacy bool API: unknown preserves audio rather than silently discarding it."""
+    return audio_presence(path) is not False
+
+
+def audio_presence(path: str) -> bool | None:
     """Whether the file carries an audio stream at all.
 
     Load-bearing, and it was missing. The compiler assumed `0:a` existed on every
@@ -227,13 +232,11 @@ def has_audio(path: str) -> bool:
     the file nor the reason. Screen recordings routinely have no audio, and they
     are one of the commonest things this tool is pointed at.
 
-    Returns True when it cannot tell: guessing "there is audio" degrades to the
-    old behaviour for an unreadable file, while guessing "there is none" would
-    silently DROP the audio from a file that has it. Losing sound is worse than
-    a loud failure.
+    Returns None when metadata is unavailable, so inspection can disclose the
+    command's audio prerequisite without presenting a guess as a measured fact.
     """
     if not have_ffprobe():
-        return True
+        return None
     result = subprocess.run(
         [
             "ffprobe",
@@ -251,7 +254,7 @@ def has_audio(path: str) -> bool:
         text=True,
     )
     if result.returncode != 0:
-        return True
+        return None
     return "audio" in result.stdout
 
 

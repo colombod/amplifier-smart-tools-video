@@ -40,7 +40,9 @@ def hard_cut(clips, tmp_path_factory):
     """alpha then bravo, joined with nothing in between."""
     out = tmp_path_factory.mktemp("v") / "hard.mp4"
     plan = Plan(source=str(clips["alpha"].path)).with_operation(Stitch(sources=[str(clips["bravo"].path)]))
-    return _render(plan, out, {})
+    from vid.probe import video_duration
+
+    return _render(plan, out, {str(clip.path): video_duration(str(clip.path)) for clip in clips.values()})
 
 
 @pytest.fixture(scope="module")
