@@ -127,10 +127,40 @@ def ramp_segments(ramp: list, total: float | None = None) -> list[tuple[float, f
             hi = first.at + span * (index + 1) / steps
             position = (index + 0.5) / steps
             speed = first.speed + (second.speed - first.speed) * position
-            segments.append((lo, hi, speed))
+            if total is not None:
+                hi = min(hi, total)
+            if hi > lo:
+                segments.append((lo, hi, speed))
     if total is not None and points[-1].at < total:
         segments.append((points[-1].at, total, points[-1].speed))
     return segments
+
+
+def frame_count(seconds: float, rate: float) -> int:
+    """Nearest frame, with ffmpeg's upward rounding at half-frame ties."""
+    return math.floor(seconds * rate + 0.5)
+
+
+def ramp_warp(segments: list[tuple[float, float, float]]) -> tuple[str, float]:
+    """One timestamp warp on the rebased picture; audio keeps scalar pieces."""
+    origin = segments[0][0]
+    lengths: list[float] = []
+    pieces: list[tuple[float, str]] = []
+    for start, end, speed in segments:
+        expression = f"{math.fsum(lengths):.12g}+(T-{start - origin:.12g})/{speed:.12g}"
+        pieces.append((end - origin, expression))
+        lengths.append((end - start) / speed)
+    total = math.fsum(lengths)
+
+    # ffmpeg limits expression nesting to 100; a balanced tree keeps the
+    # same half-open piece boundaries without a linear-depth if chain.
+    def select(lo: int, hi: int) -> str:
+        if hi - lo == 1:
+            return pieces[lo][1]
+        mid = (lo + hi) // 2
+        return f"if(lt(T\\,{pieces[mid - 1][0]:.12g})\\,{select(lo, mid)}\\,{select(mid, hi)})"
+
+    return f"setpts='round(({select(0, len(pieces))})/TB)'", total
 
 
 class Compiler:
@@ -140,42 +170,44 @@ class Compiler:
         self,
         plan: Plan,
         durations: dict[str, float] | None = None,
-        has_audio: bool = True,
+        has_audio: bool | None = True,
         frame_rate: float | None = None,
         dimensions: tuple[int, int] | None = None,
-        source_audio: dict[str, bool] | None = None,
+        source_audio: dict[str, bool | None] | None = None,
         source_sizes: dict[str, tuple[int, int]] | None = None,
         source_audio_format: tuple[int, int] | None = None,
         pure_compile: bool = False,
         omissions: list[str] | None = None,
+        assumptions: list[str] | None = None,
     ) -> None:
         if plan.source is None:
             raise VidError("This plan has no source video. Name one when the chain starts.")
         self.plan = plan
-        #: True when this compile can never run: `--print-command` is a pure
-        #: compile by contract, on a machine that may have no ffmpeg and no
-        #: media on disk, so nothing was probed and durations are unknown.
-        #: Checks that describe what a RENDER would produce must not fire here.
+        #: True for the inspection fallback when required metadata cannot be
+        #: probed. `--print-command` probes when it can; this mode must still
+        #: emit inspectable graphs without inventing missing facts.
         self.pure_compile = pure_compile
         #: What this compile ACTUALLY left out, appended at the site that left
-        #: it out. The note used to be built from the plan's operation types
-        #: instead, which over-reported: `trim` then `audio replace` claimed
-        #: the pad/trim were dropped when `trim` had supplied the length and
-        #: the emitted argv was byte-identical to `render`'s. A note that
-        #: names omissions that did not happen trains its reader to ignore it.
+        #: it out. An explicit trim end can retain bounds in fallback, but is
+        #: only a nominal cap: the consumer also discloses sufficient material.
         self.omissions = [] if omissions is None else omissions
+        self.assumptions = [] if assumptions is None else assumptions
         # Clip lengths, supplied by the render path. Absent them a transition
         # cannot be placed, and the compiler says so rather than guessing an
         # offset that would silently put the blend in the wrong place.
-        self.durations = durations or {}
-        self.elapsed = self.durations.get(plan.source, 0.0)
+        self.durations = {
+            path: value for path, value in (durations or {}).items() if math.isfinite(value) and value > 0
+        }
+        self.elapsed: float | None = self.durations.get(plan.source)
+        self.elapsed_cap: float | None = self.elapsed
         self.inputs: list[str] = [plan.source]
+        self.audio_inputs: dict[int, tuple[str, str, bool | None]] = {0: ("source", plan.source, has_audio)}
         self.filters: list[str] = []
         self.video = "0:v"
         # None when the source carries no audio stream. Every audio step is
         # already guarded on this, so the whole chain degrades to video-only
         # rather than emitting a `-map 0:a` that ffmpeg cannot satisfy.
-        self.audio = "0:a" if has_audio else None
+        self.audio = None if has_audio is False else "0:a"
         #: Path -> whether that file carries an audio stream, for the clips a
         #: stitch pulls in. Probed by the render path for the same reason
         #: `durations` is: it is a fact about the file, not about the plan, and
@@ -205,6 +237,8 @@ class Compiler:
         #: The source's own (width, height), used to pin `zoompan`'s output
         #: size to it. None when it could not be read.
         self.dimensions = dimensions
+        # A nominal source rate proves nothing about VFR or joined footage.
+        self.uniform_grid = False
         self._label = 0
 
     def _next(self, prefix: str) -> str:
@@ -251,8 +285,7 @@ class Compiler:
         # the only place the source's actual length is known, and no ceiling on
         # `start` could express "past the end of THIS file".
         #
-        # `self.elapsed` is 0.0 when the length is genuinely unknown, which is
-        # falsy and correctly skips the check rather than refusing everything.
+        # Unknown duration is not evidence that the requested end exists.
         if self.elapsed and op.start >= self.elapsed:
             raise VidError(
                 f"This trim starts at {op.start:g}s, and by that point the edit is only "
@@ -262,27 +295,34 @@ class Compiler:
             )
         end = f":end={op.end}" if op.end is not None else ""
         self.video = self._step(f"trim=start={op.start}{end},setpts=PTS-STARTPTS", self.video, "v")
+        self.uniform_grid = False
         aend = f":end={op.end}" if op.end is not None else ""
         self._astep(f"atrim=start={op.start}{aend},asetpts=PTS-STARTPTS")
-        # An explicit end bounds the result exactly, known without probing
-        # anything -- it is arithmetic on the numbers this op already carries.
-        # Without one, the result is still exact whenever the length coming in
-        # was already known; otherwise it stays the 0.0 "unknown" sentinel
-        # `_bound_audio` already treats as falsy, same as before this op ran.
-        if op.end is not None:
-            self.elapsed = op.end - op.start
-        elif self.elapsed:
-            self.elapsed -= op.start
+        if self.elapsed is not None:
+            self.elapsed = (min(self.elapsed, op.end) if op.end is not None else self.elapsed) - op.start
+        if self.elapsed_cap is not None:
+            self.elapsed_cap = max(
+                0.0, (min(self.elapsed_cap, op.end) if op.end is not None else self.elapsed_cap) - op.start
+            )
+        elif op.end is not None:
+            self.elapsed_cap = op.end - op.start
 
     def cut(self, op: Cut) -> None:
         """Remove a range by keeping what is either side of it and rejoining."""
+        self.uniform_grid = False
         head_v = self._step(f"trim=start=0:end={op.start},setpts=PTS-STARTPTS", self.video, "v")
         tail_v = self._step(f"trim=start={op.end},setpts=PTS-STARTPTS", self.video, "v")
+
         # The removed span's length is always known; the RESULT's is only
         # knowable when the length coming in already was (the tail's own
         # length needs the total, which nothing here probes).
-        if self.elapsed:
-            self.elapsed -= op.end - op.start
+        def remaining(length: float) -> float:
+            return length - max(0.0, min(length, op.end) - min(length, op.start))
+
+        if self.elapsed is not None:
+            self.elapsed = remaining(self.elapsed)
+        if self.elapsed_cap is not None:
+            self.elapsed_cap = remaining(self.elapsed_cap)
         if self.audio is None:
             # A silent video still cuts. concat's a=0 form takes video only --
             # feeding it an absent stream put the literal string "None" in the
@@ -297,7 +337,44 @@ class Compiler:
         self.filters.append(f"[{head_v}][{head_a}][{tail_v}][{tail_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]")
         self.video, self.audio = out_v, out_a
 
-    def _bound_audio(self, expected: float | None) -> str:
+    def _extend_elapsed(self, source: str, overlap: float = 0.0) -> None:
+        duration = self.durations.get(source)
+        self.elapsed = self.elapsed + duration - overlap if self.elapsed is not None and duration is not None else None
+        self.elapsed_cap = (
+            self.elapsed_cap + duration - overlap if self.elapsed_cap is not None and duration is not None else None
+        )
+
+    def _assumed(self, subject: str, index: int, source: str, has_audio: bool) -> None:
+        self.assumptions.append(f"{subject} input {index} ({source!r}) has {'an' if has_audio else 'no'} audio stream")
+
+    def record_audio_dependencies(self, command: list[str]) -> None:
+        used = {label for entry in self.filters for label in _entry_io(entry)[0]}
+        used.update(value for index, value in enumerate(command) if index and command[index - 1] == "-map")
+        for index, (role, path, presence) in self.audio_inputs.items():
+            if presence is None and f"{index}:a" in used:
+                self._assumed(role, index, path, True)
+
+    def _edit_length(self, subject: str, purpose: str) -> float | None:
+        if self.elapsed is not None and self.elapsed > 0:
+            return self.elapsed
+        if not self.pure_compile:
+            raise VidError(
+                f"{subject}: the edit's length is unknown or empty; needs a known positive video duration. "
+                + self._probe_remedy
+            )
+        if self.elapsed_cap is not None and self.elapsed_cap > 0:
+            self.assumptions.append(
+                f"{subject}: sufficient material exists for the {self.elapsed_cap:g}s nominal edit ({purpose})"
+            )
+            return self.elapsed_cap
+        return None
+
+    def _omitted(self, subject: str, filters: str, purpose: str, needs: str) -> None:
+        """Record a skipped step only for the unprobed inspection fallback."""
+        if self.pure_compile:
+            self.omissions.append(f"{subject}: {filters} ({purpose}, needs {needs})")
+
+    def _bound_audio(self, expected: float | None, subject: str, purpose: str = "audio length bound") -> str:
         """Pad-then-trim the audio to the duration the edit actually means.
 
         atempo does not land exactly. Speeding up, its output runs LONG (1.5066s
@@ -309,12 +386,25 @@ class Compiler:
         apad covers the short case, atrim the long one, and the result follows
         the video rather than the resampler's rounding.
 
-        Empty string when the source duration is unknown, so a plan compiled
-        without probing behaves exactly as it always did.
+        Unknown lengths omit the bound in inspection fallback. Normal compilation
+        refuses an unknown stitched length rather than truncating to partial facts.
         """
+        if expected is None:
+            expected = self._edit_length(subject, purpose)
         if not expected:
+            self._omitted(subject, "apad,atrim,asetpts", purpose, "edit length")
             return ""
         return f",apad,atrim=end={expected:.6f},asetpts=PTS-STARTPTS"
+
+    def _audio_on_picture(self, label: str, seconds: float | None, subject: str, purpose: str, needs: str) -> str:
+        chain = "aresample=async=1:first_pts=0"
+        if seconds is not None and math.isfinite(seconds) and seconds > 0:
+            chain += f",apad,atrim=end={seconds:.6f},asetpts=PTS-STARTPTS"
+        elif self.pure_compile:
+            self._omitted(subject, "apad,atrim,asetpts", purpose, needs)
+        else:
+            raise VidError(f"{subject}: {purpose} needs a known positive video duration. " + self._probe_remedy)
+        return self._step(chain, label, "a")
 
     def _regrid(self) -> str:
         """`fps=` to append after a `setpts`, or nothing when the rate is unknown.
@@ -329,48 +419,85 @@ class Compiler:
         long behaviour is better than imposing a guessed frame rate on someone's
         footage.
         """
-        return f",fps={self.frame_rate:g}" if self.frame_rate else ""
+        if not self.frame_rate:
+            self._omitted("retime", "fps", "frame-rate regrid", "source frame rate")
+            return ""
+        return f",fps={self.frame_rate:g}"
 
     def retime(self, op: Retime) -> None:
         if op.speed is not None:
-            self.video = self._step(f"setpts={1 / op.speed:.6f}*PTS{self._regrid()}", self.video, "v")
-            self._astep(
-                ",".join(atempo_chain(op.speed)) + self._bound_audio(self.elapsed / op.speed if self.elapsed else None)
-            )
-            if self.elapsed:
-                self.elapsed /= op.speed
+            speed = op.speed
+
+            def scaled(length: float) -> float:
+                seconds = length / speed
+                return frame_count(seconds, self.frame_rate) / self.frame_rate if self.frame_rate else seconds
+
+            if self.elapsed is not None:
+                self.elapsed = scaled(self.elapsed)
+            if self.elapsed_cap is not None:
+                self.elapsed_cap = scaled(self.elapsed_cap)
+            regrid = self._regrid()
+            self.video = self._step(f"setpts={1 / op.speed:.6f}*PTS{regrid}", self.video, "v")
+            self.uniform_grid = bool(regrid)
+            if self.audio is not None:
+                self._astep(",".join(atempo_chain(op.speed)) + self._bound_audio(None, "retime"))
             return
 
-        segments = ramp_segments(op.ramp)
-        retimed_total = sum((end - start) / speed for start, end, speed in segments)
-        parts: list[str] = []
-        for start, end, speed in segments:
-            seg_v = self._step(
-                f"trim=start={start}:end={end},setpts=PTS-STARTPTS,setpts={1 / speed:.6f}*PTS{self._regrid()}",
-                self.video,
-                "v",
-            )
-            if self.audio is None:
-                parts.append(f"[{seg_v}]")
-                continue
-            seg_a = self._step(
-                f"atrim=start={start}:end={end},asetpts=PTS-STARTPTS," + ",".join(atempo_chain(speed)),
-                self.audio,
-                "a",
-            )
-            parts += [f"[{seg_v}]", f"[{seg_a}]"]
-        if self.audio is None:
-            out_v = self._next("v")
-            self.filters.append(f"{''.join(parts)}concat=n={len(segments)}:v=1:a=0[{out_v}]")
-            self.video = out_v
-            return
-        out_v, out_a = self._next("v"), self._next("a")
-        self.filters.append(f"{''.join(parts)}concat=n={len(segments)}:v=1:a=1[{out_v}][{out_a}]")
-        self.video, self.audio = out_v, out_a
-        self.elapsed = retimed_total
-        bound = self._bound_audio(retimed_total)
-        if bound:
-            self.audio = self._step(bound.lstrip(","), self.audio, "a")
+        available = self.elapsed if self.elapsed is not None else self.elapsed_cap
+        coverage = max(point.at for point in op.ramp)
+        segments = ramp_segments(op.ramp, min(available, coverage) if available is not None else None)
+        if not segments:
+            raise VidError("The ramp keeps no material. Give control points inside the edit.")
+        warp, retimed_total = ramp_warp(segments)
+        if self.frame_rate:
+            count = frame_count(retimed_total, self.frame_rate)
+            if count < 1:
+                raise VidError("The ramp keeps less than one output frame. Keep more material or reduce its speed.")
+            retimed_total = count / self.frame_rate
+        self.elapsed = retimed_total if self.elapsed is not None else None
+        self.elapsed_cap = retimed_total
+        regrid = self._regrid()
+        if regrid:
+            # Round EOF upward before the final nearest-frame cap. Otherwise a
+            # fractional trim can lose a picture frame while audio keeps it.
+            regrid += ":eof_action=pass"
+        self.uniform_grid = bool(regrid)
+        self.video = self._step(
+            f"trim=start={segments[0][0]:.12g}:end={segments[-1][1]:.12g},setpts=PTS-STARTPTS,{warp}{regrid}",
+            self.video,
+            "v",
+        )
+        if self.audio is not None:
+            sources = [self.audio]
+            if len(segments) > 1:
+                sources = [self._next("a") for _ in segments]
+                self.filters.append(f"[{self.audio}]asplit={len(segments)}{''.join(f'[{label}]' for label in sources)}")
+            parts: list[str] = []
+            for (start, end, speed), source in zip(segments, sources, strict=True):
+                parts.append(
+                    self._step(
+                        f"atrim=start={start}:end={end},asetpts=PTS-STARTPTS," + ",".join(atempo_chain(speed)),
+                        source,
+                        "a",
+                    )
+                )
+            if len(parts) > 1:
+                self.audio = self._next("a")
+                self.filters.append(
+                    f"{''.join(f'[{label}]' for label in parts)}concat=n={len(parts)}:v=0:a=1[{self.audio}]"
+                )
+            else:
+                self.audio = parts[0]
+            bound = self._bound_audio(None, "retime")
+            if bound:
+                self.audio = self._step(bound.lstrip(","), self.audio, "a")
+        target = self._edit_length("retime", "completed ramp picture length bound")
+        if target is not None:
+            limit = f"end_frame={frame_count(target, self.frame_rate)}" if self.frame_rate else f"end={target:.6f}"
+            clock = f"N/({self.frame_rate:g}*TB)" if self.frame_rate else "PTS-STARTPTS"
+            self.video = self._step(f"trim={limit},setpts={clock}", self.video, "v")
+        else:
+            self._omitted("retime", "trim,setpts", "completed ramp picture length bound", "edit length")
 
     def zoom(self, op: Zoom) -> None:
         """Ken Burns, as ffmpeg's own purpose-built filter -- ONE node.
@@ -430,12 +557,16 @@ class Compiler:
             zoom_expr = f"if(lt(time,{at:.6f}),1,{to:.6f})"
         width, height = self.dimensions
         self.video = self._step(
+            f"fps={self.frame_rate:g},"
             f"zoompan=z='{zoom_expr}':x='{op.x}':y='{op.y}':d=1:s={width}x{height}:fps={self.frame_rate:g}",
             self.video,
             "v",
         )
 
+        self.uniform_grid = True
+
     def stitch(self, op: Stitch) -> None:
+        self.uniform_grid = False
         for source in op.sources:
             if source == "-":
                 continue
@@ -448,23 +579,40 @@ class Compiler:
             # guess must not raise. Unknown follows the running edit, which is
             # exactly how this behaved before anything probed the sources.
             known = self.source_audio.get(source)
+            self.audio_inputs[index] = ("stitch", source, known)
             if known is not None:
                 other_a = self._reconcile_audio(source, known, other_a)
+            elif not self.audio_removed and self.audio is None:
+                self._assumed("stitch", index, source, False)
             other_v = self._normalised(source, other_v, op)
             if op.transition:
                 self._transition(other_v, other_a, op)
-                self.elapsed += self.durations.get(source, 0.0) - op.transition_duration
+                self._extend_elapsed(source, op.transition_duration)
             elif self.audio is None:
                 # Neither side has sound. concat's a=0 form takes video only;
                 # interpolating the absent stream anyway put the literal string
                 # "None" in the graph and ffmpeg rejected the whole command.
                 # Exactly the guard `cut` already carries.
-                self.elapsed += self.durations.get(source, 0.0)
+                self._extend_elapsed(source)
                 out_v = self._next("v")
                 self.filters.append(f"[{self.video}][{other_v}]concat=n=2:v=1:a=0[{out_v}]")
                 self.video = out_v
             else:
-                self.elapsed += self.durations.get(source, 0.0)
+                self.audio = self._audio_on_picture(
+                    self.audio,
+                    self._edit_length("stitch", "running audio length bound"),
+                    "stitch",
+                    "running audio length bound",
+                    "edit length",
+                )
+                other_a = self._audio_on_picture(
+                    other_a,
+                    self.durations.get(source),
+                    "stitch",
+                    "incoming audio length bound",
+                    "incoming clip duration",
+                )
+                self._extend_elapsed(source)
                 out_v, out_a = self._next("v"), self._next("a")
                 self.filters.append(
                     f"[{self.video}][{self.audio}][{other_v}][{other_a}]concat=n=2:v=1:a=1[{out_v}][{out_a}]"
@@ -609,6 +757,7 @@ class Compiler:
         """
         self.inputs.append(op.source)
         index = len(self.inputs) - 1
+        self.audio_inputs[index] = ("overlay", op.source, self.source_audio.get(op.source))
         layer = self._composited(f"{index}:v", op)
 
         if (op.width is None) != (op.height is None):
@@ -680,14 +829,46 @@ class Compiler:
         #
         # A layer SHORTER than the edit is left alone: `overlay` holds its last
         # frame, which is what a picture-in-picture wants.
-        if self.elapsed:
-            layer = self._step(f"trim=end={self.elapsed:.6f},setpts=PTS-STARTPTS", layer, "v")
+        length = self._edit_length("overlay", "layer length bound")
+        if length is not None:
+            layer = self._step(f"trim=end={length:.6f},setpts=PTS-STARTPTS", layer, "v")
+        else:
+            self._omitted("overlay", "trim,setpts", "layer length bound", "edit length")
 
+        bounded = length is not None and bool(self.frame_rate)
+        if bounded and not self.uniform_grid:
+            # Regrid the BASE, not the composite. `overlay` emits one frame per
+            # base frame, so a gridded base gives a gridded composite. After
+            # `overlay` the `fps` EOF has no timestamp on ffmpeg 6.1 (framesync
+            # signals EOF with AV_NOPTS_VALUE) and `fps` drops its final buffered
+            # frame: 22 of 23 pictures, measured; nightly passes the real EOF pts.
+            self.video = self._step(f"fps={self.frame_rate:g}:eof_action=pass", self.video, "v")
         out = self._next("v")
         self.filters.append(f"[{self.video}][{layer}]overlay=x='{position_x}':y='{position_y}'{window}[{out}]")
         self.video = out
+        if bounded:
+            self.video = self._step(
+                f"trim=end_frame={frame_count(length, self.frame_rate)},setpts=N/({self.frame_rate:g}*TB)",
+                self.video,
+                "v",
+            )
+            self.uniform_grid = True
 
         self._layer_audio(op, index)
+
+    def _mixed(self, labels: list[str], length: float | None, subject: str, options: str) -> str:
+        """Keep real samples off amix input zero's early-EOF drain path in ffmpeg 6.1."""
+        out = self._next("a")
+        if length is None:
+            self._omitted(subject, "anullsrc,atrim,asetpts", "first-input drain guard", "edit length")
+            joined = "".join(f"[{label}]" for label in labels)
+            self.filters.append(f"{joined}amix=inputs={len(labels)}:duration=first:{options}[{out}]")
+            return out
+        clock = self._silence(length)
+        joined = "".join(f"[{label}]" for label in [clock, *labels])
+        self.filters.append(f"{joined}amix=inputs={len(labels) + 1}:duration=longest:{options}[{out}]")
+        bound = self._bound_audio(length, subject, "mixed audio length bound")
+        return self._step(bound.lstrip(","), out, "a")
 
     def _regained_audio(self, label: str) -> None:
         """The edit has sound again. Assign it AND clear `audio_removed`.
@@ -754,10 +935,10 @@ class Compiler:
             layer = self._step(f"volume={policy.gain_db:g}dB", layer, "a")
         # `apad` with NO trim pads with silence FOREVER: ffmpeg does not finish,
         # it simply never stops writing. `_bound_audio` returns "" when it does
-        # not know the length, and 0.0 is its "unknown" sentinel -- so a bare
+        # not know the length -- so a bare
         # concatenation here turns an unprobed plan into a hung render rather
         # than an error. Measured: a 30-minute test timeout with no output.
-        bound = self._bound_audio(self.elapsed)
+        bound = self._bound_audio(None, "overlay")
         if not bound:
             raise VidError(
                 "An overlay that contributes sound needs the edit's length, and it was not "
@@ -791,8 +972,9 @@ class Compiler:
         # `_placed_audio` has always conditioned SUPPLIED audio this way, for
         # exactly this reason. The mix path simply never did the same for the
         # base it already had.
-        if self.elapsed:
-            base = self._step(f"apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS", base, "a")
+        base_bound = self._bound_audio(None, "overlay", "base audio length bound")
+        if base_bound:
+            base = self._step(base_bound.lstrip(","), base, "a")
         if policy.base_gain_db:
             base = self._step(f"volume={policy.base_gain_db:g}dB", base, "a")
         if policy.duck:
@@ -808,9 +990,10 @@ class Compiler:
             )
             base, layer = ducked, mixed
 
-        out = self._next("a")
-        self.filters.append(f"[{base}][{layer}]amix=inputs=2:normalize=0:dropout_transition=0[{out}]")
-        self._regained_audio(out)
+        mixed = self._mixed(
+            [base, layer], self._edit_length("overlay", "mix clock"), "overlay", "normalize=0:dropout_transition=0"
+        )
+        self._regained_audio(mixed)
 
     def _progress(self, motion: Motion) -> str:
         """0 before the move, 1 after it, and the eased fraction in between.
@@ -857,7 +1040,7 @@ class Compiler:
         if from_width is None or from_height is None or to_width is None or to_height is None:
             raise VidError(
                 f"An animated overlay needs to know how big {op.source!r} is, and its size was not "
-                "read. Give --width and --height, or compile through `vid render`, which probes it."
+                "read. Give --width and --height, or " + self._probe_remedy
             )
 
         progress = self._progress(motion)
@@ -889,6 +1072,11 @@ class Compiler:
         if target is None or size is None:
             # Unknown means nobody probed, which is the direct `compile_plan`
             # path. An unproven guess must not resize someone's footage.
+            self._omitted("stitch", "setsar", "sample aspect normalization", "clip sizes")
+            if op.fit == "fit":
+                self._omitted("stitch", "scale,pad if clip sizes differ", "fit", "clip sizes")
+            elif op.fit == "fill":
+                self._omitted("stitch", "scale,crop if clip sizes differ", "fill", "clip sizes")
             return label
         if size == target:
             # SAME PIXEL SIZE IS NOT THE SAME FRAME. Two 640x360 clips at SAR
@@ -976,9 +1164,9 @@ class Compiler:
           1. An explicit format on the plan, when the caller stated one.
           2. The probed source format, so the edit keeps the format it started
              with and a silent clip costs nothing.
-          3. The fixed constants, for a compile that never probed at all --
-             `--print-command` is pure by contract, so it cannot ffprobe, and
-             it must still emit a runnable graph.
+          3. The fixed constants, when the source format could not be probed.
+             `--print-command` uses readable metadata when available and
+             otherwise emits an inspection fallback.
 
         A channel count with no unambiguous ffmpeg layout name (anything but
         mono or stereo) falls back rather than guessing: inventing "5.1" for a
@@ -1070,13 +1258,13 @@ class Compiler:
 
         if incoming_has_audio:
             # The EDIT is silent. Give it silence for everything rendered so far.
-            if self.elapsed <= 0:
+            length = self._edit_length("stitch", "running silence length")
+            if length is None:
                 raise VidError(
                     f"Cannot stitch {source!r}, which has sound, onto an edit whose length is "
-                    "not known, so the silence to put beside it cannot be measured. Render "
-                    "through `vid render`, which probes durations."
+                    "not known, so the silence to put beside it cannot be measured. " + self._probe_remedy
                 )
-            self.audio = self._silence(self.elapsed)
+            self.audio = self._silence(length)
             return self._conformed(other_a)
 
         # The INCOMING clip is silent. Give it silence for its own duration.
@@ -1084,8 +1272,7 @@ class Compiler:
         if incoming_seconds <= 0:
             raise VidError(
                 f"Cannot stitch {source!r}: it carries no audio stream, and its duration is "
-                "not known, so a matching-length silence cannot be built. Render through "
-                "`vid render`, which probes durations."
+                "not known, so a matching-length silence cannot be built. " + self._probe_remedy
             )
         self.audio = self._conformed(self.audio) if self.audio else self.audio
         return self._silence(incoming_seconds)
@@ -1140,6 +1327,10 @@ class Compiler:
                 "supplied. " + self._probe_remedy + " A transition placed at a guessed offset "
                 "blends in the wrong place and looks like a bug."
             )
+        if self.elapsed is None or self.elapsed <= 0:
+            raise VidError("A transition needs the running edit's known positive duration. " + self._probe_remedy)
+        if self.durations.get(self.inputs[-1]) is None:
+            raise VidError("A transition needs the incoming clip's known positive duration. " + self._probe_remedy)
         out_v, out_a = self._next("v"), self._next("a")
         offset = max(0.0, self.elapsed - op.transition_duration)
         expr = ""
@@ -1175,11 +1366,15 @@ class Compiler:
             return
         # AAC decode padding is not a transition handle. Bound both sides to
         # their picture timing before acrossfade, or each join drifts later.
-        self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
-        other_a = self._step(
-            "aresample=async=1:first_pts=0" + self._bound_audio(self.durations.get(self.inputs[-1])),
+        self.audio = self._audio_on_picture(
+            self.audio, self.elapsed, "stitch", "running audio length bound", "edit length"
+        )
+        other_a = self._audio_on_picture(
             other_a,
-            "a",
+            self.durations.get(self.inputs[-1]),
+            "stitch",
+            "incoming audio length bound",
+            "incoming clip duration",
         )
         self.filters.append(f"[{self.audio}][{other_a}]acrossfade=d={op.transition_duration}[{out_a}]")
         self.video, self.audio = out_v, out_a
@@ -1298,15 +1493,21 @@ class Compiler:
 
     def _extra_audio(self, track: str) -> str:
         """Add an audio file as an input and return its stream label."""
+        if self.source_audio.get(track) is False:
+            raise VidError(
+                f"Cannot take audio from {track!r}: it carries no audio stream. Supply a track that has sound."
+            )
         self.inputs.append(track)
-        return f"{len(self.inputs) - 1}:a"
+        index = len(self.inputs) - 1
+        self.audio_inputs[index] = ("audio track", track, self.source_audio.get(track))
+        return f"{index}:a"
 
     def audio_replace(self, op: AudioReplace) -> None:
         incoming = self._extra_audio(op.track)
         # apad then atrim: pad with silence if the track is short, cut it if
         # long. The result always matches the video, which is the answer every
         # caller wants and the one ffmpeg would otherwise decide by accident.
-        chain = self._placed_audio(op.start)
+        chain = self._placed_audio(op.start, "audio replace")
         self._regained_audio(self._step(chain, incoming, "a"))
 
     @property
@@ -1321,35 +1522,27 @@ class Compiler:
         """
         if self.pure_compile:
             return (
-                "`--print-command` deliberately reads nothing, so this cannot be resolved here: "
-                "run it on a machine with the media, or drop `--print-command` to render."
+                "`--print-command` could not read the required metadata. "
+                "Restore readable media and ffprobe on PATH, then re-run; "
+                "or drop `--print-command` to render where probing is available."
             )
         return "Compile through `vid render`, which probes it."
 
-    def _placed_audio(self, start: float) -> str:
+    def _placed_audio(self, start: float, subject: str) -> str:
         if not math.isfinite(start) or start < 0:
             raise VidError("Audio start must be finite, nonnegative seconds.")
-        if not math.isfinite(self.elapsed) or self.elapsed <= 0:
-            # A REAL RENDER STILL REFUSES, and that refusal is load-bearing:
-            # `trim`/`cut` once left `elapsed` unset, and `audio replace` after
-            # one rendered HOURS of padded silence instead of failing. Removing
-            # this would bring that back.
-            #
-            # A PURE COMPILE MUST NOT REFUSE. `--print-command` deliberately
-            # probes nothing, so `elapsed` is unknown for every plan, and
-            # raising here turned `vid render --print-command` into a hard
-            # failure for `audio replace` and `audio mix` -- on plans that
-            # render perfectly well. The graph is still emittable: place the
-            # track at `start` and leave out the pad/trim that need a length.
-            if not self.pure_compile:
-                raise VidError("Supplied audio needs a known positive video duration. Compile through `vid render`.")
-            note = "audio replace/mix: pad and trim to the picture"
-            if note not in self.omissions:
-                self.omissions.append(note)
+        length = self._edit_length(subject, "track pad and trim to the picture")
+        if length is None:
+            # An inspection fallback can still place the track at `start`.
+            # Report the missing bound rather than refusing supplied audio
+            # merely because this machine could not probe the edit's length.
+            self._omitted(subject, "apad,atrim,asetpts", "track pad and trim to the picture", "edit length")
+            if start > 0:
+                self._omitted(subject, "adelay", "start clamp to the picture", "edit length")
             return f"asetpts=PTS-STARTPTS,adelay={start * 1000:.6f}:all=1"
         return (
-            f"asetpts=PTS-STARTPTS,adelay={min(start, self.elapsed) * 1000:.6f}:all=1"
-            f",apad,atrim=end={self.elapsed:.6f},asetpts=PTS-STARTPTS"
+            f"asetpts=PTS-STARTPTS,adelay={min(start, length) * 1000:.6f}:all=1"
+            f",apad,atrim=end={length:.6f},asetpts=PTS-STARTPTS"
         )
 
     def audio_mix(self, op: AudioMix) -> None:
@@ -1360,20 +1553,19 @@ class Compiler:
             )
         incoming = self._extra_audio(op.track)
         bed = self._step(
-            f"volume={op.level}dB," + self._placed_audio(op.start),
+            f"volume={op.level}dB," + self._placed_audio(op.start, "audio mix"),
             incoming,
             "a",
         )
         # Preserve a delayed source track on the picture timeline. Resetting
         # STARTPTS here advances its first sample instead of filling the gap.
-        self._astep("aresample=async=1:first_pts=0" + self._bound_audio(self.elapsed))
-        out = self._next("a")
-        # duration=first keeps the result the length of the ORIGINAL audio, so a
-        # long music file cannot quietly extend the video.
-        # normalize=0 keeps the existing audio at its own level rather than
-        # halving it to make room, which is what a caller means by "under".
-        self.filters.append(f"[{self.audio}][{bed}]amix=inputs=2:duration=first:normalize=0[{out}]")
-        self.audio = out
+        self._astep("aresample=async=1:first_pts=0" + self._bound_audio(None, "audio mix", "base audio length bound"))
+        # All measured inputs end at the picture bound. The silent first input
+        # protects real samples from ffmpeg 6.1's premature input-zero EOF drain.
+        length = self._edit_length("audio mix", "mix clock")
+        self.audio = self._mixed([self.audio, bed], length, "audio mix", "normalize=0")
+        if length is None:
+            self._bound_audio(None, "audio mix", "mixed audio length bound")
 
 
 def _as_map_target(label: str) -> str:
@@ -1480,16 +1672,17 @@ def compile_plan(
     *,
     overwrite: bool = True,
     durations: dict[str, float] | None = None,
-    has_audio: bool = True,
+    has_audio: bool | None = True,
     frame_rate: float | None = None,
     dimensions: tuple[int, int] | None = None,
-    source_audio: dict[str, bool] | None = None,
+    source_audio: dict[str, bool | None] | None = None,
     source_sizes: dict[str, tuple[int, int]] | None = None,
     source_audio_format: tuple[int, int] | None = None,
     audio_bitrate: str | None = None,
     video_codec: str = "libx264",
     pure_compile: bool = False,
     omissions: list[str] | None = None,
+    assumptions: list[str] | None = None,
 ) -> list[str]:
     """The whole plan as one ffmpeg argv."""
     validate_video_codec(plan, output, video_codec)
@@ -1508,6 +1701,7 @@ def compile_plan(
         source_audio_format=source_audio_format,
         pure_compile=pure_compile,
         omissions=omissions,
+        assumptions=assumptions,
     )
     # A `match` on the operation's own class, not a dict of bound methods keyed
     # by name. The dict handed every handler the full `Operation` union rather
@@ -1595,6 +1789,7 @@ def compile_plan(
         # caller can read with --print-command.
         command.append("-an")
     command.append(output)
+    compiler.record_audio_dependencies(command)
     return command
 
 

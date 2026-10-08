@@ -1290,7 +1290,7 @@ the video.
 
 ```bash
 vid render out.mp4                      # do it
-vid render out.mp4 --print-command      # show the ffmpeg it would run, and stop
+vid render out.mp4 --print-command      # inspect ffmpeg, with fallback warnings if needed
 ```
 
 **This is the only verb that touches pixels.** It takes the whole plan, compiles
@@ -1298,10 +1298,16 @@ it into a single `filter_complex`, and runs one ffmpeg. A chain of five
 operations costs one decode and one encode -- not five of each, which is what
 naively shelling out per operation would cost.
 
-**`--print-command` is the honest window.** It prints the exact invocation and
-does not render (it may probe inputs). Use it to check what an edit will actually do, to learn the ffmpeg
+**`--print-command` is the honest window.** It prints the invocation resolved
+from available metadata and does not render (it may probe inputs).
+Use it to inspect an edit, to learn the ffmpeg
 behind a verb, or to hand the command to something else entirely. A tool you
-cannot see through is a tool you cannot debug.
+cannot see through is a tool you cannot debug. When metadata is unavailable,
+it prints a fallback graph and discloses skipped transformations and unknown
+audio assumptions on stderr, with repeated clauses counted as `xN`. Using a nominal
+trim or ramp cap also names a sufficient-material assumption at the consumer;
+normal compilation requires measured lengths. Nothing skipped or assumed means no note. Some plans require metadata and refuse instead.
+Restore readable media and ffprobe on PATH to inspect the command a render would run.
 
 **Arguments.**
 - `output` (required) -- where to write the finished video.

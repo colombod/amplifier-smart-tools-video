@@ -176,9 +176,10 @@ five encodes, it takes several times longer, and the picture loses quality at
 every generation. The pipe exists precisely so you never have to do that.
 
 **You do not need a model in this loop.** Composing an edit is the shell's job,
-not an agent's. Every verb in that chain is deterministic, instant, costs
-**$0.00**, and needs neither ffmpeg nor any AI provider — a plan is JSON. Decide
-the edit once, write the pipeline, run it.
+not an agent's. The plan-building verbs in that chain are deterministic, instant,
+cost **$0.00**, and need neither ffmpeg nor any AI provider: a plan is JSON.
+`render` needs ffmpeg and readable media, but no AI provider. Decide the edit once,
+write the pipeline, run it.
 
 Three rules that make chains predictable:
 
@@ -188,9 +189,31 @@ Three rules that make chains predictable:
 - **`-` means "the plan on stdin"**, and it holds a position. `vid stitch intro.mp4
   - outro.mp4` puts the running edit in the middle.
 - **Inspect before you commit.** `vid plan` prints the edit as JSON; `vid render
-  out.mp4 --print-command` prints the exact ffmpeg and runs nothing. A plan can be
-  saved, diffed, hand-edited and replayed, so an edit a model proposed is as
-  reviewable as one a person typed.
+  out.mp4 --print-command` does not render; it probes readable media when
+  ffprobe is available. Without those facts it prints a fallback graph. Its stderr
+  note names each affected operation, skipped filters, purpose and missing facts,
+  with repeated identical clauses counted as `xN` and size-dependent fit/fill
+  filters marked `if clip sizes differ`. It also names unknown audio assumptions
+  the command depends on, including the input number and path. A nominal trim or
+  ramp cap is not measured material: using it in fallback names a sufficient-material
+  assumption at each duration consumer. Normal compilation requires measured lengths.
+  Nothing skipped
+  or assumed means no note; equal commands can still need an assumption note.
+  Some plans need that metadata and refuse instead: normal audio bounds and
+  overlay/track placement require a known positive picture duration; transitions
+  require both clip lengths. When the source frame rate is known, a ramp keeping
+  less than one output frame refuses; without it, the note names the skipped `fps`
+  regrid instead. A replacement or bed track probed as having no audio stream
+  refuses by name before ffmpeg runs.
+  Picture stream-copy additionally refuses missing/invalid first-picture-stream
+  duration, nonzero picture start, multiple video streams, picture operations,
+  or a changed container. Restore readable metadata or use libx264.
+  Normal direct `compile_plan`
+  calls also refuse unknown stitched bounds and transition offsets rather than
+  using partial durations. Restore readable media and ffprobe on PATH to inspect
+  the command a render would run.
+  A plan can be saved, diffed, hand-edited and replayed, so an edit a model
+  proposed is as reviewable as one a person typed.
 
 ## When to reach for it
 

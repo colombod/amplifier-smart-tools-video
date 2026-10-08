@@ -375,7 +375,7 @@ def test_a_masked_animated_overlay_composes_with_trim_and_audio(clips, tmp_path)
 
 _DURATIONS = {"a.mp4": 3.0, "silent.mp4": 2.0, "music.mp3": 5.0}
 _SIZES = {"a.mp4": (640, 360), "silent.mp4": (640, 360)}
-_SOURCE_AUDIO = {"a.mp4": True, "silent.mp4": False, "music.mp3": True}
+_SOURCE_AUDIO: dict[str, bool | None] = {"a.mp4": True, "silent.mp4": False, "music.mp3": True}
 
 
 def _compile(plan):
@@ -456,7 +456,7 @@ RESTORATIONS = [
 
 _FULL_DURATIONS = {"base.mp4": 3.0, "a.mp4": 3.0, "silent.mp4": 2.0, "music.mp3": 5.0}
 _FULL_SIZES = {"base.mp4": (640, 360), "a.mp4": (640, 360), "silent.mp4": (640, 360)}
-_FULL_AUDIO = {"base.mp4": True, "a.mp4": True, "silent.mp4": False, "music.mp3": True}
+_FULL_AUDIO: dict[str, bool | None] = {"base.mp4": True, "a.mp4": True, "silent.mp4": False, "music.mp3": True}
 
 
 def _compile_full(plan):

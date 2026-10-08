@@ -311,14 +311,21 @@ def clips(tmp_path_factory) -> dict[str, str]:
     return made
 
 
-def _both_ways(plan: dict, tmp_path: Path) -> tuple[dict[str, str], dict[str, str], str]:
+def _both_ways(
+    plan: dict, tmp_path: Path, extra_args: tuple[str, ...] = ()
+) -> tuple[dict[str, str], dict[str, str], str]:
     rendered, printed = tmp_path / "rendered.mp4", tmp_path / "printed.mp4"
 
-    direct = subprocess.run([VID, "render", str(rendered)], input=json.dumps(plan), capture_output=True, text=True)
+    direct = subprocess.run(
+        [VID, "render", str(rendered), *extra_args], input=json.dumps(plan), capture_output=True, text=True
+    )
     assert direct.returncode == 0, f"render failed: {direct.stderr}"
 
     shown = subprocess.run(
-        [VID, "render", str(printed), "--print-command"], input=json.dumps(plan), capture_output=True, text=True
+        [VID, "render", str(printed), *extra_args, "--print-command"],
+        input=json.dumps(plan),
+        capture_output=True,
+        text=True,
     )
     assert shown.returncode == 0, f"--print-command failed: {shown.stderr}"
 
@@ -342,6 +349,23 @@ def test_audio_replace_prints_the_command_it_would_run(clips, tmp_path, track: s
         "operations": [{"op": "audio_replace", "track": clips[track]}],
     }
     rendered, printed, command = _both_ways(plan, tmp_path)
+    assert rendered == printed, _mismatch(rendered, printed, command)
+
+
+@pytest.mark.parametrize("track", ["long", "short"])
+def test_copy_audio_replace_prints_decoded_fidelity(clips, tmp_path, track: str) -> None:
+    plan = {
+        "plan_format": 1,
+        "source": clips["video"],
+        "operations": [{"op": "audio_replace", "track": clips[track]}],
+    }
+    rendered, printed, command = _both_ways(plan, tmp_path, ("--video-codec", "copy"))
+    argv = shlex.split(command)
+    assert argv[argv.index("-c:v") + 1] == "copy", "[graph-structure] copy fidelity used another codec"
+    for key in ("decoded video", "decoded audio"):
+        assert rendered[key].startswith("MD5="), f"[decode-fidelity] {key}: {rendered[key]}"
+        assert printed[key].startswith("MD5="), f"[decode-fidelity] {key}: {printed[key]}"
+        assert rendered[key] == printed[key], f"[decode-fidelity] {_mismatch(rendered, printed, command)}"
     assert rendered == printed, _mismatch(rendered, printed, command)
 
 
